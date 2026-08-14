@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<!--
+  小蛇壳 · 启动中 / 错误页（frontendDist 唯一页面）
+  - 正常：短暂显示「正在启动」，main.rs 拿到侧车就绪 URL 后 location.replace 到
+    http://127.0.0.1:7788/?token=...，之后服务端 CSP 接管。
+  - 异常：main.rs 带 ?err=<urlencoded> 重新加载本页，boot.js 渲染错误面
+    （如实报错不白屏，PLAN G4 验收点）。
+  CSP 纪律：script-src 'self' → 脚本必须外置（boot.js）；style-src 允许 unsafe-inline。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小蛇</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #f9fcfa; color: #1b2b21;
+    font: 14px/1.75 "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .card { max-width: 560px; padding: 40px 48px; text-align: center; }
+  .mark { width: 64px; height: 64px; color: #2e8b6a; }
+  h1 { font-size: 18px; margin: 16px 0 8px; font-weight: 600; }
+  p { color: #4f6355; margin: 8px 0; }
+  #err {
+    display: none; margin-top: 16px; padding: 12px 16px; text-align: left;
+    background: rgba(163, 51, 39, .06); border: 1px solid rgba(22, 50, 36, .16); border-radius: 8px;
+    color: #a33327; font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 12.5px;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .spin {
+    width: 22px; height: 22px; margin: 12px auto 0; border-radius: 50%;
+    border: 2px solid rgba(22, 50, 36, .16); border-top-color: #2e8b6a;
+    animation: rot .8s linear infinite;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style>
+</head>
+<body>
+  <div class="card">
+    <!-- 与 ui/assets/snake.svg 同一蛇瞳 S 蛇标（壳内资源自包含，不跨目录引用） -->
+    <svg class="mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="小蛇">
+      <defs><mask id="pupil"><rect width="24" height="24" fill="#fff"/><path d="M14.7 5.1 Q14.7 4.4 15.4 4.4 L16.6 4.4 Q17.3 4.4 17.3 5.1 L17.3 6.1 L16.4 7 L15.4 7 Q14.7 7 14.7 6.3 Z" fill="#000"/><rect x="17.1" y="5.425" width="6.9" height="0.55" fill="#000"/></mask></defs>
+      <path mask="url(#pupil)" stroke="currentColor" stroke-width="5" stroke-linecap="round" d="M16.8 6.8 C14.4 4.3 9.9 4.4 8.6 7 C7.3 9.6 10.1 10.8 12.5 12 C14.9 13.2 17.4 14.5 16.1 17.1 C14.8 19.7 9.9 20.1 7.4 17.9"/>
+    </svg>
+    <h1 id="title">小蛇正在启动</h1>
+    <p id="desc">正在拉起本机桥接服务（run.py serve）…</p>
+    <div class="spin" id="spin"></div>
+    <div id="err" role="alert"></div>
+  </div>
+  <script src="boot.js"></script>
+</body>
+</html>

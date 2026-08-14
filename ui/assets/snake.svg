@@ -1,0 +1,21 @@
+<!--
+  小蛇 · 蛇瞳 S 定稿（R2-06 方瞳版：粗 S 一笔成型 + 头部方瞳负空间——蛇（小蛇）× 视觉（瞳孔）× S（Snake））
+  用法：nav / 品牌位 / favicon 通用一套。
+    - 粗 S（stroke-width 5）+ mask 开出头部方瞳（2.6×2.6、右下斜切负空间）；stroke="currentColor"，CSS 控色。
+    - 品牌位：必须纯内联粘贴本稿（index.html 品牌位即如此）——Chrome/Edge 对 <use> 克隆内容里的 mask="url(#…)" 不解析，方瞳会丢（2026-08-01 实测）。独立文件场景可用 <img src="assets/snake.svg">。
+    - favicon：<link rel="icon" type="image/svg+xml" href="assets/snake.svg">。
+    - 渐变高光版（启动页/大图/PNG）：stroke 换 url(#snakeGrad)（#3aa68f→#2e8b6a→#e6b85a）。
+  注意：本稿含 <mask>（方瞳负空间）；PNG 导出用浏览器栅格化（不走旧 export_icons.py）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-label="小蛇">
+  <!-- 独立文件场景（favicon / img）默认薄荷绿；内联 <use> 场景由外层 CSS 控色（currentColor） -->
+  <style>:root { color: #2e8b6a; }</style>
+  <defs>
+    <mask id="pupil">
+      <rect width="24" height="24" fill="#fff"/>
+      <path d="M14.7 5.1 Q14.7 4.4 15.4 4.4 L16.6 4.4 Q17.3 4.4 17.3 5.1 L17.3 6.1 L16.4 7 L15.4 7 Q14.7 7 14.7 6.3 Z" fill="#000"/><rect x="17.1" y="5.425" width="6.9" height="0.55" fill="#000"/>
+    </mask>
+  </defs>
+  <path mask="url(#pupil)" stroke="currentColor" stroke-width="5" stroke-linecap="round"
+        d="M16.8 6.8 C14.4 4.3 9.9 4.4 8.6 7 C7.3 9.6 10.1 10.8 12.5 12 C14.9 13.2 17.4 14.5 16.1 17.1 C14.8 19.7 9.9 20.1 7.4 17.9"/>
+</svg>

@@ -1,0 +1,28 @@
+[package]
+name = "xiaoshe-shell"
+version = "0.1.0"
+description = "小蛇桌面壳（Tauri 2 薄壳：系统 WebView 渲染 run.py serve 的本机 Web UI）"
+edition = "2021"
+rust-version = "1.77.2"          # Tauri 2 MSRV
+
+# 桌面-only 薄壳，不需要 [lib]（移动端才要 cdylib）。
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 壳本体。tray-icon 特性：系统托盘（显示/隐藏/退出，关停顺序纪律的核心）。
+# image-png 是默认特性，Image::from_bytes 直接吃 include_bytes! 的 PNG，不必再引 image crate。
+tauri = { version = "2", features = ["tray-icon"] }
+
+# 单实例锁：二次启动不另起进程，回调里聚焦既有窗口（任务①）。
+# 注意：必须作为 Builder 上注册的【第一个】插件（官方要求）。
+tauri-plugin-single-instance = "2"
+
+# 开机自启：对应设置项「开机启动小蛇」。壳层先接好插件，
+# 前端设置页落地后走其 JS API enable()/disable()（默认不开启，见 main.rs 注释）。
+tauri-plugin-autostart = "2"
+
+# 进程能力（restart/exit 的 JS API）。托盘退出由 Rust 侧 kill 侧车 + app.exit 完成，
+# 该插件主要为 Web 侧「重启应用」之类动作预留；确认用不上可删。
+tauri-plugin-process = "2"

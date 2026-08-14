@@ -1,0 +1,36 @@
+# Local credentials and provider configuration
+.env
+.env.*
+!.env.example
+mcp.json
+
+# Local runtime state
+.state/
+.session/
+logs/
+memory.json
+memory.json.*
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build and generated output
+tauri/target/
+node_modules/
+artifacts/
+frames/
+screenshots/
+*.tar.gz
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

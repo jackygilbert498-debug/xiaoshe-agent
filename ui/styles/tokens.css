@@ -1,0 +1,213 @@
+/* ============================================================================
+ * 小蛇 · 设计 token 三层（双主题定稿：云白薄荷流光 / 暗夜影院）
+ * 视觉基线：仓库内的亮色与暗色主题 token。
+ *   fresh-L4-云白薄荷流光.html（亮 · 默认 :root，底色 #f9fcfa，薄荷 #2e8b6a 点缀）
+ *   bplus.html / bplus-empty.html（暗 · [data-theme="ink-jade"]，近黑 #0a0a0a，
+ *   奶油黄 #f3d67c 唯一强调色，发丝线 rgba(255,255,255,.08)）
+ * 第一层 色板层：两主题色板 + 蛇鳞流光渐变（空态字标/蛇形水印）
+ * 第二层 语义层：阴影/圆角/字体/间距分层（组件只准引用本层）
+ * 第三层 组件层：见 base.css / components.css / panels.css / observatory.css
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * 主题 1 · 云白薄荷流光（默认，:root）
+ * 底 #f9fcfa · 白卡 · 薄荷绿 #2e8b6a 点缀 · 奶油药丸 CTA
+ * ------------------------------------------------------------------------- */
+:root {
+  /* ---- 第一层：云白薄荷色板 ---- */
+  --p-bg: #eef4ef;            /* 侧栏/面板底（薄荷雾，最暗） */
+  --p-rail: #eef4ef;          /* inspector 底 */
+  --p-stage: #f9fcfa;         /* 对话区云白（最亮） */
+  --p-card: #ffffff;          /* 卡面 */
+  --p-card-hover: #f2f8f4;    /* hover 底 / 次卡 */
+  --p-line: rgba(22, 50, 36, .09);    /* 发丝线 */
+  --p-line2: rgba(22, 50, 36, .16);
+  --p-line3: rgba(22, 50, 36, .24);
+  --p-ink: #1b2b21;
+  --p-ink2: #4f6355;
+  --p-ink3: #7f9284;
+  --p-faint: #b3c2b6;
+  --p-mint: #2e8b6a;          /* 薄荷绿（点缀强调） */
+  --p-mint-deep: #1f6b4f;
+  --p-mint-bg: rgba(46, 139, 106, .09);
+  --p-cream: #eec558;         /* 奶油药丸 CTA */
+  --p-cream-deep: #e0b23f;
+  --p-cream-ink: #241b04;
+  --p-blue: #3f6fb0;
+  --p-amber: #a96a1f;
+  --p-err: #a33327;
+  --p-mark: #c0452a;          /* 观测台 SoM 框暖红 */
+
+  /* ---- 第二层：语义层 ---- */
+  --bg: var(--p-bg);
+  --surface: var(--p-stage);
+  --surface-2: var(--p-rail);
+  --card: var(--p-card);
+  --card-hover: var(--p-card-hover);
+  --line: var(--p-line);
+  --line2: var(--p-line2);
+  --line3: var(--p-line3);
+  --ink: var(--p-ink);
+  --ink2: var(--p-ink2);
+  --ink3: var(--p-ink3);
+  --faint: var(--p-faint);
+  --accent: var(--p-mint);
+  --accent-deep: var(--p-mint-deep);
+  --accent-bg: var(--p-mint-bg);
+  --cta: var(--p-cream);           /* 药丸 CTA：新会话/批准/发送/自主开关 */
+  --cta-deep: var(--p-cream-deep);
+  --cta-ink: var(--p-cream-ink);
+  --cta-glow: rgba(238, 197, 88, .45);
+  --ok: var(--p-mint);
+  --info: var(--p-blue);
+  --warn: var(--p-amber);
+  --err: var(--p-err);
+  --mark: var(--p-mark);
+
+  /* ---- 蛇鳞流光（空态巨型字标 + 蛇形水印；亮主题深色系渐变） ---- */
+  --sheen-1: #173d2c;
+  --sheen-2: #2e8b6a;
+  --sheen-3: #5ec48f;
+  --sheen-4: #d9b96a;
+  --ghost-op: .10;          /* 蛇形渐变水印透明度（淡水印；布尔是真负空间，低透明度不影响方瞳清晰） */
+  --wm-op: .20;               /* 消息流右下淡水印透明度 */
+
+  /* ---- 字体栈 ---- */
+  --serif: "Noto Serif SC", "Songti SC", serif;
+  --sans: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* ---- 字体大小分层 ---- */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+
+  /* ---- 间距分层 ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* ---- 圆角分层 ---- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 20px;
+
+  /* ---- 阴影分层 ---- */
+  --sh-xs: 0 1px 2px rgba(16, 24, 40, .04);
+  --sh-sm: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+  --sh-md: 0 4px 12px rgba(16, 24, 40, .07), 0 2px 4px rgba(16, 24, 40, .05);
+  --sh-lg: 0 12px 32px rgba(16, 24, 40, .12), 0 4px 10px rgba(16, 24, 40, .08);
+  --sh-xl: 0 24px 64px rgba(16, 24, 40, .18), 0 8px 20px rgba(16, 24, 40, .10);
+
+  /* ---- 动效 ---- */
+  --fast: 120ms;
+  --med: 180ms;
+  --slow: 260ms;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- 弹出层阴影 ---- */
+  --shadow-pop: var(--sh-lg);
+
+  /* ---- 层级 ---- */
+  --z-modal: 90;
+  --z-toast: 100;
+}
+
+/* ---------------------------------------------------------------------------
+ * 主题 2 · 暗夜影院（[data-theme="ink-jade"]）
+ * 近黑 #0a0a0a · 奶油黄 #f3d67c 唯一强调色 · 发丝线 rgba(255,255,255,.08)
+ * ------------------------------------------------------------------------- */
+[data-theme="ink-jade"] {
+  /* ---- 第一层：暗夜影院色板 ---- */
+  --p-bg: #0e0e0e;            /* 侧栏/面板底（比舞台亮半度） */
+  --p-rail: #0e0e0e;
+  --p-stage: #0a0a0a;         /* 主舞台近黑 */
+  --p-card: #151515;          /* 媒体卡 */
+  --p-card-hover: #1b1b1b;
+  --p-line: rgba(255, 255, 255, .08);   /* 发丝线 */
+  --p-line2: rgba(255, 255, 255, .14);
+  --p-line3: rgba(255, 255, 255, .20);
+  --p-ink: #f4f1e8;           /* 暖白标题 */
+  --p-ink2: #a8a49a;
+  --p-ink3: #6b675f;
+  --p-faint: #4a4741;
+  --p-cream: #f3d67c;         /* 奶油黄 · 全界面唯一强调色 */
+  --p-cream-deep: #e8c765;
+  --p-cream-ink: #171204;
+  --p-cream-bg: rgba(243, 214, 124, .10);
+  --p-jade-br: #7fdcae;       /* 状态绿（蛇鳞同源，非强调） */
+  --p-blue: #6a9bff;
+  --p-amber: #e8b35c;
+  --p-err: #e0685a;
+  --p-mark: #e0685a;
+
+  /* ---- 第二层：语义层（与亮主题同名不同值） ---- */
+  --bg: var(--p-bg);
+  --surface: var(--p-stage);
+  --surface-2: var(--p-rail);
+  --card: var(--p-card);
+  --card-hover: var(--p-card-hover);
+  --line: var(--p-line);
+  --line2: var(--p-line2);
+  --line3: var(--p-line3);
+  --ink: var(--p-ink);
+  --ink2: var(--p-ink2);
+  --ink3: var(--p-ink3);
+  --faint: var(--p-faint);
+  --accent: var(--p-cream);
+  --accent-deep: var(--p-cream-deep);
+  --accent-bg: var(--p-cream-bg);
+  --cta: var(--p-cream);
+  --cta-deep: var(--p-cream-deep);
+  --cta-ink: var(--p-cream-ink);
+  --cta-glow: rgba(243, 214, 124, .35);
+  --ok: var(--p-jade-br);
+  --info: var(--p-blue);
+  --warn: var(--p-amber);
+  --err: var(--p-err);
+  --mark: var(--p-mark);
+
+  /* ---- 蛇鳞流光（暗主题浅色系渐变：#e8f5ec→#7fdcae→#f0d68a） ---- */
+  --sheen-1: #e8f5ec;
+  --sheen-2: #7fdcae;
+  --sheen-3: #3fae7c;
+  --sheen-4: #f0d68a;
+  --ghost-op: .06;          /* 双主题关键 stop 合成对比目标 1.05–1.15:1 */
+  --wm-op: .25;
+
+  /* 深底阴影换深色 */
+  --sh-xs: 0 1px 2px rgba(0, 0, 0, .4);
+  --sh-sm: 0 1px 2px rgba(0, 0, 0, .4), 0 1px 3px rgba(0, 0, 0, .45);
+  --sh-md: 0 4px 12px rgba(0, 0, 0, .45), 0 2px 4px rgba(0, 0, 0, .4);
+  --sh-lg: 0 12px 32px rgba(0, 0, 0, .55), 0 4px 10px rgba(0, 0, 0, .45);
+  --sh-xl: 0 24px 64px rgba(0, 0, 0, .65), 0 8px 20px rgba(0, 0, 0, .5);
+
+  --shadow-pop: var(--sh-lg);
+}
+
+/* ---------------------------------------------------------------------------
+ * 动效可达性：prefers-reduced-motion 下关停一切动画
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fast: 0ms;
+    --med: 0ms;
+    --slow: 0ms;
+  }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

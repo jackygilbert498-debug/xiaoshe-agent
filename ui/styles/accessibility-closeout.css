@@ -1,0 +1,121 @@
+/* Final usability guardrails: a quiet control-room surface, not a new theme. */
+
+/* The dim theme previously used labels that disappeared into the stage. */
+[data-theme="ink-jade"] {
+  --p-ink2: #c6c1b5;
+  --p-ink3: #aaa499;
+  --p-faint: #8a847a;
+}
+
+:where(button, input, textarea, [role="button"], [role="tab"]):focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px var(--surface);
+}
+
+/* A panel opened over a narrow chat should read as a deliberate layer. */
+@media (max-width: 1080px) {
+  #mobile-overlay:not([hidden]) {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--z-modal) - 2);
+    background: color-mix(in srgb, var(--bg) 68%, transparent);
+    border: 0;
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .insp.mobile-open,
+  .side.mobile-open {
+    outline: 1px solid var(--line3);
+  }
+}
+
+.pimg-remove {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+}
+
+.pimg-remove:hover { color: var(--err); }
+
+@media (max-width: 760px) {
+  .chat-head {
+    padding: 18px 16px 12px;
+    gap: 8px;
+  }
+
+  .chat-head h1 {
+    font-size: clamp(26px, 9vw, 36px);
+  }
+
+  .chat-head .right,
+  .hint {
+    display: none;
+  }
+
+  .stream {
+    padding: 20px 16px;
+  }
+
+  .composer {
+    padding: 10px 12px 12px;
+  }
+
+  #btn-send,
+  #btn-attach,
+  #btn-palette,
+  #btn-inspector,
+  #btn-task-workspace,
+  #theme-toggle,
+  #btn-model,
+  #btn-autonomy {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  #btn-model,
+  #btn-autonomy,
+  #btn-inspector,
+  #btn-task-workspace {
+    padding-inline: 10px;
+  }
+
+  .cbtns {
+    width: 100%;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .cbox {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .cbox textarea {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .insp.mobile-open,
+  .side.mobile-open {
+    top: 8px;
+    bottom: 8px;
+    width: min(420px, calc(100vw - 16px));
+    border-radius: var(--r-xl);
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line2: var(--line3);
+  }
+}
