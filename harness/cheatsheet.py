@@ -20,8 +20,8 @@ from pathlib import Path
 
 from . import _io, config, episodic
 
-CHEATSHEET_FILE = config.STATE_DIR / "cheatsheet.md"
-HITS_FILE = config.STATE_DIR / "cheatsheet_hits.json"   # §3.4 增量4：奏效计数档（编译晋升的信号源）
+CHEATSHEET_FILE = config.ROOT / ".state" / "cheatsheet.md"
+HITS_FILE = config.ROOT / ".state" / "cheatsheet_hits.json"   # §3.4 增量4：奏效计数档（编译晋升的信号源）
 _MAX_TIPS = 40          # 自我修剪上限：小抄要小、够用即好（DC 讲究精简可迁移，不是越多越好）
 _TIP_MAX = 200          # 单条硬截断（持久注入面，防无界增长/二阶注入）
 _HIT_MAX = 999          # 计数钳幅上限：带外篡改塞巨数不能变相放大晋升信号

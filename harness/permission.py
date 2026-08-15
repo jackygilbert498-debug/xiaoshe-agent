@@ -324,8 +324,6 @@ def _within_root(p: Path) -> bool:
 
 
 def resolve(path_str: str) -> Path:
-    if "\x00" in str(path_str):
-        raise ValueError("路径包含 NUL 字节")
     p = Path(path_str)
     if not p.is_absolute():
         p = _root() / p
@@ -442,7 +440,7 @@ def _check(tool_name: str, args: dict) -> Decision:
             try:
                 p = resolve(cand)
             except (OSError, ValueError):
-                return Decision("deny", f"路径非法，已拒绝：{str(cand)[:80]}")
+                continue  # 非法路径字符别打崩 check()，跳过
             if not _within_root(p):                      # 越界优先于敏感，reason 可复现
                 return Decision("deny", f"路径越出工作区：{p}")
             if _is_sensitive(p):

@@ -5,7 +5,7 @@ normal Run through TaskEngine, and an unconfigured runtime fails closed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import time
@@ -19,7 +19,7 @@ from .task_store import TaskStore
 from .worktree_manager import WorktreeManager
 from .workspace_paths import WorkspacePathPolicy
 from .execution_budget import BudgetLedger
-from .runtime_session import AgentRuntimeSession, RuntimeSessionRegistry
+from .runtime_controls import RuntimeControlStore
 
 
 @dataclass(frozen=True)
@@ -32,15 +32,19 @@ class WorkerOutcome:
 class TaskWorker:
     def __init__(self, store: TaskStore, leases: RunLeaseService, engine: TaskEngine | None = None,
                  worker_id: str = "task-worker", runner: Callable[[RunContext], object] | None = None,
-                 event_sink: Callable[[str, dict], None] | None = None,
-                 runtime_registry: RuntimeSessionRegistry | None = None):
-        if runtime_registry is not None and not isinstance(runtime_registry, RuntimeSessionRegistry):
-            raise ValueError("WORKER_RUNTIME_REGISTRY_INVALID")
+                 event_sink: Callable[[str, dict], None] | None = None, runtime_controls=None):
         self.store, self.leases, self.engine = store, leases, engine or TaskEngine(store)
         self.worker_id, self.runner = worker_id, runner
         self.event_sink = event_sink
-        self.runtime_registry = runtime_registry or RuntimeSessionRegistry()
+        self.runtime_controls = runtime_controls or RuntimeControlStore()
         self.worktrees = WorktreeManager(store, WorkspacePathPolicy(store.db_path.parent / "task-workspaces"))
+
+    def _runtime_control_snapshot(self) -> dict:
+        source = self.runtime_controls
+        raw = source.load() if hasattr(source, "load") else source()
+        if not isinstance(raw, dict):
+            raise ValueError("RUNTIME_CONTROL_SNAPSHOT_INVALID")
+        return {key: raw.get(key) for key in ("sandbox_enabled", "network_mode", "heartbeat_enabled")}
 
     def _emit_event(self, type_: str, payload: dict) -> None:
         """Persist runtime evidence before optionally broadcasting it to the UI."""
@@ -67,25 +71,6 @@ class TaskWorker:
         thread.start()
         return stop, failed, thread
 
-    def _run_runner(self, context: RunContext) -> object:
-        """把已经授权的 Worker runner 放入会话事件边界，绝不新增权限。
-
-        ``RunContext`` 是不可变值；为本次调用创建带私有 Runtime 句柄的副本，
-        让后台 Agent 及其子 Agent 加入同一事件树。句柄不会写入运行策略、
-        不会持久化，也不能改变任何授权或预算。
-        """
-        assert self.runner is not None
-        session = AgentRuntimeSession.create(f"worker-{context.run_id}", registry=self.runtime_registry)
-        runtime_context = replace(
-            context,
-            policy_snapshot={
-                **dict(context.policy_snapshot),
-                "_runtime_registry": self.runtime_registry,
-                "_runtime_session": session,
-            },
-        )
-        return session.run_turn(context.run_id, self.runner, runtime_context)
-
     def run_one(self, claim: ClaimedItem) -> WorkerOutcome:
         """Revalidate before execution; a queue entry never grants new authority."""
         task = self.store.get_task(claim.item.task_id)
@@ -103,10 +88,12 @@ class TaskWorker:
             self.leases.finish(claim, "failed")
             return WorkerOutcome("precondition_failed", type(exc).__name__)
         try:
+            runtime_controls = self._runtime_control_snapshot()
             updated, run = self.engine.start_run(StartRun(
                 task["id"], task["version"], self.worker_id,
                 plan_revision_id=str(task["active_plan_revision"]),
                 policy_snapshot={"mode": "collaborate", "unattended": True, "policy_id": claim.item.policy_id,
+                                 **runtime_controls,
                                  "budget": {"wall_seconds": 1800, "model_tokens": 100000, "cost_micros": 100000,
                                             "tool_calls": 20, "network_calls": 10, "repair_attempts": 3}},
             ))
@@ -129,7 +116,7 @@ class TaskWorker:
         try:
             if self.runner is None:
                 raise RuntimeError("WORKER_RUNTIME_UNCONFIGURED")
-            self._run_runner(context)
+            self.runner(context)
             if heartbeat_failed:
                 raise RuntimeError("LEASE_HEARTBEAT_FAILED")
             # The runner may have consumed a user Stop or moved the Run to

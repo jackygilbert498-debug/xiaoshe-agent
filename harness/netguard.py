@@ -312,19 +312,28 @@ def stop():
     _proxy_url = None
 
 
+def child_env_for_mode(mode: str) -> dict | None:
+    """为显式网络模式构造工具子进程环境，不修改模块全局配置。
+
+    仅 ``off``、``proxy`` 和 ``open`` 有效；其他输入一律按 ``off``
+    fail-closed。该入口可由并发运行控制调用，彼此不会串写模式。
+    """
+    if mode == "open":
+        return None
+    if mode == "proxy":
+        url = start()
+        return build_child_env(url or DEAD_PROXY)
+    return build_child_env(DEAD_PROXY)
+
+
 def session_child_env() -> dict | None:
-    """当前模式下**一次 agent 会话**的工具子进程环境（run_once 注入 ctx['_child_env']）。
+    """当前模块配置下**一次 agent 会话**的工具子进程环境（兼容入口）。
 
     - open → None（调用方不传 env=，继承现状，显式降级）；
     - proxy → 起过滤代理（会话内只起一次），env 指本地过滤口；start 失败 → 死地址（fail-closed）；
     - off/未知 → 死地址 env，不起 server（零出网安全默认）。
     """
-    if _TOOL_NET_MODE == "open":
-        return None
-    if _TOOL_NET_MODE == "proxy":
-        url = start()
-        return build_child_env(url or DEAD_PROXY)
-    return build_child_env(DEAD_PROXY)
+    return child_env_for_mode(_TOOL_NET_MODE)
 
 
 atexit.register(stop)

@@ -167,7 +167,7 @@ def install(task: dict, python: str | None = None, run_py: str | None = None,
     name = task["name"]
     if plat == "darwin":
         runner = runner or _default_runner_posix
-        logs_dir = logs_dir or str(config.STATE_DIR / "schedule" / "logs")
+        logs_dir = logs_dir or str(config.ROOT / ".state" / "schedule" / "logs")
         Path(logs_dir).mkdir(parents=True, exist_ok=True)
         pp = _plist_path(name)
         pp.parent.mkdir(parents=True, exist_ok=True)

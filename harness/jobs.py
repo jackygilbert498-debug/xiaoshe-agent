@@ -27,7 +27,7 @@ from . import _io, config, ui_bus
 
 _JOBS: dict = {}                       # 本会话在跑的 job：{jid: {proc, command, log_path}}
 _counter = itertools.count(1)
-JOBS_DIR = config.STATE_DIR / "jobs"
+JOBS_DIR = config.ROOT / ".state" / "jobs"
 _MAX_JOB_RECORDS = 200                 # 落盘记录保留上限（超了清最老的终态记录）
 _MAX_RUNNING = 32                      # 并发在跑上限（#42 硬背压）：满了拒起，别把资源耗尽
 _KILL_GRACE_S = 5                      # SIGTERM 后的宽限秒数，超过还没死就升级 SIGKILL

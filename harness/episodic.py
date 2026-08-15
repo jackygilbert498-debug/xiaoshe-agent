@@ -35,7 +35,7 @@ def _looks_injected(text: str) -> bool:
         return False
     return any(p.search(text or "") for p in _INJECT_HINTS)
 
-EPISODIC_FILE = config.STATE_DIR / "episodic.jsonl"
+EPISODIC_FILE = config.ROOT / ".state" / "episodic.jsonl"
 _MAX_EPISODES = 200
 _LOCK_TIMEOUT = 5
 _LESSON_MAX = 200   # 教训硬截断（比照 compaction 摘要护栏，防二阶注入 + 不无界增长）

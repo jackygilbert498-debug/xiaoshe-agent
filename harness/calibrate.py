@@ -21,7 +21,7 @@ from . import _io, config
 # 匹配真报错里的两个数字：`token limit: <窗口> (requested: <本次请求>)`，大小写无关、容忍空白。
 _OVERFLOW_RE = re.compile(r"token limit:\s*(\d+)\s*\(\s*requested:\s*(\d+)\s*\)", re.IGNORECASE)
 
-_WINDOW_FILE = config.STATE_DIR / "context_window.json"
+_WINDOW_FILE = config.ROOT / ".state" / "context_window.json"
 _MIN_WINDOW = config.WINDOW_MIN   # 合理下界：比这还小的窗口没法干活，判坏值（防把预算压成几 token 每轮空压死循环）
 _MAX_WINDOW = config.WINDOW_MAX   # 合理上界：防坏值/注入报天文数字骗过 75% 闸致每次必溢
 

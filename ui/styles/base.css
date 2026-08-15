@@ -67,7 +67,7 @@ a { color: var(--info); }
   color: var(--ink3); transition: all var(--fast) var(--ease); z-index: 10;
 }
 .collapse-btn:hover { background: var(--card-hover); color: var(--accent-deep); border-color: var(--accent); }
-.task-mobile-toggle { display: none; }
+.icbtn.task-mobile-toggle { display: none; }
 .collapse-btn svg { width: 12px; height: 12px; transition: transform var(--fast) var(--ease); }
 .side.collapsed .collapse-btn svg { transform: rotate(180deg); }
 .insp .collapse-btn { left: 8px; right: auto; }
@@ -76,7 +76,7 @@ a { color: var(--info); }
 .brand .bt { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
 .brand .bs { font-family: var(--mono); font-size: 8.5px; color: var(--faint); letter-spacing: .16em; }
 /* 类名避开 observatory.css 的裸 .mark（观测台编号框：absolute+边框，会砸到品牌位） */
-.brand .brand-mark { flex: none; width: 34px; height: 34px; color: var(--accent); transition: transform var(--med) var(--ease); }
+.brand .brand-mark { flex: none; width: 34px; height: 34px; color: var(--accent-deep); transition: transform var(--med) var(--ease); }
 .brand:hover .brand-mark { transform: rotate(-8deg); }
 .side-sec { padding: var(--sp-4) var(--sp-4) var(--sp-2); font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--faint); display: flex; align-items: center; }
 /* 批次 B：侧栏「＋ 新会话 / ＋ 项目」与搜索框 */
@@ -146,13 +146,21 @@ a { color: var(--info); }
   border: 1px solid transparent; position: relative;
 }
 .sess:hover { background: var(--card); transform: translateX(2px); box-shadow: var(--sh-xs); }
-.sess.on { background: var(--card); border-color: var(--line); box-shadow: var(--sh-sm); }
+.sess.on { background: var(--card); border-color: var(--line); box-shadow: none; }
 .sess.on::before {
   content: ""; position: absolute; left: 0; top: 20%; bottom: 20%;
   width: 3px; border-radius: 3px; background: var(--accent);
 }
 .sess .t1 { font-size: var(--fs-sm); font-weight: 600; display: flex; align-items: center; gap: 8px; }
-.sess .t1 .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.session-indicator { width: 9px; height: 9px; flex: none; position: relative; }
+.session-indicator.running {
+  border: 1.5px solid var(--accent); border-right-color: transparent;
+  border-radius: 50%; animation: session-indicator-spin .9s linear infinite;
+}
+.session-indicator.unread::after {
+  content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--accent);
+}
+@keyframes session-indicator-spin { to { transform: rotate(360deg); } }
 .sess .t2 { font-size: var(--fs-xs); color: var(--faint); margin-top: 3px; font-family: var(--mono); }
 .sess .tag { font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink3); margin-left: auto; }
 .side-foot { border-top: 1px solid var(--line); padding: var(--sp-3) var(--sp-4); font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); line-height: 2; }
@@ -168,14 +176,14 @@ a { color: var(--info); }
 
 /* ------------------------------ 中栏 · 对话区（影院主舞台） ------------------------------ */
 .chat { display: flex; flex-direction: column; min-height: 0; background: var(--surface); position: relative; }
-/* 定稿：影院头部——46px 大标题独占一行，眉线/状态收进第二行（DOM 顺序不动，flex-wrap 分行） */
+/* 影院头部：标题保持中等字重，让金属字标成为唯一视觉主角。 */
 .chat-head {
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; row-gap: 8px;
   padding: 34px 44px 18px; border-bottom: 1px solid var(--line);
   position: relative; z-index: 1; background: var(--surface);
 }
 .chat-head h1 {
-  flex-basis: 100%; font-size: 46px; font-weight: 750; letter-spacing: -.02em; line-height: 1.08;
+  flex-basis: 100%; font-size: clamp(32px, 3vw, 40px); font-weight: 500; letter-spacing: -.025em; line-height: 1.08;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chat-head .meta {
@@ -234,12 +242,15 @@ a { color: var(--info); }
 .stage-empty {
   position: relative; min-height: 60vh;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding-bottom: 40px; text-align: center;
+  padding-bottom: 40px; text-align: center; isolation: isolate;
 }
+.stage-empty > :not(.stage-ghost) { position: relative; z-index: 1; }
 .stage-ghost {
-  position: absolute; right: -24px; top: 50%; transform: translateY(-58%);
-  width: 320px; height: 320px; max-width: 44%;
-  opacity: var(--ghost-op); pointer-events: none;
+  position: absolute;
+  left: calc(50% + clamp(0px, calc(16% - 106px), 112px));
+  top: 50%; transform: translateY(-54%);
+  width: min(320px, 48%); height: auto; aspect-ratio: 1 / 1;
+  z-index: 0; opacity: var(--ghost-op); pointer-events: none;
 }
 .stage-badge {
   display: flex; align-items: center; gap: 9px; margin-bottom: 26px;
@@ -249,7 +260,7 @@ a { color: var(--info); }
 .stage-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 /* 巨型「小蛇」字标：蛇鳞流光渐变 9s 流转（渐变四站随主题切换，见 tokens.css） */
 .stage-word {
-  font-size: 150px; font-weight: 800; letter-spacing: -.03em; line-height: 1;
+  font-size: clamp(72px, 9.8vw, 102px); font-weight: 500; letter-spacing: -.07em; line-height: .94;
   background: linear-gradient(115deg,
     var(--sheen-1) 0%, var(--sheen-2) 28%, var(--sheen-3) 48%,
     var(--sheen-4) 62%, var(--sheen-2) 78%, var(--sheen-1) 100%);
@@ -287,8 +298,6 @@ a { color: var(--info); }
   opacity: var(--wm-op); pointer-events: none; user-select: none;
 }
 @media (max-width: 900px) {
-  .stage-ghost { width: 220px; height: 220px; }
-  .stage-word { font-size: 96px; }
   .stage-wm { font-size: 140px; }
 }
 
@@ -525,11 +534,24 @@ a { color: var(--info); }
     grid-template-columns: minmax(0, 1fr);
   }
   .side { display: none; }
-  .task-mobile-toggle { display: inline-flex; }
+  .icbtn.task-mobile-toggle { display: inline-flex; }
   .side.mobile-open {
     display: flex; position: fixed; z-index: calc(var(--z-modal) - 1);
     top: 58px; left: 12px; bottom: 38px; width: min(360px, calc(100vw - 24px));
     border: 1px solid var(--line2); border-radius: var(--r-lg);
     box-shadow: var(--shadow-pop); overflow: hidden;
   }
+}
+
+@media (max-width: 520px) {
+  .chat-head { padding: 24px 20px 14px; }
+  .chat-head .right { width: 100%; margin-left: 0; gap: 8px; }
+  .stream { padding: 24px 20px 18px; }
+  .composer { padding: 12px; }
+  .cbox { padding: 10px; gap: 8px; flex-wrap: wrap; }
+  .cbox textarea { min-width: 0; flex-basis: 100%; }
+  .cbox .cbtns { width: 100%; min-width: 0; gap: 6px; justify-content: flex-end; }
+  .hint { display: none; }
+  .statusbar { gap: 8px; padding-inline: 10px; }
+  .statusbar .r { display: none; }
 }

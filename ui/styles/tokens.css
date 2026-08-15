@@ -1,6 +1,6 @@
 /* ============================================================================
- * 小蛇 · 设计 token 三层（双主题定稿：云白薄荷流光 / 暗夜影院）
- * 视觉基线：仓库内的亮色与暗色主题 token。
+ * 小蛇 · 设计 token 三层（双主题定稿：亮白留白 / 墨玉银白）
+ * 视觉真源：/Users/zfy/Desktop/界面设计方向/
  *   fresh-L4-云白薄荷流光.html（亮 · 默认 :root，底色 #f9fcfa，薄荷 #2e8b6a 点缀）
  *   bplus.html / bplus-empty.html（暗 · [data-theme="ink-jade"]，近黑 #0a0a0a，
  *   奶油黄 #f3d67c 唯一强调色，发丝线 rgba(255,255,255,.08)）
@@ -10,33 +10,33 @@
  * ========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * 主题 1 · 云白薄荷流光（默认，:root）
- * 底 #f9fcfa · 白卡 · 薄荷绿 #2e8b6a 点缀 · 奶油药丸 CTA
+ * 主题 1 · 亮白留白（默认，:root）
+ * 大面积亮白与中性灰；玉色和香槟色只留给品牌标识。
  * ------------------------------------------------------------------------- */
 :root {
-  /* ---- 第一层：云白薄荷色板 ---- */
-  --p-bg: #eef4ef;            /* 侧栏/面板底（薄荷雾，最暗） */
-  --p-rail: #eef4ef;          /* inspector 底 */
-  --p-stage: #f9fcfa;         /* 对话区云白（最亮） */
+  /* ---- 第一层：亮白中性色板 ---- */
+  --p-bg: #fbfcfb;            /* 侧栏/面板底 */
+  --p-rail: #fbfcfb;          /* inspector 底 */
+  --p-stage: #ffffff;         /* 对话区亮白 */
   --p-card: #ffffff;          /* 卡面 */
-  --p-card-hover: #f2f8f4;    /* hover 底 / 次卡 */
-  --p-line: rgba(22, 50, 36, .09);    /* 发丝线 */
-  --p-line2: rgba(22, 50, 36, .16);
-  --p-line3: rgba(22, 50, 36, .24);
-  --p-ink: #1b2b21;
-  --p-ink2: #4f6355;
-  --p-ink3: #7f9284;
-  --p-faint: #b3c2b6;
-  --p-mint: #2e8b6a;          /* 薄荷绿（点缀强调） */
-  --p-mint-deep: #1f6b4f;
-  --p-mint-bg: rgba(46, 139, 106, .09);
-  --p-cream: #eec558;         /* 奶油药丸 CTA */
-  --p-cream-deep: #e0b23f;
-  --p-cream-ink: #241b04;
-  --p-blue: #3f6fb0;
-  --p-amber: #a96a1f;
-  --p-err: #a33327;
-  --p-mark: #c0452a;          /* 观测台 SoM 框暖红 */
+  --p-card-hover: #f3f4f3;    /* hover 底 / 次卡 */
+  --p-line: rgba(27, 29, 28, .08);    /* 发丝线 */
+  --p-line2: rgba(27, 29, 28, .14);
+  --p-line3: rgba(27, 29, 28, .22);
+  --p-ink: #1b1d1c;
+  --p-ink2: #555b57;
+  --p-ink3: #838a86;
+  --p-faint: #b4bab6;
+  --p-mint: #6f8779;          /* 低饱和玉灰，仅作细小交互提示 */
+  --p-mint-deep: #415e4f;
+  --p-mint-bg: rgba(79, 110, 92, .08);
+  --p-cream: #202321;         /* 主控件：石墨黑 */
+  --p-cream-deep: #151716;
+  --p-cream-ink: #ffffff;
+  --p-blue: #657384;
+  --p-amber: #927b5d;
+  --p-err: #925e58;
+  --p-mark: #9a625b;          /* 观测台 SoM 框暖红 */
 
   /* ---- 第二层：语义层 ---- */
   --bg: var(--p-bg);
@@ -57,7 +57,7 @@
   --cta: var(--p-cream);           /* 药丸 CTA：新会话/批准/发送/自主开关 */
   --cta-deep: var(--p-cream-deep);
   --cta-ink: var(--p-cream-ink);
-  --cta-glow: rgba(238, 197, 88, .45);
+  --cta-glow: rgba(32, 35, 33, .28);
   --ok: var(--p-mint);
   --info: var(--p-blue);
   --warn: var(--p-amber);
@@ -65,11 +65,11 @@
   --mark: var(--p-mark);
 
   /* ---- 蛇鳞流光（空态巨型字标 + 蛇形水印；亮主题深色系渐变） ---- */
-  --sheen-1: #173d2c;
-  --sheen-2: #2e8b6a;
-  --sheen-3: #5ec48f;
-  --sheen-4: #d9b96a;
-  --ghost-op: .10;          /* 蛇形渐变水印透明度（淡水印；布尔是真负空间，低透明度不影响方瞳清晰） */
+  --sheen-1: #23362d;
+  --sheen-2: #4f8069;
+  --sheen-3: #9cc2b1;
+  --sheen-4: #d7c27f;
+  --ghost-op: .075;         /* 几何蛇徽只做空间签名，不与金属字标争抢 */
   --wm-op: .20;               /* 消息流右下淡水印透明度 */
 
   /* ---- 字体栈 ---- */
@@ -124,32 +124,32 @@
 }
 
 /* ---------------------------------------------------------------------------
- * 主题 2 · 暗夜影院（[data-theme="ink-jade"]）
- * 近黑 #0a0a0a · 奶油黄 #f3d67c 唯一强调色 · 发丝线 rgba(255,255,255,.08)
+ * 主题 2 · 墨玉银白（[data-theme="ink-jade"]）
+ * 墨玉黑而非纯黑；主控件用柔和银白，品牌保留玉色与香槟色。
  * ------------------------------------------------------------------------- */
 [data-theme="ink-jade"] {
-  /* ---- 第一层：暗夜影院色板 ---- */
-  --p-bg: #0e0e0e;            /* 侧栏/面板底（比舞台亮半度） */
-  --p-rail: #0e0e0e;
-  --p-stage: #0a0a0a;         /* 主舞台近黑 */
-  --p-card: #151515;          /* 媒体卡 */
-  --p-card-hover: #1b1b1b;
+  /* ---- 第一层：墨玉银白色板 ---- */
+  --p-bg: #151a17;            /* 侧栏/面板底（比舞台亮半度） */
+  --p-rail: #151a17;
+  --p-stage: #0f1311;         /* 主舞台墨玉黑 */
+  --p-card: #191d1b;          /* 媒体卡 */
+  --p-card-hover: #202522;
   --p-line: rgba(255, 255, 255, .08);   /* 发丝线 */
   --p-line2: rgba(255, 255, 255, .14);
   --p-line3: rgba(255, 255, 255, .20);
-  --p-ink: #f4f1e8;           /* 暖白标题 */
-  --p-ink2: #a8a49a;
-  --p-ink3: #6b675f;
-  --p-faint: #4a4741;
-  --p-cream: #f3d67c;         /* 奶油黄 · 全界面唯一强调色 */
-  --p-cream-deep: #e8c765;
-  --p-cream-ink: #171204;
-  --p-cream-bg: rgba(243, 214, 124, .10);
-  --p-jade-br: #7fdcae;       /* 状态绿（蛇鳞同源，非强调） */
-  --p-blue: #6a9bff;
-  --p-amber: #e8b35c;
-  --p-err: #e0685a;
-  --p-mark: #e0685a;
+  --p-ink: #eef0ee;
+  --p-ink2: #acb2ae;
+  --p-ink3: #747d78;
+  --p-faint: #4f5752;
+  --p-cream: #d7dad7;         /* 主控件：柔和银白 */
+  --p-cream-deep: #eef0ee;
+  --p-cream-ink: #181b19;
+  --p-cream-bg: rgba(215, 218, 215, .09);
+  --p-jade-br: #7e9f8e;       /* 低饱和状态玉色 */
+  --p-blue: #7f8fa3;
+  --p-amber: #a99171;
+  --p-err: #a87670;
+  --p-mark: #a87670;
 
   /* ---- 第二层：语义层（与亮主题同名不同值） ---- */
   --bg: var(--p-bg);
@@ -170,7 +170,7 @@
   --cta: var(--p-cream);
   --cta-deep: var(--p-cream-deep);
   --cta-ink: var(--p-cream-ink);
-  --cta-glow: rgba(243, 214, 124, .35);
+  --cta-glow: rgba(215, 218, 215, .20);
   --ok: var(--p-jade-br);
   --info: var(--p-blue);
   --warn: var(--p-amber);
@@ -178,11 +178,11 @@
   --mark: var(--p-mark);
 
   /* ---- 蛇鳞流光（暗主题浅色系渐变：#e8f5ec→#7fdcae→#f0d68a） ---- */
-  --sheen-1: #e8f5ec;
-  --sheen-2: #7fdcae;
-  --sheen-3: #3fae7c;
-  --sheen-4: #f0d68a;
-  --ghost-op: .06;          /* 双主题关键 stop 合成对比目标 1.05–1.15:1 */
+  --sheen-1: #f0f4f1;
+  --sheen-2: #a7d6bf;
+  --sheen-3: #5fa17f;
+  --sheen-4: #dbc788;
+  --ghost-op: .055;         /* 暗色下进一步收住水印对比 */
   --wm-op: .25;
 
   /* 深底阴影换深色 */

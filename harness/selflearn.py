@@ -42,7 +42,7 @@ _PAIR_EXCERPT_MAX = 1200  # 单段配对摘录截断
 _PAIR_MSG_SPAN = 6        # 单段配对最多含几条消息（头 3 + 尾 3，坑与爬出都保）
 
 # ── 增量2 攒批触发（攒批缓冲 .state/selflearn_batch.json，gitignored）──
-BATCH_FILE = config.STATE_DIR / "selflearn_batch.json"
+BATCH_FILE = config.ROOT / ".state" / "selflearn_batch.json"
 _BATCH_FLOOR = 20         # 摘要低于此长度连攒都不攒（纯寒暄没料）
 _BATCH_MIN_ITEMS = 3      # 攒够 N 条烧一次
 _BATCH_MIN_CHARS = 1500   # 或攒够 M 字符烧一次
@@ -62,7 +62,7 @@ _PROMOTE_NAME_MAX = 30
 # ── D9 统一后台 LM 预算闸门：每日/每会话上限（常量即校准口，按实测 token 花费回调）──
 # 覆盖所有后台 LM 调用（selflearn 复盘、episodic 复盘经 lazy import 同走此门）；省钱闸（上面两条）先于预算闸。
 # 定位：这是**省钱机制不是安全边界**——账本坏档/锁超时一律 fail-open 放行，绝不因闸门故障卡死 SessionEnd/主流程。
-BUDGET_FILE = config.STATE_DIR / "bg_lm_budget.json"
+BUDGET_FILE = config.ROOT / ".state" / "bg_lm_budget.json"
 _BG_DAILY_LM_BUDGET = 20        # 每日后台 LM 调用总上限（跨会话累计）
 _BG_SESSION_LM_BUDGET = 3       # 每会话（episodic 侧按 kind 桶）后台 LM 调用上限
 _BG_MAX_SESSIONS_TRACKED = 200  # 账本 sessions 表上限（防无限会话 id 撑爆账本；满则修剪最旧一半）

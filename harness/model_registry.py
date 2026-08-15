@@ -320,13 +320,16 @@ class ModelRegistry:
             raise
 
     def _discover_builtins(self) -> None:
-        selected_provider = self._value("MODEL_PROVIDER", "kimi")[0].strip().lower()
+        selected_value, selected_source = self._value("MODEL_PROVIDER", "kimi")
+        selected_provider = selected_value.strip().lower()
         extra_models = self._value("XS_MODELS", "")[0] if selected_provider in {"kimi", "deepseek"} else ""
         for definition in _BUILTINS:
             provider_id = definition["id"]
             prefix = definition["prefix"]
             api_key, source = self._credential(provider_id, f"{prefix}_API_KEY")
-            if not api_key:
+            selected_builtin = selected_provider == prefix.lower()
+            explicit_selected_builtin = selected_builtin and selected_source != "builtin"
+            if not api_key and not explicit_selected_builtin:
                 continue
             base_url = self._value(f"{prefix}_BASE_URL", definition["base_url"])[0]
             primary_model = self._value(f"{prefix}_MODEL", definition["model"])[0]
@@ -345,8 +348,12 @@ class ModelRegistry:
             self._credential_provenance[provider.id] = source
             self._proxies[provider.id] = (proxy, f"{prefix}_PROXY")
             models = [primary_model]
-            if selected_provider == prefix.lower():
-                models.extend(part.strip() for part in extra_models.split(","))
+            if selected_builtin:
+                foreign_prefix = "deepseek-" if prefix == "KIMI" else "kimi-"
+                models.extend(
+                    part.strip() for part in extra_models.split(",")
+                    if not part.strip().lower().startswith(foreign_prefix)
+                )
             for upstream_model in _unique_nonempty(models):
                 model = ModelProfile(
                     id=_builtin_model_id(provider.id, upstream_model),

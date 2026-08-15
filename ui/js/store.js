@@ -111,8 +111,6 @@ function route(env) {
       break;
     case "system.alert":
       break;                          // 纯展示，渲染层订阅
-    case "runtime.summary":
-      break;                          // 纯展示，系统面板监听该脱敏快照
   }
 }
 

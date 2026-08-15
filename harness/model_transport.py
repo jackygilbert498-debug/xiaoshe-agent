@@ -20,10 +20,20 @@ _BEARER = re.compile(r"(?i)(Bearer\s+)\S+")
 _API_HEADER = re.compile(r"(?i)(x-api-key\s*[:=]\s*)[^\s\"']+")
 _QUERY_KEY = re.compile(r"(?i)([?&](?:key|api_key)=)[^&\s]+")
 _HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HTTP_STATUS_MARKER = "__XIAOSHE_HTTP_STATUS__:"
+_HTTP_STATUS_TRAILER = re.compile(
+    rf"(?:\r\n|\n){re.escape(_HTTP_STATUS_MARKER)}"
+    rf"(?P<status>[1-5][0-9]{{2}})(?:\r\n|\n)\Z")
 
 
 class ModelTransportError(RuntimeError):
     """A curl request failed without including credentials in the message."""
+
+    def __init__(self, message: str, *, code: str | None = None,
+                 status: int | None = None):
+        self.code = code
+        self.status = status
+        super().__init__(message)
 
 
 @dataclass(frozen=True, repr=False)
@@ -106,6 +116,7 @@ def build_curl_config(target: HttpTarget, path: str, body_path: str,
         f'data-binary = "@{curl_transport.escape_cfg(body_path)}"',
         "silent",
         "show-error",
+        f'write-out = "%{{stderr}}\\n{_HTTP_STATUS_MARKER}%{{http_code}}\\n"',
     ]
     if streaming:
         lines += ["no-buffer", "speed-limit = 1", f"speed-time = {timeout}"]
@@ -126,15 +137,67 @@ def _scrub(value: str) -> str:
     return _QUERY_KEY.sub(r"\1***", value)
 
 
-def _load_response(output: str) -> dict:
+def _http_status(value) -> int | None:
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    if (not isinstance(value, int) or isinstance(value, bool)
+            or not 100 <= value <= 599):
+        return None
+    return value
+
+
+def _extract_http_status(stderr: str) -> tuple[int | None, str]:
+    """Remove curl's private write-out line and return one valid final status."""
+    raw = stderr or ""
+    trailer = _HTTP_STATUS_TRAILER.search(raw)
+    if trailer is None:
+        return None, raw
+    return _http_status(trailer.group("status")), raw[:trailer.start()]
+
+
+def _provider_error(response: dict, http_status=None) -> ModelTransportError:
+    """Reduce an upstream error envelope to stable, non-sensitive metadata."""
+    error = response.get("error", response)
+    if not isinstance(error, dict):
+        error = {}
+    status = _http_status(http_status)
+    if status is None:
+        status = _http_status(error.get("status", response.get("status")))
+    text = " ".join(
+        str(error.get(key, "")) for key in ("type", "code", "status", "message")
+    ).lower()
+    if status in (401, 403) or any(
+            token in text for token in ("auth", "api_key", "invalid key", "permission")):
+        code = "authentication_failed"
+    elif status == 429 or any(
+            token in text for token in
+            ("quota", "rate_limit", "rate limit", "resource_exhausted",
+             "insufficient_balance", "insufficient balance")):
+        code = "quota_limited"
+    elif status == 404 or "model_not_found" in text or "model not found" in text:
+        code = "model_not_found"
+    elif status is not None and 400 <= status < 500:
+        code = "protocol_error"
+    else:
+        code = "upstream_error"
+    return ModelTransportError(
+        "model provider returned an error", code=code, status=status)
+
+
+def _load_response(output: str, http_status=None) -> dict:
+    status = _http_status(http_status)
     try:
         response = json.loads((output or "").strip())
     except json.JSONDecodeError as exc:
+        if status is not None and not 200 <= status < 300:
+            raise _provider_error({}, status) from None
         raise ModelTransportError("model response was not JSON") from exc
     if not isinstance(response, dict):
+        if status is not None and not 200 <= status < 300:
+            raise _provider_error({}, status)
         raise ModelTransportError("model response was not an object")
-    if response.get("error"):
-        raise ModelTransportError("model provider returned an error")
+    if response.get("error") or (status is not None and not 200 <= status < 300):
+        raise _provider_error(response, status)
     return response
 
 
@@ -170,9 +233,11 @@ def post_json(target: HttpTarget, path: str, payload: dict,
             os.unlink(body.name)
         except OSError:
             pass
+    status, stderr = _extract_http_status(proc.stderr)
     if proc.returncode != 0:
-        raise ModelTransportError(f"curl request failed (exit {proc.returncode}): {_scrub(proc.stderr)[:300]}")
-    return _load_response(proc.stdout)
+        raise ModelTransportError(
+            f"curl request failed (exit {proc.returncode}): {_scrub(stderr)[:300]}")
+    return _load_response(proc.stdout, status)
 
 
 def stream_json(target: HttpTarget, path: str, payload: dict,
@@ -204,6 +269,7 @@ def stream_json(target: HttpTarget, path: str, payload: dict,
                     proc.stdout, on_delta=on_line, default_model=payload.get("model", ""))
                 rc = proc.wait(timeout=hard_timeout)
                 stderr = proc.stderr.read()
+                status, stderr = _extract_http_status(stderr)
             finally:
                 if proc is not None:
                     try:
@@ -212,8 +278,14 @@ def stream_json(target: HttpTarget, path: str, payload: dict,
                         proc.wait(timeout=5)
                     except Exception:
                         pass
-            if raw.get("error"):
-                raise ModelTransportError("model provider returned an error")
+                    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                        try:
+                            if pipe is not None:
+                                pipe.close()
+                        except OSError:
+                            pass
+            if raw.get("error") or (status is not None and not 200 <= status < 300):
+                raise _provider_error(raw, status)
             message = raw["choices"][0]["message"]
             has_output = bool(
                 message.get("content")
@@ -325,6 +397,7 @@ def stream_anthropic_events(target: HttpTarget, path: str, payload: dict,
                 events = _anthropic_sse_events(proc.stdout, on_event=on_event)
                 rc = proc.wait(timeout=hard_timeout)
                 stderr = proc.stderr.read()
+                status, stderr = _extract_http_status(stderr)
             finally:
                 if proc is not None:
                     try:
@@ -333,8 +406,19 @@ def stream_anthropic_events(target: HttpTarget, path: str, payload: dict,
                         proc.wait(timeout=5)
                     except Exception:
                         pass
-            if any(event.get("type") == "error" or event.get("error") for event in events):
-                raise ModelTransportError("model provider returned an error")
+                    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                        try:
+                            if pipe is not None:
+                                pipe.close()
+                        except OSError:
+                            pass
+            provider_error = next((
+                event for event in events
+                if event.get("type") == "error" or event.get("error")
+            ), None)
+            if (provider_error is not None
+                    or (status is not None and not 200 <= status < 300)):
+                raise _provider_error(provider_error or {}, status)
             has_output = _anthropic_has_output(events)
             if not has_output and rc in _STREAM_RETRYABLE_EXIT and attempts < retry:
                 attempts += 1

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import _io, config, session
 
-PROJECTS_FILE = config.STATE_DIR / "projects.json"
+PROJECTS_FILE = config.ROOT / ".state" / "projects.json"
 
 PID_RE = re.compile(r"^proj-[0-9a-f]{8}$")
 SID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")     # 与 ui_server._SID_RE 同口径（session.py 直拼文件名）

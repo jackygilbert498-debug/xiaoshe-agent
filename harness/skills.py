@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import _io, config, episodic
 
-SKILLS_DIR = config.STATE_DIR / "skills"
+SKILLS_DIR = config.ROOT / ".state" / "skills"
 _NAME_MAX = 60
 _DESC_MAX = 200
 _WHEN_MAX = 200

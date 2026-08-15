@@ -11,6 +11,7 @@ import { openWorkspaceRecovery } from "./workspace-recovery-view.js";
 import { backgroundSummary } from "./background-view.js";
 import { openProjectMemory } from "./memory-view.js";
 import { openPrivacy } from "./privacy-view.js";
+import { ToolAvailabilityCache, openToolProposal } from "./tool-proposal-view.js";
 
 const taskStore = new TaskStore();
 const TASK_LABELS = ["草稿", "计划中", "待确认计划", "准备执行", "执行中", "等你", "待审查", "验证中", "已完成", "失败", "已取消", "已归档"];
@@ -23,6 +24,12 @@ let notify = (text) => console.warn("[tasking]", text);
 let state = "idle";
 let errorText = "";
 let supported = false;
+const toolAvailability = new ToolAvailabilityCache({
+  onRetry: (taskId, version) => {
+    const task = taskStore.tasks.get(taskId);
+    if (task?.version === version && taskStore.selectedId === taskId) render();
+  },
+});
 
 function label(status) { return GROUPS.find(([key]) => key === status)?.[1] || status || "未知"; }
 function taskRow(task) {
@@ -34,9 +41,11 @@ function taskRow(task) {
   if (selected) row.classList.add("on");
   return row;
 }
-function detail(task) {
+export function renderTaskDetail(task, availability = null) {
   if (!task) return el("div.task-detail-empty", { text: "选择一个任务查看目标、验收标准和下一步。" });
   const queueItem = taskStore.queueItem(task.id);
+  const canProposeTool = task.status === "Succeeded" && Boolean(availability?.changesetId)
+    && Array.isArray(availability?.candidates) && availability.candidates.length > 0;
   const acceptance = Array.isArray(task.acceptance) && task.acceptance.length
     ? task.acceptance.map((item) => el("li", { text: item }))
     : [el("li", { text: "尚未确认验收标准；确认后才能开始执行。" })];
@@ -59,8 +68,18 @@ function detail(task) {
       queueItem?.status === "pending" ? el("button.mini-btn", { type: "button", text: "暂停队列", dataset: { action: "pause-queue", taskId: task.id, queueId: queueItem.id } }) : null,
       queueItem?.status === "paused" ? el("button.mini-btn", { type: "button", text: "恢复队列", dataset: { action: "resume-queue", taskId: task.id, queueId: queueItem.id } }) : null,
       ["pending", "paused"].includes(queueItem?.status) ? el("button.mini-btn err", { type: "button", text: "取消队列项", dataset: { action: "cancel-queue", taskId: task.id, queueId: queueItem.id } }) : null,
+      canProposeTool ? el("button.mini-btn.tool-proposal-action", { type: "button", text: "保存为工具", dataset: { action: "save-tool", taskId: task.id } }) : null,
       !["Succeeded", "Archived", "Cancelled"].includes(task.status) ? el("button.mini-btn danger", { type: "button", text: "取消任务", dataset: { action: "cancel-task", taskId: task.id } }) : null),
     el("span.sr-only", { "data-testid": "task-state", text: task.status }));
+}
+function proposalFor(task) {
+  return toolAvailability.get(task);
+}
+async function ensureToolAvailability(task) {
+  const pending = toolAvailability.ensure(task);
+  if (!pending) return;
+  const changed = await pending;
+  if (changed && taskStore.selectedId === task?.id) render();
 }
 function projectSwitcher() {
   const select = el("select.task-project-switcher", { "aria-label": "当前任务项目", "data-testid": "project-switcher" });
@@ -92,11 +111,12 @@ function render() {
     : GROUPS;
   for (const [status, title] of groups) {
     const grouped = tasks.filter((item) => item.status === status);
-    if (!grouped.length) continue;
     list.append(el("h3.task-group-title", { text: `${title} · ${grouped.length}` }), ...grouped.map(taskRow));
   }
   if (!tasks.length) list.append(el("div.tasking-empty", { text: "还没有任务。创建一个目标，即可从草稿开始推进。" }));
-  host.replaceChildren(taskStore.projects.size ? projectSwitcher() : null, list, detail(taskStore.selected()));
+  const selected = taskStore.selected();
+  host.replaceChildren(taskStore.projects.size ? projectSwitcher() : null, list, renderTaskDetail(selected, proposalFor(selected)));
+  void ensureToolAvailability(selected);
 }
 
 async function refresh() {
@@ -108,6 +128,7 @@ async function refresh() {
     // Inbox 的队列快照和任务快照必须同批进入本地事实缓存；否则刷新后
     // queueItems 会被清空，已排队任务的暂停/恢复/取消控件将不可见。
     taskStore.hydrate({ ...snapshot, projects: projectData.projects });
+    toolAvailability.clear();
     if (!taskStore.selectedId && taskStore.list()[0]) taskStore.selectTask(taskStore.list()[0].id);
     state = "data"; errorText = "";
   } catch (error) {
@@ -178,6 +199,38 @@ async function openImportCurrentSession(trigger) {
 
 function splitLines(value) { return String(value || "").split("\n").map((item) => item.trim()).filter(Boolean); }
 function currentTask(id) { return taskStore.tasks.get(id) || null; }
+export async function revalidateAndOpenToolProposal(task, trigger, {
+  cache = toolAvailability,
+  currentTaskFn = currentTask,
+  selectedTaskIdFn = () => taskStore.selectedId,
+  openFn = openToolProposal,
+  notifyFn = (message) => notify(message),
+  renderFn = render,
+} = {}) {
+  const expected = cache.peek(task);
+  if (!expected) {
+    cache.invalidate(task?.id);
+    renderFn();
+    return false;
+  }
+  trigger.disabled = true;
+  const verified = await cache.revalidate(task, expected);
+  const freshTask = currentTaskFn(task.id);
+  const stillCurrent = freshTask?.id === task.id
+    && freshTask.version === task.version
+    && freshTask.status === "Succeeded"
+    && selectedTaskIdFn() === task.id;
+  trigger.disabled = false;
+  if (!stillCurrent) return false;
+  if (!verified) {
+    cache.invalidate(task.id);
+    renderFn();
+    notifyFn("工作区或工具候选已变化，请重新完成任务后再试。");
+    return false;
+  }
+  openFn(freshTask, trigger, verified);
+  return true;
+}
 function saveTask(task) { if (task) { taskStore.setTask(task); taskStore.selectTask(task.id); state = "data"; render(); } }
 function saveQueueItem(item) { if (item?.task_id) { taskStore.queueItems.set(item.task_id, item); state = "data"; render(); } }
 
@@ -290,6 +343,9 @@ export function mount({ toast } = {}) {
     if (button.dataset.action === "review") openReviewCenter(task, button, { onTask: saveTask, notify });
     if (button.dataset.action === "verify") openVerification(task, button, { onTask: saveTask, notify });
     if (button.dataset.action === "question") openQuestion(task, button);
+    if (button.dataset.action === "save-tool") {
+      void revalidateAndOpenToolProposal(task, button);
+    }
     if (button.dataset.action === "steer") openSteer(task, button.dataset.runId, button);
     if (button.dataset.action === "stop") requestStop(task, button.dataset.runId, button);
     if (button.dataset.action === "cancel-task") cancelTask(task, button);
@@ -299,7 +355,8 @@ export function mount({ toast } = {}) {
   });
   appStore.on("conn", (ok) => { if (ok && supported) refresh(); });
   appStore.on("*", (type, payload) => {
-    if (!/^(task|run|workspace|checkpoint|recovery)\./.test(type) || !payload?.task_id) return;
+    if (!/^(task|run|workspace|changeset|checkpoint|recovery)\./.test(type) || !payload?.task_id) return;
+    toolAvailability.invalidate(payload.task_id);
     const result = taskStore.applyEvent(payload);
     if (result.resync) refresh(); else if (!result.ignored) api.task(payload.task_id, result.after || 0).then((data) => {
       taskStore.setTask(data.task); render();

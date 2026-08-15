@@ -246,7 +246,9 @@ def _post_stream(payload: dict, timeout: int, on_delta, retry: int = 2) -> dict:
                 except OSError:
                     pass  # curl 已提前退出（罕见竞态）；下面按 rc/内容/error 定性
                 try:
-                    raw = reassemble_stream(proc.stdout, on_delta=on_delta)
+                    raw = reassemble_stream(
+                        proc.stdout, on_delta=on_delta,
+                        default_model=payload.get("model", ""))
                 except KeyboardInterrupt:
                     proc.terminate()
                     raise  # 交给 repl 收尾（打印"已中断"），不在这层吞
@@ -321,7 +323,7 @@ def chat(messages: list[dict], tools: list | None = None, timeout: int = 90,
     elif cache_key:
         payload["prompt_cache_key"] = cache_key  # P2c：稳定前缀命中缓存（Kimi Code 官方字段，实测图文都进缓存）
     raw = _post_stream(payload, timeout, on_delta, retry) if on_delta is not None else _post(payload, timeout, retry)
-    return parse_response(raw)
+    return parse_response(raw, default_model=payload["model"])
 
 
 def _merge_tool_call_delta(acc: list, delta_tcs: list) -> None:

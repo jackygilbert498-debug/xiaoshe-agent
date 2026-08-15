@@ -43,7 +43,7 @@ VISION_LIVE_MAX = 2  # 单发同时驻留的临时图上限（防一次塞多图
 _TEXT_PAGE = 6000    # 长文本溢出后每页字符数（recall 翻页粒度）
 
 # 一会话一目录，本机私有（.state 已 gitignore）；index.jsonl 是回捞权威、随 history 独立存活。
-VISION_DIR = config.STATE_DIR / "vision"
+VISION_DIR = config.ROOT / ".state" / "vision"
 
 
 def image_tokens(w: int, h: int) -> int:

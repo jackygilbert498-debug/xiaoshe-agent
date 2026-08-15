@@ -22,6 +22,7 @@ import hashlib
 import itertools
 import json
 import os
+import platform
 import queue
 import re
 import secrets
@@ -29,7 +30,7 @@ import socket
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qs
@@ -43,9 +44,7 @@ from .kimi_client import KimiError
 from .kimi_client import chat as kimi_chat
 from .model_client import ModelClient
 from .model_registry import ModelRegistry, ModelRegistryError
-from .runtime_ledger import RequestLedger
-from .runtime_flags import E4_MODEL_ROUTING, RuntimeFeatureSnapshot, runtime_feature_snapshot
-from .runtime_session import AgentRuntimeSession, RuntimeSessionRegistry
+from .runtime_controls import RuntimeControlError, RuntimeControlStore
 
 # ---------------------------------------------------------------- 常量
 
@@ -79,6 +78,38 @@ _CSP = ("default-src 'self'; img-src 'self' data: blob:; script-src 'self'; "
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _runtime_controls_response(state: dict) -> dict:
+    """Add truthful, side-effect-free execution capability facts to persisted choices."""
+    sandbox_enabled = state["sandbox_enabled"]
+    selected_network = state["network_mode"]
+    if not sandbox_enabled:
+        execution = {
+            "mode": "host", "isolated": False, "backend": "host",
+            "availability": "available", "verification": "not_required",
+        }
+    else:
+        system = platform.system()
+        candidate = {"Windows": "appcontainer", "Darwin": "seatbelt"}.get(system)
+        if candidate is None:
+            execution = {
+                "mode": "sandbox_unavailable", "isolated": False, "backend": "unsupported",
+                "availability": "unsupported", "verification": "not_applicable",
+            }
+        else:
+            # Platform support is only a candidate. The launcher re-verifies the
+            # actual isolation boundary for every execution and fails closed.
+            execution = {
+                "mode": "sandbox_planned", "isolated": None, "backend": candidate,
+                "availability": "candidate", "verification": "at_execution",
+            }
+    network = {
+        "selected_mode": selected_network,
+        "host_tools": {"mode": selected_network, "verification": "at_process_start"},
+        "sandbox_scripts": {"mode": "off", "verification": "at_execution"},
+    }
+    return {**state, "effective": {"execution": execution, "network": network}}
 
 
 def _etag_opaque(tag: str) -> str | None:
@@ -405,13 +436,8 @@ class UISession:
         self.history = history
         self.log_file = Path(log_file)
         self.state_dir = Path(state_dir)
-        # Runtime 事件树只做本会话内的可观测边界；默认不落盘、不替代聊天档案。
-        self.runtime_registry = RuntimeSessionRegistry()
-        self.runtime_session = AgentRuntimeSession.create(f"ui-{sid}", registry=self.runtime_registry)
-        ctx["_runtime_registry"] = self.runtime_registry
-        ctx["_runtime_session"] = self.runtime_session
-        self._runtime_turn_seq = itertools.count(1)
-        self._active_runtime_run_id = None
+        self.runtime_controls = RuntimeControlStore(self.state_dir / "runtime-controls.json")
+        self.ctx["_runtime_control_store"] = self.runtime_controls
         self.model_registry = model_registry or ModelRegistry(self.state_dir)
         self.model_client = model_client or ModelClient(self.model_registry)
         self.tasking_mode = config.tasking_mode()
@@ -431,7 +457,8 @@ class UISession:
                 task_engine = TaskEngine(task_store)
                 self.task_api = TaskAPI(task_store, task_engine, workspace_root=config.ROOT,
                                         event_sink=self._emit_task_event,
-                                        session_importer=SessionImporter(task_store, task_engine, self.state_dir / "sessions"))
+                                        session_importer=SessionImporter(task_store, task_engine, self.state_dir / "sessions"),
+                                        user_tools_base=self.state_dir / "user_tools")
                 self.tasking_diagnostic["store"] = "ready"
             except Exception as exc:
                 # 新账本不可用时保留旧会话服务；不删除、不重建、更不把底层路径/异常正文暴露给 UI。
@@ -440,7 +467,6 @@ class UISession:
         elif self.tasking_mode == "shadow":
             self.tasking_diagnostic["store"] = "shadow_not_opened"
         self._reset_model_selection()
-        self._registry_model_fn = model_fn is None
         if model_fn is None:
             # 默认模型句柄在每次 agent 调用前读取会话 profile ID。ModelClient 会把它一次性
             # 解析为不可变请求目标，切换只影响下一次请求，绝不改进程全局配置。
@@ -458,15 +484,6 @@ class UISession:
         self._shutdown = threading.Event()
         # agent 事件 sink 由并行施工提供；缺失时桥接层自补 message.append/state.patch（容错降级）
         self._fallback_events = getattr(agent, "set_event_sink", None) is None
-
-    def _model_fn_for_runtime(self, snapshot: RuntimeFeatureSnapshot):
-        """Freeze the selected registry route for E4-on; other modes are reversible."""
-        if snapshot.enabled(E4_MODEL_ROUTING) and self._registry_model_fn:
-            frozen = self.model_client.freeze(self.current_model_id())
-            self.ctx["_runtime_model_routing"] = {"mode": "on", "model_id": frozen.model_id}
-            return frozen.chat
-        self.ctx["_runtime_model_routing"] = {"mode": snapshot.mode(E4_MODEL_ROUTING)}
-        return self.model_fn
 
     def bind_tasking_project(self, project_id: str | None, *, quiet: bool = False) -> bool:
         """把当前会话显式绑定到 Tasking Project；没有有效项目时绝不注入项目记忆。"""
@@ -494,19 +511,11 @@ class UISession:
         from .run_control import RunControl
         from .task_model import AskQuestion
         task = self.task_api.store.get_task(run_context.task_id)
+        frozen_controls = {key: run_context.policy_snapshot.get(key)
+                           for key in ("sandbox_enabled", "network_mode", "heartbeat_enabled")}
         runtime_ctx = {"todos": [], "memory_file": memory.MEMORY_FILE,
                        "_run_control": RunControl(self.task_api.store), "_task_engine": self.task_api.engine,
-                       "_background_task": True}
-        # TaskWorker supplies these ephemeral handles on the immutable RunContext
-        # copy it gives to this runner.  They only preserve the runtime event
-        # tree for nested subagents; they do not enter stored policy or grants.
-        runtime_policy = run_context.policy_snapshot
-        runtime_registry = runtime_policy.get("_runtime_registry")
-        runtime_session = runtime_policy.get("_runtime_session")
-        if isinstance(runtime_registry, RuntimeSessionRegistry):
-            runtime_ctx["_runtime_registry"] = runtime_registry
-        if isinstance(runtime_session, AgentRuntimeSession):
-            runtime_ctx["_runtime_session"] = runtime_session
+                       "_background_task": True, "_runtime_control_snapshot": frozen_controls}
         # Project Memory is scoped to this Task's Project and only appended when
         # actually selected.  The receipt is the durable source of truth for UI
         # claims that a memory affected this Run.
@@ -541,7 +550,8 @@ class UISession:
         from .task_worker import TaskWorker
         self.task_worker = TaskWorker(self.task_api.store, RunLeaseService(self.task_api.store), self.task_api.engine,
                                       worker_id=f"serve-{os.getpid()}-{self.sid}", runner=self._run_background_task,
-                                      event_sink=lambda type_, payload: self._emit_task_event({"type": type_, **payload}))
+                                      event_sink=lambda type_, payload: self._emit_task_event({"type": type_, **payload}),
+                                      runtime_controls=self.runtime_controls)
         self._task_worker_thread = threading.Thread(target=self.task_worker.serve,
                                                     args=(self._task_worker_stop,), name="xiaoshe-task-worker", daemon=True)
         self._task_worker_thread.start()
@@ -599,34 +609,6 @@ class UISession:
                     "pending_approvals": ui_bus.pending_approvals(),
                     "negotiated": {"v": 1}}
 
-    def runtime_observability(self) -> dict:
-        """给本地 UI 的只读 Runtime 摘要；不导出对话、工具参数或 provider 配置。"""
-        snapshot = self.runtime_session.snapshot()
-        last = snapshot.get("last_event")
-        ledger = self.ctx.get("_runtime_request_ledger")
-        shadow = self.ctx.get("_runtime_read_shadow")
-        feature_snapshot = self.ctx.get("_runtime_features")
-        if not isinstance(feature_snapshot, RuntimeFeatureSnapshot):
-            feature_snapshot = runtime_feature_snapshot()
-        read_shadow = None
-        if isinstance(shadow, dict):
-            # ``seen`` 是会话内部关联用的 hash 集合，UI 只拿到聚合计数。
-            keys = ("eligible_calls", "unique_keys", "repeated_calls", "failed_calls")
-            if all(type(shadow.get(key, 0)) is int and shadow.get(key, 0) >= 0 for key in keys):
-                read_shadow = {key: shadow.get(key, 0) for key in keys}
-        return {
-            "runtime": {
-                "cursor": snapshot["cursor"],
-                "event_count": len(snapshot["events"]),
-                "stopped": snapshot["stopped"],
-                "last_event_kind": last.get("kind") if isinstance(last, dict) else None,
-            },
-            # 没有模型请求不是错误：新会话、纯 UI 操作和旧存档都可能如此。
-            "request_ledger": ledger.audit_summary() if isinstance(ledger, RequestLedger) else None,
-            "read_shadow": read_shadow,
-            "runtime_features": feature_snapshot.to_record(),
-        }
-
     # ---------------- 上行：send（单飞 runner 线程）
 
     def handle_send(self, text: str, client_msg_id: str | None = None) -> bool:
@@ -655,21 +637,9 @@ class UISession:
             if self._fallback_events:
                 with ui_bus.STATE_LOCK:
                     pre_ids = set(self.msg_ids.sync(self.history))
-            turn_id = f"ui-turn-{next(self._runtime_turn_seq)}"
-            self._active_runtime_run_id = turn_id
-            # A new UI turn is a new Runtime scope.  This does not mutate an
-            # in-flight call, while an E4 route remains frozen until it ends.
-            feature_snapshot = runtime_feature_snapshot()
-            self.ctx["_runtime_features"] = feature_snapshot
-            self.ctx["_runtime_features_prebound"] = True
-            turn_model_fn = self._model_fn_for_runtime(feature_snapshot)
-            reply = self.runtime_session.run_turn(
-                turn_id,
-                lambda user_text: agent.run_once(user_text, self.history, model_fn=turn_model_fn,
-                                                 approver=agent._default_approver,
-                                                 log_file=self.log_file, ctx=self.ctx),
-                text,
-            )
+            reply = agent.run_once(text, self.history, model_fn=self.model_fn,
+                                   approver=agent._default_approver,
+                                   log_file=self.log_file, ctx=self.ctx)
         except KimiError as e:
             self._emit_system(f"（出错了，但没崩）{e}")
             ui_bus.emit("system.alert", {"level": "error",
@@ -682,9 +652,6 @@ class UISession:
                                          "text": f"{type(e).__name__}: {e}"[:500]})
         finally:
             try:
-                # 独立事件只带计数型摘要；前端无需猜测旧 state.patch 是否会在
-                # 本回合出现，且不会收到 request id、对话或工具参数。
-                ui_bus.emit("runtime.summary", self.runtime_observability())
                 if self._fallback_events:
                     self._fallback_emit_new_messages(pre_ids or set())
                     ui_bus.mark_dirty(self.ctx, "todos", "notes", "usage", "denied_calls",
@@ -700,7 +667,6 @@ class UISession:
                         self.log(f"会话存档失败（对话不受影响）：{e}")
             except Exception:
                 pass
-            self._active_runtime_run_id = None
             self._runner_lock.release()
 
     def _fallback_emit_new_messages(self, pre_ids: set) -> None:
@@ -779,11 +745,6 @@ class UISession:
             self.ctx["_cancel_event"].set()
         except Exception:
             pass
-        if isinstance(self._active_runtime_run_id, str):
-            try:
-                self.runtime_session.request_stop(self._active_runtime_run_id)
-            except Exception:
-                pass
         ui_bus.close_all_pending("cancel")           # 未决审批以 n 结案（fail-closed）
 
     # ---------------- 上行：模型切换 / 自主模式（UI 批次 D，均会话级不落盘）
@@ -1040,12 +1001,6 @@ class UISession:
             with ui_bus.STATE_LOCK:
                 self.history[:] = agent._fresh_history()
                 self.sid = new_sid
-                self.runtime_session = AgentRuntimeSession.create(
-                    f"ui-{new_sid}", registry=self.runtime_registry)
-                self.ctx["_runtime_registry"] = self.runtime_registry
-                self.ctx["_runtime_session"] = self.runtime_session
-                self._runtime_turn_seq = itertools.count(1)
-                self._active_runtime_run_id = None
                 self.log_file = session.session_log_file(new_sid)
                 self.ctx["session_id"] = new_sid
                 self.ctx["todos"] = []
@@ -1332,15 +1287,20 @@ class _Handler(BaseHTTPRequestHandler):
             result = sess.task_api.dispatch(method, path, payload, dict(self.headers), query)
             return self._json(result.body, status=result.status, headers=result.headers)
         if method == "GET":
+            if path == "/api/runtime-controls":
+                return self._json(_runtime_controls_response(sess.runtime_controls.load()))
+            if path == "/api/runtime-controls/heartbeat":
+                state = sess.runtime_controls.load()
+                return self._json({
+                    "server_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "heartbeat_enabled": state["heartbeat_enabled"],
+                })
             if path == "/api/tools":
                 return self._tools()
             if path == "/api/state":
                 # 契约 v1：域字段平铺顶层（PLAN §4 示例为准），sid/pending_approvals 为附加顶层键
                 return self._json({"sid": sess.sid, **ui_state.snapshot_full(sess.ctx),
                                    "pending_approvals": ui_bus.pending_approvals()})
-            if path == "/api/runtime/summary":
-                # 独立只读端点：不把可观测字段混入已冻结的 /api/state 契约。
-                return self._json(sess.runtime_observability())
             if path == "/api/messages":
                 before = (query.get("before") or [None])[0]
                 limit = (query.get("limit") or ["50"])[0]
@@ -1536,11 +1496,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "autonomy": sess.handle_set_autonomy(p["on"])})
             return self._err(404, "not_found", f"没有这条路由：{path}", "见契约 §11 的 13 条路由")
         if method == "PATCH":
+            if path == "/api/runtime-controls":
+                p = self._json_body(self._read_body())
+                ui_schema.check(p, ui_schema.SCHEMA_RUNTIME_CONTROLS, "runtime_controls.patch")
+                if not p:
+                    raise ui_schema.SchemaError("运行控制更新不能为空", "至少提供一个运行控制字段")
+                try:
+                    return self._json(_runtime_controls_response(sess.runtime_controls.update(p)))
+                except RuntimeControlError as exc:
+                    return self._err(400, "bad_request", str(exc), "按运行控制契约修正后重试")
             match = re.fullmatch(r"/api/model-profiles/([^/]+)", path)
             if not match:
-                # 路径存在但此资源没有 PATCH 语义；归为方法不允许，和
-                # PUT/OPTIONS 一致，避免客户端把协议错误误判为资源缺失。
-                return self._err(405, "method_not_allowed", f"{method} 不支持", "GET/POST/PATCH/DELETE")
+                return self._err(405, "method_not_allowed", "PATCH 不支持", "GET/POST/PATCH/DELETE")
             model_id = self._profile_id(match.group(1))
             if model_id is None:
                 return self._err(404, "not_found", "模型资料不存在", "刷新模型列表后重试")
@@ -1566,7 +1533,7 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "DELETE":
             match = re.fullmatch(r"/api/model-profiles/([^/]+)", path)
             if not match:
-                return self._err(405, "method_not_allowed", f"{method} 不支持", "GET/POST/PATCH/DELETE")
+                return self._err(405, "method_not_allowed", "DELETE 不支持", "GET/POST/PATCH/DELETE")
             model_id = self._profile_id(match.group(1))
             if model_id is None:
                 return self._err(404, "not_found", "模型资料不存在", "刷新模型列表后重试")
@@ -2023,7 +1990,7 @@ def serve_main(argv=None, model_fn=None) -> int:
 
 
 def _serve(args, model_fn) -> int:
-    state_dir = config.STATE_DIR
+    state_dir = config.ROOT / ".state"
     session.migrate_legacy()
     # 1. ctx 初始化（与 repl :1382-1383 对齐 + SPEC §9-1 显式键；headless 专有差异勿混入，R1 ⑨-4）
     ctx: dict = {"todos": [], "memory_file": memory.MEMORY_FILE, "_interactive": True,

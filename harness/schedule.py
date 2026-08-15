@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import _io, config
 
-SCHEDULE_DIR = config.STATE_DIR / "schedule"
+SCHEDULE_DIR = config.ROOT / ".state" / "schedule"
 TASKS_DIR = SCHEDULE_DIR / "tasks"
 HISTORY_DIR = SCHEDULE_DIR / "history"
 RUNNING_DIR = SCHEDULE_DIR / "running"

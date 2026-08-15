@@ -429,6 +429,222 @@ def run_sandboxed(code: str, workdir, max_proc: int = _DEF_MAX_PROC, max_mem_mb:
     raise SandboxError(f"本平台（{p}）暂不支持沙箱执行")
 
 
+# ── Runtime controls · explicit isolated/host selector ─────────────────────
+_HOST_TIMEOUT_MARK = "宿主进程整体超时"
+_HOST_CLEANUP_TIMEOUT_S = 3
+
+
+def _host_argv(code: str, plat: str) -> list[str]:
+    """Build a shell-free argv while preserving each platform's script language."""
+    if plat == "Windows":
+        payload = ("$ProgressPreference='SilentlyContinue';"
+                   "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+                   "$OutputEncoding=[Text.UTF8Encoding]::new($false);\n" + str(code))
+        system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        powershell = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        # Windows PowerShell serializes stderr as CLIXML for -EncodedCommand.
+        # Passing one argv element to -Command remains shell-free and keeps
+        # ordinary UTF-8 error text intact.
+        return [powershell, "-NoProfile", "-NonInteractive", "-Command", payload]
+    shell = "/bin/zsh" if plat == "Darwin" else "/bin/sh"
+    return [shell, "-c", str(code)]
+
+
+def _create_windows_kill_job(proc):
+    """Put *proc* in a kill-on-close Job Object."""
+    import ctypes
+    from ctypes import wintypes
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise SandboxError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
+    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    info.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(job)
+        raise SandboxError(f"SetInformationJobObject failed: {error}")
+    if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle))):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(job)
+        raise SandboxError(f"AssignProcessToJobObject failed: {error}")
+    return job, kernel32.CloseHandle
+
+
+def _terminate_host_process_tree(proc, plat: str, *, job=None, close_job=None,
+                                 taskkill_runner=subprocess.run) -> None:
+    """Terminate a process tree without waiting; callers perform bounded reap."""
+    if plat == "Windows" and job is not None:
+        if close_job is not None and close_job(job):
+            return
+        # If closing the Job handle itself fails, continue through the checked
+        # taskkill fallback instead of leaving the tree in an unknown state.
+    if plat == "Windows":
+        try:
+            result = taskkill_runner(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                                     capture_output=True, text=True, timeout=_HOST_CLEANUP_TIMEOUT_S)
+        except Exception as exc:
+            try:
+                proc.kill()
+            finally:
+                raise SandboxError("process tree cleanup failed: taskkill did not complete") from exc
+        if result.returncode == 0:
+            return
+        try:
+            proc.kill()
+        finally:
+            raise SandboxError(f"process tree cleanup failed: taskkill exit {result.returncode}")
+    try:
+        import signal
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception as exc:
+            raise SandboxError("process tree cleanup failed") from exc
+
+
+def _kill_host_process_group(proc, plat: str) -> None:
+    """Backward-compatible alias for older focused tests."""
+    _terminate_host_process_tree(proc, plat)
+
+
+def _default_runner_host(argv, *, cwd: str, env: dict | None, timeout_s: int, plat: str | None = None):
+    """Run on the host with an explicit child env/cwd/timeout and a killable process group."""
+    selected = plat or platform.system()
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+             if selected == "Windows" else {"start_new_session": True})
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            encoding="utf-8", errors="replace", **group)
+    job = close_job = None
+    if selected == "Windows":
+        try:
+            job, close_job = _create_windows_kill_job(proc)
+        except Exception:
+            # Fail before allowing execution without a tree-level cleanup
+            # primitive.  The fallback is checked and reap remains bounded.
+            _terminate_host_process_tree(proc, selected)
+            try:
+                proc.communicate(timeout=_HOST_CLEANUP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+        return proc.returncode, out or "", err or "", False
+    except subprocess.TimeoutExpired:
+        _terminate_host_process_tree(proc, selected, job=job, close_job=close_job)
+        job = None
+        try:
+            out, err = proc.communicate(timeout=_HOST_CLEANUP_TIMEOUT_S)
+        except subprocess.TimeoutExpired as first:
+            proc.kill()
+            try:
+                out, err = proc.communicate(timeout=_HOST_CLEANUP_TIMEOUT_S)
+            except subprocess.TimeoutExpired as final:
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+                try:
+                    proc.wait(timeout=_HOST_CLEANUP_TIMEOUT_S)
+                except subprocess.TimeoutExpired as wait_error:
+                    raise SandboxError("process tree cleanup failed: process did not exit") from wait_error
+                out = final.output if final.output is not None else first.output
+                err = final.stderr if final.stderr is not None else first.stderr
+        return 124, out or "", err or "", True
+    finally:
+        if job is not None and close_job is not None:
+            _terminate_host_process_tree(proc, selected, job=job, close_job=close_job)
+
+
+def run_host(code: str, workdir, timeout_s: int = _DEF_TIMEOUT_S, *, env: dict | None = None,
+             plat: str | None = None, runner=None) -> dict:
+    """Execute a script explicitly on the host; this entry never falls back to a sandbox."""
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    selected = plat or platform.system()
+    argv = _host_argv(code, selected)
+    selected_runner = runner or _default_runner_host
+    if runner is None:
+        raw = selected_runner(argv, cwd=str(workdir), env=env, timeout_s=timeout_s, plat=selected)
+    else:
+        raw = selected_runner(argv, cwd=str(workdir), env=env, timeout_s=timeout_s)
+    if len(raw) == 4:
+        rc, out, err, timed_out = raw
+    else:
+        rc, out, err = raw
+        timed_out = rc == 124 and _HOST_TIMEOUT_MARK in str(err)
+    out = out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out or "")
+    err = err.decode("utf-8", "replace") if isinstance(err, bytes) else str(err or "")
+    body = out + err
+    return {"output": body, "exit": rc, "timed_out": timed_out,
+            "backend": "host", "isolated": False, "annotation": "宿主执行（未隔离）"}
+
+
+def run_with_controls(code: str, workdir, *, sandbox_enabled: bool, network_mode: str,
+                      max_proc: int = _DEF_MAX_PROC, max_mem_mb: int = _DEF_MAX_MEM_MB,
+                      timeout_s: int = _DEF_TIMEOUT_S, plat: str | None = None,
+                      sandbox_runner=None, host_runner=None) -> dict:
+    """Select exactly one execution backend from a frozen runtime-control snapshot.
+
+    Isolation ON always uses the OS sandbox and therefore stays network-denied.
+    Isolation OFF always uses the explicit host runner with the selected child env.
+    """
+    selected = plat or platform.system()
+    if sandbox_enabled:
+        result = run_sandboxed(code, workdir, max_proc=max_proc, max_mem_mb=max_mem_mb,
+                               timeout_s=timeout_s, plat=selected, runner=sandbox_runner)
+        backend = "appcontainer" if selected == "Windows" else "seatbelt"
+        return {**result, "backend": backend, "isolated": True,
+                "annotation": f"隔离执行（{backend}，沙箱内断网）"}
+
+    from .execution_environment import ExecutionEnvironment
+    child = ExecutionEnvironment.build(network_mode=network_mode)
+    result = run_host(code, workdir, timeout_s=timeout_s, env=child.env,
+                      plat=selected, runner=host_runner)
+    return {**result, "backend": "host", "isolated": False, "annotation": "宿主执行（未隔离）"}
+
+
 # ── S2 · Docker 沙箱化执行（优雅降级版）────────────────────────────────────
 # 第三后端：破坏性 shell 命令（rm -rf 类）优先关进容器跑；Docker 缺席按链优雅降级
 # docker → seatbelt(Mac) / AppContainer(Win) → 裸跑，**每层降级都在返回值 annotation 里写死

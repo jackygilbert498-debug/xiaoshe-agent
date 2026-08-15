@@ -12,6 +12,8 @@ export const plans = (id) => net.get(`/api/v2/tasks/${encodeURIComponent(id)}/pl
 export const proposePlan = (id, body) => net.post(`/api/v2/tasks/${encodeURIComponent(id)}/plans`, body);
 export const reviewPlan = (id, revision, body) => net.post(`/api/v2/tasks/${encodeURIComponent(id)}/plans/${revision}/review`, body);
 export const currentChangeset = (id) => net.get(`/api/v2/tasks/${encodeURIComponent(id)}/changesets/current`);
+export const toolCandidates = (id) => net.get(`/api/v2/tasks/${encodeURIComponent(id)}/tool-proposals`);
+export const proposeTool = (id, body) => net.post(`/api/v2/tasks/${encodeURIComponent(id)}/tool-proposals`, body);
 export const captureChangeset = (id, body) => net.post(`/api/v2/tasks/${encodeURIComponent(id)}/changesets`, body);
 export const reviewArtifact = (taskId, changesetId, key) => net.get(`/api/v2/tasks/${encodeURIComponent(taskId)}/changesets/${encodeURIComponent(changesetId)}/artifacts/${encodeURIComponent(key)}`);
 export const submitReview = (id, body) => net.post(`/api/v2/tasks/${encodeURIComponent(id)}/reviews`, body);

@@ -368,10 +368,15 @@ class TaskEngine:
             revision = self.plans.get(command.task_id, int(task["active_plan_revision"]))
             plan_files = tuple(path for step in revision["body"]["steps"] for path in step["files"])
         frozen = freeze_policy_snapshot(mode, plan_revision=task.get("active_plan_revision"), plan_files=plan_files)
-        # E0-E4 settings are public metadata only.  Freeze once with the Run so
-        # a later environment change cannot alter an already-started task.
-        from .runtime_flags import runtime_feature_snapshot
-        frozen["runtime_features"] = runtime_feature_snapshot().to_record()
+        runtime_defaults = {"sandbox_enabled": True, "network_mode": "off", "heartbeat_enabled": True}
+        runtime_controls = {key: requested.get(key, default) for key, default in runtime_defaults.items()}
+        if (type(runtime_controls["sandbox_enabled"]) is not bool
+                or type(runtime_controls["heartbeat_enabled"]) is not bool
+                or not isinstance(runtime_controls["network_mode"], str)
+                or runtime_controls["network_mode"] not in {"off", "proxy", "open"}):
+            raise TaskingError("TASK_POLICY_INVALID", "运行控制必须是合法的 sandbox/network/heartbeat 快照")
+        # direct_mode is derived UI state, never an authority-bearing Run fact.
+        frozen.update(runtime_controls)
         if requested.get("unattended") is True:
             raw_budget = requested.get("budget")
             allowed_budget_keys = {"wall_seconds", "model_tokens", "cost_micros", "tool_calls", "network_calls", "repair_attempts"}

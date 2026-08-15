@@ -20,6 +20,7 @@ const collapsed = new Set();     // 折叠的项目 id（会话内记忆，不�
 let loadState = "idle";
 let loadError = "";
 let refreshGeneration = 0;
+let currentActivity = "idle";
 
 let listEl = null;
 let searchEl = null;
@@ -59,6 +60,21 @@ export function filterTree(sessList, projList, queryStr) {
   }
   const ungrouped = (sessList || []).filter((s) => !assigned.has(s.id) && matchSession(s, q));
   return { groups, ungrouped };
+}
+
+/** 会话标记只表达真实状态：运行中=旋转环，后台返回未读=静态点，其余不装饰。 */
+export function sessionMarkerKind(session, current = false, activity = currentActivity) {
+  const remote = session?.activity || session?.status || "idle";
+  if ((current && activity === "running") || remote === "running") return "running";
+  if ((current && activity === "unread") || session?.unread === true || session?.has_unread === true) return "unread";
+  return null;
+}
+
+export function setCurrentActivity(kind) {
+  const next = ["idle", "running", "unread"].includes(kind) ? kind : "idle";
+  if (next === currentActivity) return;
+  currentActivity = next;
+  render();
 }
 
 /* ---------------- 数据 ---------------- */
@@ -101,10 +117,13 @@ function renderDisconnected() {
 
 function sessItem(s) {
   const cur = s.id === store.get().sid;
+  const marker = sessionMarkerKind(s, cur);
   const item = el("div.sess", { role: "option", "aria-selected": cur ? "true" : "false",
                                 dataset: { sid: s.id }, tabindex: "0" },
     el("div.t1", {},
-      el("i.dot", {}),
+      marker ? el(`span.session-indicator.${marker}`, {
+        role: "img", "aria-label": marker === "running" ? "正在处理" : "有新回复",
+      }) : null,
       el("span.prev", { text: s.preview || s.id, title: s.id }),
       cur ? el("span.tag", { text: "当前" }) : null,
       el("button.sess-move", { type: "button", title: "移到项目 / 移出项目",
@@ -303,6 +322,9 @@ function findMoveTrigger(sid) {
 function installDocumentHandlers() {
   if (documentHandlersInstalled) return;
   documentHandlersInstalled = true;
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentActivity === "unread") setCurrentActivity("idle");
+  });
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape" || !menuFor) return;
     const sid = menuFor;

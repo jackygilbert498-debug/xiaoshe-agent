@@ -47,22 +47,12 @@ function profileItems(response) {
   return items.filter((item) => item && item.enabled !== false && item.configured !== false);
 }
 
-function currentFallbackItem(response) {
-  const label = String(response.current || "").trim();
-  if (!label) return null;
-  return { id: `legacy:${label}`, label, provider: "", configured: true, enabled: true,
-    capabilities: [], legacy: true };
-}
-
 function renderMenu(response) {
   const { menu, btn } = nodes();
   if (!menu || !btn) return;
   latest = response;
   const items = profileItems(response);
   const currentId = response.current_id;
-  if (response.current && !items.some((item) => item.id === currentId || item.label === response.current)) {
-    items.unshift(currentFallbackItem(response));
-  }
   menu.replaceChildren();
   for (const item of items) {
     const selected = item.id === currentId || (item.legacy && item.label === response.current);

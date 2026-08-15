@@ -33,7 +33,7 @@ from pathlib import Path
 
 from . import _io, config
 
-DB_FILE = config.STATE_DIR / "fts.db"   # gitignored 运行态，可整体重建，丢了不心疼
+DB_FILE = config.ROOT / ".state" / "fts.db"   # gitignored 运行态，可整体重建，丢了不心疼
 KINDS = ("memory", "cheatsheet", "episodic", "session")
 _SESSION_TEXT_MAX = 300   # 会话存档只索引「摘要」（首条 user 消息截断），不整份历史入库
 _EP_TEXT_MAX = 600
