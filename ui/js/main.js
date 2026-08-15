@@ -120,6 +120,7 @@ const msgHooks = {
 };
 
 function msgItem(msg) {
+  if ((msg.role || "system") === "system") return null; // 普通 system 只由唯一 fold 投影
   const elMsg = renderMessage(msg, msgHooks);
   if (!elMsg) return null;                       // tool 结果并入工具卡
   return {
@@ -132,17 +133,32 @@ function msgItem(msg) {
 const virt = createVirt(stream, {
   hasMore: () => store.get().hasMore,
   loadOlder: async () => {
-    const first = store.messages()[0];
-    if (!first || first.msg_id == null) return false;
-    const page = await net.get(`/api/messages?before=${encodeURIComponent(first.msg_id)}&limit=50`);
-    store.prependMessages(page);
     const older = [];
-    for (const m of page.messages || []) {
-      const it = msgItem(m);
-      if (it) older.push(it);
+    let foldChanged = false;
+    while (true) {
+      const first = store.messages()[0];
+      if (!first || first.msg_id == null) return false;
+      const page = await net.get(`/api/messages?before=${encodeURIComponent(first.msg_id)}&limit=50`);
+      const beforeMessages = store.messages();
+      const beforeCount = beforeMessages.length;
+      const knownIds = new Set(beforeMessages.map((message) => message.msg_id));
+      store.prependMessages(page);
+      for (const m of page.messages || []) {
+        if (knownIds.has(m.msg_id)) continue;
+        if ((m.role || "system") === "system") { foldChanged = true; continue; }
+        const it = msgItem(m);
+        if (it) older.push(it);
+      }
+      const progressed = store.messages().length > beforeCount;
+      if (!progressed) {
+        if (foldChanged) syncSystemFold();
+        return false;
+      }
+      if (older.length || !store.get().hasMore) break;
     }
     if (older.length) virt.prependItems(older);
-    return older.length > 0;
+    if (foldChanged) syncSystemFold();
+    return true;
   },
 });
 
@@ -178,47 +194,68 @@ function fillSuggestion(text) {
   input.focus();
 }
 
-/** 蛇形渐变水印（stroke 走 tokens.css --sheen-*，随双主题切换） */
+/** 几何小蛇徽水印：使用首版品牌图形，不再把蛇形误读成放大的字母 S。 */
 function stageGhostSvg() {
   const NS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("class", "stage-ghost");
-  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("viewBox", "0 0 256 256");
   svg.setAttribute("fill", "none");
   svg.setAttribute("aria-hidden", "true");
+
+  const defs = document.createElementNS(NS, "defs");
   const grad = document.createElementNS(NS, "linearGradient");
-  grad.id = "stageScaleGrad";
-  grad.setAttribute("x1", "0"); grad.setAttribute("y1", "1");
-  grad.setAttribute("x2", "1"); grad.setAttribute("y2", "0");
-  for (const [off, i] of [[0, 2], [0.45, 3], [0.62, 4], [0.8, 2], [1, 1]]) {
+  grad.id = "stageIconSheen";
+  grad.setAttribute("x1", "0"); grad.setAttribute("y1", "256");
+  grad.setAttribute("x2", "256"); grad.setAttribute("y2", "0");
+  grad.setAttribute("gradientUnits", "userSpaceOnUse");
+  for (const [off, i] of [[0, 1], [0.42, 2], [0.72, 3], [1, 4]]) {
     const s = document.createElementNS(NS, "stop");
     s.setAttribute("offset", String(off));
     s.style.stopColor = `var(--sheen-${i})`;
     grad.append(s);
   }
-  const defs = document.createElementNS(NS, "defs");
-  defs.append(grad);
-  // 蛇瞳 S 定稿水印：粗 S + 头部方瞳负空间（与品牌位同一标识）
+
+  const edge = document.createElementNS(NS, "filter");
+  edge.id = "stageIconEdge";
+  edge.setAttribute("filterUnits", "userSpaceOnUse");
+  edge.setAttribute("x", "-6"); edge.setAttribute("y", "-6");
+  edge.setAttribute("width", "268"); edge.setAttribute("height", "268");
+  const outer = document.createElementNS(NS, "feMorphology");
+  outer.setAttribute("in", "SourceAlpha"); outer.setAttribute("operator", "dilate");
+  outer.setAttribute("radius", "0.75"); outer.setAttribute("result", "outer");
+  const inner = document.createElementNS(NS, "feMorphology");
+  inner.setAttribute("in", "SourceAlpha"); inner.setAttribute("operator", "erode");
+  inner.setAttribute("radius", "0.75"); inner.setAttribute("result", "inner");
+  const subtract = document.createElementNS(NS, "feComposite");
+  subtract.setAttribute("in", "outer"); subtract.setAttribute("in2", "inner");
+  subtract.setAttribute("operator", "out"); subtract.setAttribute("result", "outline");
+  const white = document.createElementNS(NS, "feFlood");
+  white.setAttribute("flood-color", "#fff"); white.setAttribute("result", "white");
+  const paint = document.createElementNS(NS, "feComposite");
+  paint.setAttribute("in", "white"); paint.setAttribute("in2", "outline");
+  paint.setAttribute("operator", "in");
+  edge.append(outer, inner, subtract, white, paint);
+
   const mask = document.createElementNS(NS, "mask");
-  mask.id = "stagePupil";
-  const mr1 = document.createElementNS(NS, "rect");
-  mr1.setAttribute("width", "24"); mr1.setAttribute("height", "24"); mr1.setAttribute("fill", "#fff");
-  const mr2 = document.createElementNS(NS, "path");
-  mr2.setAttribute("d", "M14.7 5.1 Q14.7 4.4 15.4 4.4 L16.6 4.4 Q17.3 4.4 17.3 5.1 L17.3 6.1 L16.4 7 L15.4 7 Q14.7 7 14.7 6.3 Z");
-  mr2.setAttribute("fill", "#000");
-  const mr3 = document.createElementNS(NS, "rect");
-  mr3.setAttribute("x", "17.1"); mr3.setAttribute("y", "5.425");
-  mr3.setAttribute("width", "6.9"); mr3.setAttribute("height", "0.55");
-  mr3.setAttribute("fill", "#000");
-  mask.append(mr1, mr2, mr3);
-  defs.append(mask);
-  const p1 = document.createElementNS(NS, "path");
-  p1.setAttribute("d", "M16.8 6.8 C14.4 4.3 9.9 4.4 8.6 7 C7.3 9.6 10.1 10.8 12.5 12 C14.9 13.2 17.4 14.5 16.1 17.1 C14.8 19.7 9.9 20.1 7.4 17.9");
-  p1.setAttribute("stroke", "url(#stageScaleGrad)");
-  p1.setAttribute("stroke-width", "5");
-  p1.setAttribute("stroke-linecap", "round");
-  p1.setAttribute("mask", "url(#stagePupil)");
-  svg.append(defs, p1);
+  mask.id = "stageIconOutline";
+  mask.setAttribute("maskUnits", "userSpaceOnUse");
+  mask.setAttribute("x", "0"); mask.setAttribute("y", "0");
+  mask.setAttribute("width", "256"); mask.setAttribute("height", "256");
+  mask.setAttribute("mask-type", "alpha");
+  const source = document.createElementNS(NS, "image");
+  source.setAttribute("href", "assets/icon-256.png");
+  source.setAttribute("x", "0"); source.setAttribute("y", "0");
+  source.setAttribute("width", "256"); source.setAttribute("height", "256");
+  source.setAttribute("filter", "url(#stageIconEdge)");
+  mask.append(source);
+
+  const outline = document.createElementNS(NS, "rect");
+  outline.setAttribute("width", "256"); outline.setAttribute("height", "256");
+  outline.setAttribute("fill", "url(#stageIconSheen)");
+  outline.setAttribute("mask", "url(#stageIconOutline)");
+  defs.append(grad, edge, mask);
+  svg.append(defs, outline);
   return svg;
 }
 
@@ -245,11 +282,31 @@ function emptyStageEl() {
 /** system 消息折叠细条（内容仍是完整 sysbar 列表，点开可见） */
 function sysFoldEl(sysMsgs) {
   const d = el("details.sysfold");
-  d.append(el("summary", { text: `系统提示 ${sysMsgs.length} 条 · 点开查看` }));
+  d.append(el("summary", {
+    text: `系统记录 ${sysMsgs.length} 条 · 点开查看`,
+    "aria-label": `系统记录 ${sysMsgs.length} 条，展开查看详情`,
+  }));
   const body = el("div.sysfold-body");
   for (const m of sysMsgs) body.append(renderSystemBar(m));
   d.append(body);
   return d;
+}
+
+function routineSystemMessages() {
+  return store.messages().filter((msg) => (msg.role || "system") === "system");
+}
+
+/** 唯一 system fold 同步入口：保留 store 原文，只替换消息流投影。 */
+function syncSystemFold() {
+  const sys = routineSystemMessages();
+  virt.removeItem("sysfold");
+  for (const msg of sys) virt.removeItem(`msg-${msg.msg_id}`);
+  if (!sys.length) return;
+  virt.prependItems([{
+    id: "sysfold",
+    el: sysFoldEl(sys),
+    searchText: sys.map((msg) => String(msg.content ?? "")).join("\n"),
+  }]);
 }
 
 /** 有消息后的右下淡水印（空态时移除，巨型字标接管） */
@@ -267,35 +324,15 @@ function updateStageWm() {
 
 function leaveEmptyStage() {
   virt.removeItem("stage-empty");
-  virt.removeItem("sysfold");
-  const systemItems = [];
-  for (const msg of store.messages()) {
-    if ((msg.role || "system") !== "system") continue;
-    const item = msgItem(msg);
-    if (item) systemItems.push(item);
-  }
-  if (systemItems.length) virt.prependItems(systemItems);
   inEmptyStage = false;
+  syncSystemFold();
   updateStageWm();
 }
 
 function restoreEmptyStage() {
-  const sys = [];
-  for (const msg of store.messages()) {
-    if ((msg.role || "system") !== "system") continue;
-    sys.push(msg);
-    virt.removeItem(`msg-${msg.msg_id}`);
-  }
-  const items = [{ id: "stage-empty", el: emptyStageEl(), searchText: "小蛇 待命 空态" }];
-  if (sys.length) {
-    items.push({
-      id: "sysfold",
-      el: sysFoldEl(sys),
-      searchText: sys.map((msg) => String(msg.content ?? "")).join("\n"),
-    });
-  }
   inEmptyStage = true;
-  virt.prependItems(items);
+  virt.prependItems([{ id: "stage-empty", el: emptyStageEl(), searchText: "小蛇 待命 空态" }]);
+  syncSystemFold();
   updateStageWm();
 }
 
@@ -308,17 +345,14 @@ function rebuildStream() {
   inEmptyStage = !msgs.some((m) => (m.role || "system") === "user");
   if (inEmptyStage) {
     items.push({ id: "stage-empty", el: emptyStageEl(), searchText: "小蛇 待命 空态" });
-    const sys = [], rest = [];
-    for (const m of msgs) ((m.role || "system") === "system" ? sys : rest).push(m);
-    if (sys.length) {
-      items.push({ id: "sysfold", el: sysFoldEl(sys), searchText: sys.map((m) => String(m.content ?? "")).join("\n") });
-    }
-    for (const m of rest) {
+    for (const m of msgs) {
+      if ((m.role || "system") === "system") continue;
       const it = msgItem(m);                     // 防御：零用户消息但快照含其他角色时照常渲染
       if (it) items.push(it);
     }
   } else {
     for (const m of msgs) {
+      if ((m.role || "system") === "system") continue;
       const it = msgItem(m);
       if (it) items.push(it);
     }
@@ -332,6 +366,7 @@ function rebuildStream() {
     refreshStreamCard();
   }
   virt.setItems(items);
+  syncSystemFold();
   updateStageWm();
 }
 
@@ -343,6 +378,7 @@ store.on("hydrated", () => {
   const sid = store.get().sid;
   if (renderedSid !== null && sid !== renderedSid) store.resolvedApprovals().clear();
   renderedSid = sid;
+  sidebar.setCurrentActivity?.("idle");
   rebuildStream();
   sidebar.refresh();          // 批次 B：两级树随快照刷新（resume/新会话后 sid 已变）
   syncChatTitle();
@@ -356,6 +392,8 @@ store.on("resync", () => toast("检测到事件跳空，已重同步"));
 
 store.on("message.append", (msg) => {
   syncChatTitle();
+  if (msg.role === "user") sidebar.setCurrentActivity?.("running");
+  else if (msg.role === "assistant") sidebar.setCurrentActivity?.(document.hidden ? "unread" : "idle");
   /* 乐观消息去重：服务端回声替换本地临时条 */
   if (msg.role === "user" && !msg._optimistic) {
     const opt = store.messages().find((m) => m._optimistic && m.content === msg.content);
@@ -368,12 +406,13 @@ store.on("message.append", (msg) => {
     if (store.messages().some((item) => (item.role || "system") === "user")) leaveEmptyStage();
     else { rebuildStream(); return; }
   }
+  if ((msg.role || "system") === "system") { syncSystemFold(); return; }
   const it = msgItem(msg);
   if (it) virt.appendItem(it);
   else virt.updateItem();                        // tool 结果入卡，高度重测
 });
 
-store.on("tool_call.start", () => virt.updateItem());
+store.on("tool_call.start", () => { sidebar.setCurrentActivity?.("running"); virt.updateItem(); });
 store.on("tool_call.end", () => virt.updateItem());
 
 store.on("approval.request", (ap) => {
@@ -431,19 +470,13 @@ store.on("subagent.update", ({ subagents }) => {
 
 store.on("system.alert", (p) => {
   toast(p.text || "", p.level || "info");
+  if (p.level === "error") sidebar.setCurrentActivity?.("idle");
   if (p.level === "warn" || p.level === "error") {
     virt.appendItem({
       id: `alert-${Date.now().toString(36)}-${miscSeq++}`,
       el: renderAlert(p), searchText: p.text || "",
     });
   }
-});
-
-store.on("runtime.summary", (summary) => {
-  const api = window.XS.panels?.system;
-  if (!api?.update || !summary || typeof summary !== "object") return;
-  api.update({ ...systemBaseInfo(), runtime: summary.runtime || null,
-    request_ledger: summary.request_ledger || null, read_shadow: summary.read_shadow || null });
 });
 
 store.on("conn", (ok) => {
@@ -455,6 +488,7 @@ store.on("conn", (ok) => {
     pushMemory();   // 终审 F2/F3：连接建立即拉记忆/技能 + 系统信息
     pushSystem();
   } else {
+    sidebar.setCurrentActivity?.("idle");
     memoryRequestGeneration += 1;
     window.XS.panels?.memory?.setDisconnected?.();
   }
@@ -570,34 +604,16 @@ async function pushMemory() {
   });
 }
 
-/* Runtime 摘要不混入 /api/state：避免冻结契约漂移，也避免暴露请求文本/工具参数。 */
-let runtimeSummaryGeneration = 0;
-
-function systemBaseInfo() {
-  const g = store.get();
-  const p = store.panels();
-  return {
-    connected: !!g.connected, endpoint: net.endpoint?.() || location.host,
-    sid: g.sid || null, usage: p.usage || null, turn: p.usage?.turn ?? 0,
-    version: "xs-ui/1.0 · 契约 v1",
-  };
-}
-
 /* 终审 F3：系统 tab 数据源——连接/用量/会话信息 */
 function pushSystem() {
   const api = window.XS.panels?.system;
   if (!api?.update) return;
   const g = store.get();
-  const base = systemBaseInfo();
-  api.update(base);
-  if (!g.connected) return;
-  const generation = ++runtimeSummaryGeneration;
-  net.get("/api/runtime/summary").then((summary) => {
-    if (generation !== runtimeSummaryGeneration || !store.get().connected) return;
-    api.update({ ...base, runtime: summary.runtime, request_ledger: summary.request_ledger,
-      read_shadow: summary.read_shadow || null });
-  }).catch(() => {
-    // 可观测性端点不可用不能遮住现有连接/配额信息。
+  const p = store.panels();
+  api.update({
+    connected: !!g.connected, endpoint: net.endpoint?.() || location.host,
+    sid: g.sid || null, usage: p.usage || null, turn: p.usage?.turn ?? 0,
+    version: "xs-ui/1.0 · 契约 v1",
   });
 }
 
@@ -619,12 +635,14 @@ async function boot() {
   initInput({
     openPalette: (group) => palette.toggle(group),
     onLocalMessage: (msg) => {
+      sidebar.setCurrentActivity?.("running");
       syncChatTitle();
       if (inEmptyStage) leaveEmptyStage();
       const it = msgItem(msg);
       if (it) virt.appendItem(it);
     },
     onSendFailed: (msg) => {
+      sidebar.setCurrentActivity?.("idle");
       store.removeMessage(msg.msg_id);
       syncChatTitle();
       virt.removeItem(`msg-${msg.msg_id}`);
@@ -650,27 +668,16 @@ async function boot() {
   const inspBtn = document.getElementById("insp-collapse");
   const mobileBtn = document.getElementById("btn-inspector");
   const taskMobileBtn = document.getElementById("btn-task-workspace");
-  const mobileOverlay = document.getElementById("mobile-overlay");
   const main = document.querySelector(".main");
   if (!main) return;
   const mobileQuery = window.matchMedia("(max-width: 1080px)");
   const taskMobileQuery = window.matchMedia("(max-width: 760px)");
-  function focusMobilePanel(panel) {
-    panel?.querySelector("button:not([disabled]), [role='tab'], input:not([disabled])")?.focus();
-  }
-  function syncMobileOverlay() {
-    if (!mobileOverlay) return;
-    mobileOverlay.hidden = !(insp?.classList.contains("mobile-open") || side?.classList.contains("mobile-open"));
-  }
   function setMobileOpen(open, restoreFocus = false) {
     if (!insp || !mobileBtn) return false;
     const next = Boolean(open);
-    if (next) setTaskMobileOpen(false);
     insp.classList.toggle("mobile-open", next);
     mobileBtn.setAttribute("aria-expanded", next ? "true" : "false");
     if (!next && restoreFocus) mobileBtn.focus();
-    if (next) focusMobilePanel(insp);
-    syncMobileOverlay();
     return next;
   }
   mobileBtn?.addEventListener("click", () => {
@@ -679,20 +686,13 @@ async function boot() {
   function setTaskMobileOpen(open, restoreFocus = false) {
     if (!side || !taskMobileBtn) return false;
     const next = Boolean(open);
-    if (next) setMobileOpen(false);
     side.classList.toggle("mobile-open", next);
     taskMobileBtn.setAttribute("aria-expanded", next ? "true" : "false");
     if (!next && restoreFocus) taskMobileBtn.focus();
-    if (next) focusMobilePanel(side);
-    syncMobileOverlay();
     return next;
   }
   taskMobileBtn?.addEventListener("click", () => {
     setTaskMobileOpen(!side?.classList.contains("mobile-open"));
-  });
-  mobileOverlay?.addEventListener("click", () => {
-    if (side?.classList.contains("mobile-open")) setTaskMobileOpen(false, true);
-    else if (insp?.classList.contains("mobile-open")) setMobileOpen(false, true);
   });
   function toggle(el, btn, cls) {
     if (!el || !btn) return;

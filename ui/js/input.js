@@ -9,7 +9,6 @@
 
 import * as store from "./store.js";
 import * as net from "./net.js";
-import { sendWithReceipt } from "./send-receipt.js";
 import { el, on } from "./lib/dom.js";
 import { latestCard } from "./render/approval.js";
 import { imageUrl } from "./net.js";
@@ -18,7 +17,6 @@ import { closeModelMenu, initModelManager } from "./model-manager.js";
 
 let hooks = {};
 let seq = 0;
-let sendPending = false;
 
 export function initInput(h = {}) {
   hooks = h;
@@ -58,7 +56,6 @@ export function initInput(h = {}) {
   /* 连接态控制发送按钮 */
   const syncConnection = (ok) => {
     ta.disabled = !ok;
-    ta.setAttribute("aria-disabled", ok ? "false" : "true");
     ta.placeholder = ok ? "交代小蛇做事…" : "连接已断开，正在重连…";
     syncSendBtn();
   };
@@ -104,48 +101,37 @@ export function initInput(h = {}) {
     btn.click();
   });
 
-  async function doSend() {
+  function doSend() {
     const text = ta.value.trim();
-    if (!text || !store.get().connected || sendPending) return;
+    if (!text || !store.get().connected) return;
     const clientMsgId = `c-${Date.now().toString(36)}-${(seq++).toString(36)}`;
     const images = (store.panels().vision_pending || []).map((v) => ({ ref: v.ref, target: v.target }));
-    sendPending = true;
-    syncSendBtn();
-    try {
-      await sendWithReceipt({
-        text,
-        clientMsgId,
-        images,
-        sendRest: net.sendRest,
-        onPending: (message) => {
-          store.appendMessage(message);
-          hooks.onLocalMessage?.(message);
-        },
-        onAccepted: () => {
-          /* Do not erase text typed while the receipt was in flight. */
-          if (ta.value.trim() === text) {
-            ta.value = "";
-            grow();
-          }
-        },
-        onRejected: (message, draft) => {
-          /* The original draft stays recoverable even when the request fails. */
-          ta.value = draft.text;
-          grow();
-          ta.focus();
-          hooks.onSendFailed?.(message, draft);
-        },
+    /* 乐观追加 user 消息（服务端 message.append 到达后由 main.js 去重替换） */
+    const optimistic = {
+      msg_id: `local-${clientMsgId}`, role: "user", content: text,
+      ts: new Date().toISOString(), images: images.length ? images : undefined,
+      _optimistic: true, client_msg_id: clientMsgId,
+    };
+    store.appendMessage(optimistic);
+    hooks.onLocalMessage?.(optimistic);
+    const ok = net.send(text, clientMsgId);
+    if (!ok) {
+      net.sendRest(text, clientMsgId).then((result) => {
+        if (result?.accepted === false) {
+          throw new Error(result.reason || "服务端未接受消息");
+        }
+      }).catch((e) => {
+        window.XS.toast?.(`发送失败：${e.message}`);
+        hooks.onSendFailed?.(optimistic);
       });
-    } catch (e) {
-      window.XS.toast?.(`发送失败，草稿已保留：${e.message}`);
-    } finally {
-      sendPending = false;
-      syncSendBtn();
     }
+    ta.value = "";
+    grow();
+    syncSendBtn();
   }
 
   function syncSendBtn() {
-    if (sendBtn) sendBtn.disabled = sendPending || !store.get().connected || !ta.value.trim();
+    if (sendBtn) sendBtn.disabled = !store.get().connected || !ta.value.trim();
   }
 }
 
@@ -161,8 +147,8 @@ function renderPending() {
       /* thumb hover 预览（CSS :hover 显示 .pimg-pop） */
       el("span.pimg-pop", {}, el("img", { src: imageUrl(v.ref, true), alt: v.ref })),
       document.createTextNode(`〔${v.ref}${v.target ? `｜${v.target}` : ""}〕`),
-      el("button.pimg-remove", {
-        type: "button", text: "✕",
+      el("span.x", {
+        text: "✕", role: "button", tabindex: "0",
         "aria-label": `移除待发图片 ${v.ref}`,
         onclick: () => removePending(v.ref),
       }),

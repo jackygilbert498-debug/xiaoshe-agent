@@ -17,7 +17,6 @@ ENUMS = {
         "session.snapshot", "message.append", "tool_call.start", "tool_call.end",
         "approval.request", "approval.resolved", "state.patch", "compaction.event",
         "viewport.update", "job.update", "subagent.update", "system.alert",
-        "runtime.summary",
         "send", "approve", "cancel", "command", "vision_pending.remove",
     ],
     "TASK_EVENT_TYPE": [
@@ -205,6 +204,11 @@ SCHEMA_MEMORY_NOTE = {"action": {"type": "str", "required": True, "enum": ["add"
 SCHEMA_MODEL = {"model": {"type": "str", "max_len": 128},
                 "model_id": {"type": "str", "max_len": 128}}
 SCHEMA_AUTONOMY = {"on": {"type": "bool", "required": True}}
+SCHEMA_RUNTIME_CONTROLS = {
+    "sandbox_enabled": {"type": "bool"},
+    "network_mode": {"type": "str", "enum": ["off", "proxy", "open"]},
+    "heartbeat_enabled": {"type": "bool"},
+}
 
 # 本地模型资料：api_key 仅允许写入，GET/响应契约中永不出现该字段。
 _MODEL_PROFILE_FIELDS = {

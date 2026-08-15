@@ -7,7 +7,6 @@ immutable snapshot to its protocol adapter.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from . import config, model_adapters, model_transport
@@ -60,22 +59,6 @@ def classify_upstream_error(status: int | None, body: object, provider: str) -> 
     return ModelError(code, provider, status)
 
 
-@dataclass(frozen=True)
-class FrozenModelClient:
-    """A single resolved model route, safe to retain for one Runtime scope."""
-
-    _client: "ModelClient"
-    _resolved: "ResolvedModel"
-
-    @property
-    def model_id(self) -> str:
-        return self._resolved.model.id
-
-    def chat(self, messages: list[dict], tools: list | None = None, timeout: int = 90,
-             retry: int = 5, on_delta=None, cache_key: str | None = None) -> dict:
-        return self._client._chat_resolved(self._resolved, messages, tools, timeout, retry, on_delta, cache_key)
-
-
 class ModelClient:
     def __init__(self, registry: "ModelRegistry"):
         self.registry = registry
@@ -89,8 +72,10 @@ class ModelClient:
             raise
         except model_transport.ModelTransportError as exc:
             # Transport deliberately redacts secrets.  Do not re-expose its details in UI/agent text.
-            code = "timeout" if "timed out" in str(exc).lower() else "network_error"
-            raise ModelError(code, resolved.provider.display_name) from None
+            code = exc.code or (
+                "timeout" if "timed out" in str(exc).lower() else "network_error")
+            raise ModelError(
+                code, resolved.provider.display_name, exc.status) from None
         except KimiError:
             # parse_response is retained for normalized OpenAI replies; its legacy diagnostic
             # text was useful to the old single-provider CLI but is not safe to expose here.
@@ -106,14 +91,6 @@ class ModelClient:
         except ModelRegistryError as exc:
             raise ModelError(exc.code, "模型配置") from None
         return self._chat_resolved(resolved, messages, tools, timeout, retry, on_delta, cache_key)
-
-    def freeze(self, model_id: str | None = None) -> FrozenModelClient:
-        """Resolve once now; later registry edits apply only to a new Runtime scope."""
-        try:
-            resolved = self.registry.resolve(model_id or self.registry.default_id())
-        except ModelRegistryError as exc:
-            raise ModelError(exc.code, "模型配置") from None
-        return FrozenModelClient(self, resolved)
 
     def probe(self, model_id: str) -> dict:
         """Explicit, tiny management probe.  It is never invoked in the background."""

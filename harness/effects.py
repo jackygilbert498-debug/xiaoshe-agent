@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import _io, config
 
-EFFECTS_FILE = config.STATE_DIR / "effects.jsonl"
+EFFECTS_FILE = config.ROOT / ".state" / "effects.jsonl"
 _MAX = 2000            # 超限轮转，防无界增长
 _TARGET_MAX = 300
 _LOCK_TIMEOUT = 5
@@ -345,43 +345,20 @@ def recent(limit: int = 20, session_id=None, path=None) -> list:
 
 def load(path=None) -> list:
     """逐行读副作用账本（坏行跳过不崩）。"""
-    return load_with_integrity(path)["records"]
-
-
-def load_with_integrity(path=None) -> dict:
-    """Recover readable JSONL prefix and expose corruption instead of hiding it.
-
-    JSONL has no atomic whole-file boundary: a process can die after appending
-    half of the final record.  Consumers that only need history may use
-    :func:`load`; recovery and release gates must use this projection and see
-    whether a malformed tail or an earlier malformed line was encountered.
-    """
     p = Path(path) if path else EFFECTS_FILE
     out = []
-    malformed_lines: list[int] = []
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {"records": out, "integrity": {"valid": True, "malformed_lines": [], "tail_corrupt": False}}
-    lines = text.splitlines()
-    for line_number, line in enumerate(lines, start=1):
+        return out
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             r = json.loads(line)
         except json.JSONDecodeError:
-            malformed_lines.append(line_number)
             continue
         if isinstance(r, dict):
             out.append(r)
-        else:
-            malformed_lines.append(line_number)
-    return {
-        "records": out,
-        "integrity": {
-            "valid": not malformed_lines,
-            "malformed_lines": malformed_lines,
-            "tail_corrupt": bool(malformed_lines and malformed_lines[-1] == len(lines)),
-        },
-    }
+    return out

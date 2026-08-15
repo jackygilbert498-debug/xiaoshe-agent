@@ -56,25 +56,6 @@ def get(key: str, default: str = "") -> str:
     return _FILE.get(key, default)
 
 
-def _state_dir() -> Path:
-    """Return the local runtime-state root, optionally redirected for isolation.
-
-    The override is intentionally environment-only: it is never read from or
-    written to `.env`, so a browser walk-through cannot accidentally persist a
-    temporary path or point a normal launch at test data.
-    """
-    raw = os.environ.get("XIAOSHE_STATE_DIR", "").strip()
-    if not raw:
-        return ROOT / ".state"
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        raise ValueError("XIAOSHE_STATE_DIR 必须是绝对路径")
-    return path.resolve()
-
-
-STATE_DIR = _state_dir()
-
-
 def get_int(key: str, default: int) -> int:
     """读整数配置：解析失败回退默认，别让坏配置打崩启动。"""
     try:

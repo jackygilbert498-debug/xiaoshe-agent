@@ -20,7 +20,7 @@ import subprocess
 
 from . import _io, config
 
-HOOKS_FILE = config.STATE_DIR / "hooks.json"
+HOOKS_FILE = config.ROOT / ".state" / "hooks.json"
 _TIMEOUT = 10   # hook 子进程超时（秒），防挂死
 
 

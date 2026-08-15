@@ -10,7 +10,6 @@
 
 import { el, cls } from "../lib/dom.js";
 import { relTime, fmtChars } from "../lib/format.js";
-import { summarizeJobCommand } from "../job-summary.js";
 
 /* ---- W2-A 接口兜底（net 缺席降级，3 行 helper） ---- */
 function apiGet(path) {
@@ -61,6 +60,8 @@ const data = {
   usage: null, denied_calls: null, stall: null,
 };
 const expandedJob = { id: null };        // 重渲染后保持展开态
+const JOB_PREVIEW_LIMIT = 5;
+let showAllJobs = false;
 
 /* ============================================================================
  * 各卡渲染（空数组 → .p-empty 人话）
@@ -111,8 +112,9 @@ function pullJobLog(jobId, box) {
 function secJobs() {
   const list = data.jobs;
   if (!list?.length) return el("div.p-empty", {}, el("b", { text: "暂无 jobs。" }), "run_in_background 启动的任务在此显示，状态翻转实时更新。");
-  return el("ul.job-list", {},
-    list.map((j) => {
+  const visible = showAllJobs ? list : list.slice(0, JOB_PREVIEW_LIMIT);
+  const rows = el("ul.job-list", {},
+    visible.map((j) => {
       const open = expandedJob.id === j.id;
       const meta = JOB_META[j.status] || { label: j.status || "?" };
       const logBox = el("div.job-log-box", {});
@@ -124,13 +126,18 @@ function secJobs() {
           onclick: () => { expandedJob.id = open ? null : j.id; renderSection("jobs"); },
         },
           el("i", { class: `job-dot d-${j.status}`, "aria-hidden": "true" }),
-          el("span.job-cmd", {
-            text: summarizeJobCommand(j.command),
-            title: "展开可查看本任务的脱敏日志",
-          }),
+          el("span.job-cmd", { text: j.command || "", title: j.command || "" }),
           el("span.job-time", { text: relTime(j.started_at) }),
           el("span", { class: `job-status s-${j.status}`, text: meta.label })),
         open ? logBox : null);
+    }));
+  if (list.length <= JOB_PREVIEW_LIMIT) return rows;
+  return el("div.jobs-stack", {}, rows,
+    el("button.jobs-toggle", {
+      type: "button",
+      "aria-expanded": showAllJobs ? "true" : "false",
+      text: showAllJobs ? `收起到最近 ${JOB_PREVIEW_LIMIT} 项` : `查看全部 ${list.length} 项`,
+      onclick: () => { showAllJobs = !showAllJobs; renderSection("jobs"); },
     }));
 }
 
@@ -281,6 +288,7 @@ function renderSection(name) {
 
 export function mount(elRoot) {
   root = elRoot;
+  showAllJobs = false;
   root.replaceChildren();
   for (const [name, title] of SECTIONS) {
     const body = el("div.psec-body", {}, skel());
@@ -310,6 +318,7 @@ export function update(fullOrPatch) {
 export function updateJobs(jobs) {
   if (!root || !Array.isArray(jobs)) return;
   data.jobs = jobs;
+  if (jobs.length <= JOB_PREVIEW_LIMIT) showAllJobs = false;
   renderSection("jobs");
 }
 

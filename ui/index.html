@@ -46,7 +46,6 @@
 <link rel="icon" type="image/svg+xml" href="assets/snake.svg?v=20260801">
 <link rel="stylesheet" href="styles/tokens.css?v=20260801">
 <link rel="stylesheet" href="styles/base.css?v=20260801">
-<link rel="stylesheet" href="styles/accessibility-closeout.css?v=20260813">
 <link rel="stylesheet" href="styles/components.css?v=20260801">   <!-- Wave2-A：消息流/输入/模态组件 -->
 <link rel="stylesheet" href="styles/panels.css?v=20260801">       <!-- Wave2-B：右栏三 tab 面板 -->
 <link rel="stylesheet" href="styles/observatory.css?v=20260801">  <!-- Wave2-B：屏幕观测模态 -->
@@ -226,8 +225,14 @@
       <div class="brand">
         <!-- 品牌位必须纯内联：Chrome/Edge 对 <use> 克隆内容里的 mask="url(#…)" 不解析，方瞳会丢失（2026-08-01 实测复现） -->
         <svg class="brand-mark" role="img" aria-label="小蛇" viewBox="0 0 24 24" fill="none">
-          <defs><mask id="pupil-brand"><rect width="24" height="24" fill="#fff"/><path d="M14.7 5.1 Q14.7 4.4 15.4 4.4 L16.6 4.4 Q17.3 4.4 17.3 5.1 L17.3 6.1 L16.4 7 L15.4 7 Q14.7 7 14.7 6.3 Z" fill="#000"/><rect x="17.1" y="5.425" width="6.9" height="0.55" fill="#000"/></mask></defs>
-          <path mask="url(#pupil-brand)" stroke="currentColor" stroke-width="5" stroke-linecap="round" d="M16.8 6.8 C14.4 4.3 9.9 4.4 8.6 7 C7.3 9.6 10.1 10.8 12.5 12 C14.9 13.2 17.4 14.5 16.1 17.1 C14.8 19.7 9.9 20.1 7.4 17.9"/>
+          <defs>
+            <mask id="pupil-brand"><rect width="24" height="24" fill="#fff"/><path d="M14.7 5.1 Q14.7 4.4 15.4 4.4 L16.6 4.4 Q17.3 4.4 17.3 5.1 L17.3 6.1 L16.4 7 L15.4 7 Q14.7 7 14.7 6.3 Z" fill="#000"/><rect x="17.1" y="5.425" width="6.9" height="0.55" fill="#000"/></mask>
+            <linearGradient id="brand-sheen" x1="3" y1="20" x2="21" y2="4" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="var(--sheen-1)"/><stop offset=".42" stop-color="var(--sheen-2)"/>
+              <stop offset=".72" stop-color="var(--sheen-3)"/><stop offset="1" stop-color="var(--sheen-4)"/>
+            </linearGradient>
+          </defs>
+          <path mask="url(#pupil-brand)" stroke="url(#brand-sheen)" stroke-width="5" stroke-linecap="round" d="M16.8 6.8 C14.4 4.3 9.9 4.4 8.6 7 C7.3 9.6 10.1 10.8 12.5 12 C14.9 13.2 17.4 14.5 16.1 17.1 C14.8 19.7 9.9 20.1 7.4 17.9"/>
         </svg>
         <div><div class="bt">小蛇</div><div class="bs">HARNESS · ATELIER</div></div>
       </div>
@@ -310,7 +315,7 @@
         <!-- input.js 待发图条：.pimg 〔ref｜target〕+✕；空时自动隐藏 -->
         <div class="pending" id="pending-images"></div>
         <div class="cbox">
-          <textarea id="composer-input" rows="1" placeholder="交代小蛇做事…（连接后可发送）" aria-label="输入消息" disabled aria-disabled="true"></textarea>
+          <textarea id="composer-input" rows="1" placeholder="交代小蛇做事…（连接后可发送）" aria-label="输入消息"></textarea>
           <div class="cbtns">
             <button class="icbtn" id="btn-attach" disabled aria-disabled="true"
                     title="暂不支持本地选图；请让小蛇看屏，待发图会自动出现在这里"
@@ -320,7 +325,7 @@
             <!-- 模型菜单由 model-manager.js 填充，底部固定“＋ 添加模型”入口。 -->
             <div class="model-wrap" id="model-wrap">
               <button class="pill" id="btn-model" title="模型：加载中…" aria-label="切换模型"
-                      aria-haspopup="menu" aria-expanded="false">
+                      aria-haspopup="listbox" aria-expanded="false">
                 <span class="pill-dot"></span><span class="pill-text">…</span><span class="pill-caret">▾</span>
               </button>
               <div class="model-menu" id="model-menu" role="menu" aria-label="模型列表" hidden>
@@ -410,8 +415,6 @@
   </div>
 </div>
 
-<!-- 窄屏抽屉的可点击遮罩；由 main.js 仅在抽屉打开时启用。 -->
-<button id="mobile-overlay" type="button" aria-label="关闭移动面板" hidden></button>
 <!-- 模态层挂载点：⌘K palette / 观测台 / 灯箱 / 确认框（Wave 2 往此渲染，:empty 自动隐藏） -->
 <div id="modal-root"></div>
 <!-- toast 容器（Wave 2 队列管理；单条 .toast） -->

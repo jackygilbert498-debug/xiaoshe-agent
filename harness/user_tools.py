@@ -38,7 +38,7 @@ _INVISIBLE_RE = re.compile("[​-‏‪-‮⁠⁦-⁩﻿]")
 
 
 def _base(base=None) -> Path:
-    return Path(base) if base else (config.STATE_DIR / "user_tools")
+    return Path(base) if base else (config.ROOT / ".state" / "user_tools")
 
 
 def _reserved(reserved=None) -> set:

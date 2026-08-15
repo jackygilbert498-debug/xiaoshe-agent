@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import _io, config
 
-APPROVALS_FILE = config.STATE_DIR / "approvals.json"
+APPROVALS_FILE = config.ROOT / ".state" / "approvals.json"
 _MAX = 500   # 条数上限，防无界增长
 
 

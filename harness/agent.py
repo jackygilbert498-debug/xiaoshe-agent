@@ -14,20 +14,17 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
 from . import (_io, calibrate, compaction, config, inputhub, jobs, mcp_client, memory, netguard, notes, permission,
                selflearn, session, tokens, trust, ui_bus, user_tools, vision)
 from . import tools as tools_mod
+from .execution_environment import ExecutionEnvironment
 from .kimi_client import KimiError, cache_stats
 from .kimi_client import chat as kimi_chat
-from .runtime_ledger import PrefixEpoch, RequestLedger, ToolEpoch, normalize_provider_usage
-from .runtime_flags import (
-    E0_REQUEST_LEDGER, E1_TOOL_EPOCH, E2_PREFIX_EPOCH, E3_COMPLETION_GATE,
-    RuntimeFeatureError, RuntimeFeatureSnapshot, runtime_feature_snapshot,
-)
-from .runtime_session import AgentRuntimeSession, RuntimeSessionRegistry
+from .runtime_controls import RuntimeControlStore
 
 LOG_FILE = config.ROOT / "logs" / "agent.jsonl"
 MAX_TOOL_ROUNDS = 20  # 绝对兜底：判据全失灵时的绝对上限，防模型无限调用工具
@@ -38,6 +35,7 @@ MAX_DECOMPOSE_HINTS = 1  # #5d ADaPT：同一回合分解引导注入上限（�
 ROUNDS_REMIND_AHEAD = 3  # §2.3.1 循环边界确定性提醒：剩这么多轮到硬上限时注入一次「收敛收尾」（恰一次，零 token 浪费）
 VERIFY_ENABLED = False  # #5c 收尾独立验收默认关（DG-4，保绿测零变更）；真机或 ctx["_verify_enabled"] 显式开
 _INLOOP_COMPACT_DELTA = 8000  # F24：回合内累计新增字符超此值就做一次压缩检查（防单回合长工具链撑爆 provider 上限）
+_SAFE_RUNTIME_CONTROLS = {"sandbox_enabled": True, "network_mode": "off", "heartbeat_enabled": True}
 
 # ── UI 观测层（SPEC §6.1/§6.2，默认全关、零开销短路，红线 3）────────────────
 _EVENT_SINK = None    # callable(type, payload)；serve 模式经 set_event_sink 注册，None = 原行为逐字节一致
@@ -64,25 +62,6 @@ def _top_level(ctx) -> bool:
     （tool_call.start/end、message.append×3、compaction.event）全部静默——子 agent 可观测性
     只走 subagent.update，别让它的事件无 depth 标识混进主流。JSONL 落盘（带 depth 字段）不受影响。"""
     return not isinstance(ctx, dict) or ctx.get("_subagent_depth", 0) == 0
-
-
-def _open_obligations(ctx: dict) -> tuple[str, ...]:
-    """Project the current todo list into compacted-history obligations.
-
-    This is intentionally tolerant of pre-existing session data: malformed
-    entries do not crash a model turn, while pending/in-progress visible todo
-    text is protected from disappearing during recap rotation.
-    """
-    if not isinstance(ctx, dict):
-        return ()
-    todos = ctx.get("todos")
-    if not isinstance(todos, list):
-        return ()
-    return tuple(
-        item["content"].strip() for item in todos
-        if isinstance(item, dict) and item.get("status") in {"pending", "in_progress"}
-        and isinstance(item.get("content"), str) and item["content"].strip()
-    )
 
 
 _BUS_APPROVER = None  # callable(name, args, reason, force_ask=..., ctx=...)；serve 模式注册，None = 走既有 approver
@@ -310,13 +289,6 @@ def _approved(name: str, args: dict, reason: str, approver, ctx: dict, force_ask
     approved = ctx.get("_approved_tools", ())
     persistent = ctx.get("_persistent_approved", ())   # A7：跨会话持久放行（repl 启动时从 .state 载入；headless 不载=不生效）
     key = _approval_key(name, args, ctx)
-    # A user who denied this exact action in the current session must not be
-    # spammed with identical approval cards on later model turns.  This is a
-    # deny cache only (never persisted), and force/tainted requests retain the
-    # stricter per-attempt prompt behavior.
-    denied = ctx.get("_denied_approval_keys", ())
-    if not force_ask and not tainted and key in denied:
-        return False
     if not force_ask and (key in approved or name in approved or key in persistent) and not tainted:
         return True
     # UI 批次 D 自主模式（会话级，ctx['_autonomy']，不落盘）：普通 ask 自动放行——复用本通道的
@@ -352,11 +324,7 @@ def _approved(name: str, args: dict, reason: str, approver, ctx: dict, force_ask
         ctx.setdefault("_approved_tools", set()).add(key)      # 存指纹（细粒度），非裸工具名
         ui_bus.mark_dirty(ctx, "approved_tools")   # UI 观测层：会话白名单翻转（无总线 no-op）
         return True
-    allowed = verdict in (True, "always", "persist")
-    if not allowed and not force_ask and not tainted:
-        ctx.setdefault("_denied_approval_keys", set()).add(key)
-        ui_bus.mark_dirty(ctx, "denied_approval_keys")
-    return allowed   # 显式 True/always/persist 才算批准（A4 审查 LOW：别用 bool() 兜）
+    return verdict in (True, "always", "persist")   # 显式 True/always/persist 才算批准（A4 审查 LOW：别用 bool() 兜）
 
 
 def _bump_repeat(ctx: dict, name: str, args) -> int:
@@ -806,41 +774,12 @@ def _handle_tool_call(tc: dict, history: list, approver, log_file: Path, ctx: di
     ctx["_ui_call_id"] = tc.get("id")   # UI 观测层：tool_call.start/end 的 call_id 由 _run_tool 取此键
     content, is_error, executed = _run_tool(name, args, ctx, approver, log_file)
     if executed:
-        _observe_read_shadow(ctx, name, args_fp, is_error)
         # 注：MCP 输出的污点已在 tools.execute 的 MCP 分支对**原文** record_taint（2a 审查 MED）。
         n = _bump_repeat(ctx, name, args_fp)
         if n >= 3:
             content += f"\n\n[系统提醒] 你已连续第 {n} 次用相同参数调用 {name}，像在原地打转——请换方法或参数。"
     _append_tool_result(history, tc_id, name, content, is_error, log_file, ctx)
     return is_error
-
-
-def _observe_read_shadow(ctx: dict, name: str, args_fingerprint: str, is_error: bool) -> None:
-    """旁路统计重复只读调用，绝不在本阶段抑制或改变工具执行。
-
-    只存稳定哈希与聚合计数，避免把路径、搜索词或工具输出再复制一份到会话状态。
-    后续配对评测可据此决定是否值得启用 RepeatedReadGuard 的拦截模式。
-    """
-    if not isinstance(ctx, dict) or name not in tools_mod.READONLY_TOOLS:
-        return
-    try:
-        key = hashlib.sha256(f"{name}\0{args_fingerprint}".encode("utf-8")).hexdigest()
-        shadow = ctx.setdefault("_runtime_read_shadow", {"eligible_calls": 0, "unique_keys": 0,
-                                                            "repeated_calls": 0, "failed_calls": 0,
-                                                            "seen": set()})
-        if not isinstance(shadow, dict) or not isinstance(shadow.get("seen"), set):
-            return
-        shadow["eligible_calls"] = int(shadow.get("eligible_calls", 0)) + 1
-        if key in shadow["seen"]:
-            shadow["repeated_calls"] = int(shadow.get("repeated_calls", 0)) + 1
-        else:
-            shadow["seen"].add(key)
-            shadow["unique_keys"] = int(shadow.get("unique_keys", 0)) + 1
-        if is_error:
-            shadow["failed_calls"] = int(shadow.get("failed_calls", 0)) + 1
-    except Exception:
-        # 账本是旁路观测，任何统计异常都不能改变 legacy 工具结果。
-        return
 
 
 def _dedupe_tool_calls(tool_calls: list) -> list:
@@ -954,112 +893,6 @@ def _charge_model_budget(ctx: dict, result) -> None:
                 ledger.commit(ticket)
 
 
-def _runtime_features(ctx: dict) -> RuntimeFeatureSnapshot:
-    """Return the public feature snapshot already frozen for this execution."""
-    snapshot = ctx.get("_runtime_features") if isinstance(ctx, dict) else None
-    if isinstance(snapshot, RuntimeFeatureSnapshot):
-        return snapshot
-    run_context = ctx.get("_run_context") if isinstance(ctx, dict) else None
-    record = getattr(run_context, "policy_snapshot", {}).get("runtime_features") if run_context is not None else None
-    snapshot = RuntimeFeatureSnapshot.from_record(record) if isinstance(record, dict) else runtime_feature_snapshot(config.get)
-    if isinstance(ctx, dict):
-        ctx["_runtime_features"] = snapshot
-    return snapshot
-
-
-def _shadow_request_start(ctx: dict, history: list, tools: list, purpose: str) -> str | None:
-    """Record a model request only when E0 is enabled; enforcement fails closed."""
-    if not isinstance(ctx, dict):
-        return None
-    features = _runtime_features(ctx)
-    if not features.observing(E0_REQUEST_LEDGER):
-        return None
-    try:
-        ledger = ctx.get("_runtime_request_ledger")
-        if ledger is None:
-            ledger = RequestLedger()
-            ctx["_runtime_request_ledger"] = ledger
-            ctx["_runtime_request_seq"] = 0
-        if not isinstance(ledger, RequestLedger):
-            return None
-        schemas = [dict(item) for item in tools] if isinstance(tools, list) else []
-        candidate = ToolEpoch.create("tool-1", schemas, "legacy_shadow_initial")
-        tool_epoch = ctx.get("_runtime_tool_epoch")
-        if features.mode(E1_TOOL_EPOCH) == "on" and tool_epoch is not None and tool_epoch.schema_digest != candidate.schema_digest:
-            raise RuntimeFeatureError("RUNTIME_TOOL_EPOCH_REWRITE")
-        if tool_epoch is None or tool_epoch.schema_digest != candidate.schema_digest:
-            epoch_no = int(ctx.get("_runtime_tool_epoch_no", 0)) + 1
-            tool_epoch = ToolEpoch.create(f"tool-{epoch_no}", schemas,
-                                          "e1_enforced_initial" if features.mode(E1_TOOL_EPOCH) == "on" else
-                                          ("legacy_shadow_schema_changed" if epoch_no > 1 else "legacy_shadow_initial"))
-            ctx["_runtime_tool_epoch"] = tool_epoch
-            ctx["_runtime_tool_epoch_no"] = epoch_no
-        stable_system = "\n".join(str(message.get("content", "")) for message in history
-                                   if isinstance(message, dict) and message.get("role") == "system")
-        prefix = PrefixEpoch.create("prefix-1", {"system": stable_system, "project": "", "summary": ""},
-                                    "legacy_shadow_initial")
-        previous = ctx.get("_runtime_prefix_epoch")
-        if features.mode(E2_PREFIX_EPOCH) == "on" and previous is not None and previous.prefix_digest != prefix.prefix_digest:
-            raise RuntimeFeatureError("RUNTIME_PREFIX_EPOCH_REWRITE")
-        if previous is None or previous.prefix_digest != prefix.prefix_digest:
-            epoch_no = int(ctx.get("_runtime_prefix_epoch_no", 0)) + 1
-            prefix = PrefixEpoch.create(f"prefix-{epoch_no}", prefix.stable_blocks,
-                                        "e2_enforced_initial" if features.mode(E2_PREFIX_EPOCH) == "on" else
-                                        ("legacy_shadow_prefix_changed" if epoch_no > 1 else "legacy_shadow_initial"))
-            ctx["_runtime_prefix_epoch"] = prefix
-            ctx["_runtime_prefix_epoch_no"] = epoch_no
-        else:
-            prefix = previous
-        sequence = int(ctx.get("_runtime_request_seq", 0)) + 1
-        ctx["_runtime_request_seq"] = sequence
-        request_id = f"shadow-{sequence}"
-        ledger.start(request_id, purpose, tool_epoch, prefix)
-        return request_id
-    except RuntimeFeatureError:
-        raise
-    except Exception:
-        # Shadow telemetry must never break legacy traffic. A malformed optional
-        # observer is visible through its absence, but cannot mutate execution.
-        return None
-
-
-def _shadow_request_finish(ctx: dict, request_id: str | None, result=None, error: BaseException | None = None) -> None:
-    if not isinstance(ctx, dict) or request_id is None:
-        return
-    try:
-        ledger = ctx.get("_runtime_request_ledger")
-        if not isinstance(ledger, RequestLedger):
-            return
-        usage = normalize_provider_usage(result.get("usage") if isinstance(result, dict) else None)
-        ledger.finish(request_id, usage, error_code=type(error).__name__ if error is not None else None)
-    except Exception:
-        pass
-
-
-def _shadow_model_fn(model_fn, ctx: dict, purpose: str):
-    """给非主循环模型调用补全 purpose，不改变其消息、tools 或返回值。"""
-    def observed(messages, tools=None):
-        request_id = _shadow_request_start(ctx, messages if isinstance(messages, list) else [], tools or [], purpose)
-        try:
-            result = model_fn(messages, tools=tools)
-        except BaseException as exc:
-            _shadow_request_finish(ctx, request_id, error=exc)
-            raise
-        _shadow_request_finish(ctx, request_id, result=result)
-        return result
-    return observed
-
-
-def _completion_gate_enabled(ctx: dict) -> bool:
-    """Apply E3 without changing the legacy explicit-verifier escape hatch."""
-    mode = _runtime_features(ctx).mode(E3_COMPLETION_GATE)
-    if mode == "off":
-        return False
-    if mode == "on":
-        return True
-    return bool(ctx.get("_verify_enabled", VERIFY_ENABLED))
-
-
 _OVERFLOW_MAX_RETRY = 2   # 应急缩史后至多重试这么多次（逐次更狠）；仍溢出就抛，交给上层既有处理
 
 
@@ -1072,7 +905,6 @@ def _send(model_fn, history: list, ctx: dict, summarizer, tools):
     非超限的 KimiError（鉴权/网络等）**原样抛**，交给上层（repl 的 except KimiError）既有处理，绝不吞。
     """
     attempts = 0
-    compaction_model_fn = _shadow_model_fn(model_fn, ctx, "compaction")
     while True:
         if _wall_budget_exceeded(ctx, "before_model"):
             raise RuntimeError("BUDGET_WALL_CLOCK_EXCEEDED")
@@ -1087,13 +919,7 @@ def _send(model_fn, history: list, ctx: dict, summarizer, tools):
                 if retrieved.records:
                     project_retriever.record_usage(project_id, None, None, retrieved.injected_ids, retrieved.query_hash)
                     outbound = list(outbound) + [{"role": "system", "content": project_retriever.render_for_context(retrieved)}]
-            request_id = _shadow_request_start(ctx, history, tools, "retry" if attempts else "agent_step")
-            try:
-                result = model_fn(outbound, tools=tools)
-            except BaseException as exc:
-                _shadow_request_finish(ctx, request_id, error=exc)
-                raise
-            _shadow_request_finish(ctx, request_id, result=result)
+            result = model_fn(outbound, tools=tools)
             _charge_model_budget(ctx, result)
             return result
         except KimiError as e:
@@ -1119,10 +945,9 @@ def _send(model_fn, history: list, ctx: dict, summarizer, tools):
             log_file = ctx.get("_log_file", LOG_FILE) if isinstance(ctx, dict) else LOG_FILE
             try:   # ①尽力摘要压缩（保信息）；摘要器自己也可能超限/挂——吞掉，靠 ②硬兜底
                 _observe_compaction(history,
-                                    lambda: compaction.maybe_compact(history, compaction_model_fn, summarizer=summarizer,
+                                    lambda: compaction.maybe_compact(history, model_fn, summarizer=summarizer,
                                                                      used_tokens=requested, budget_tokens=target,
-                                                                     keep_recent=4, state=ctx, force=True,
-                                                                     open_obligations=_open_obligations(ctx)),
+                                                                     keep_recent=4, state=ctx, force=True),
                                     "force_compact",
                                     f"provider 400 上下文超限（真窗口 {window}，请求 {requested}）：force 应急压缩",
                                     log_file, ctx)
@@ -1140,6 +965,50 @@ def _send(model_fn, history: list, ctx: dict, summarizer, tools):
                                 log_file, ctx)
 
 
+def _normalize_runtime_controls(raw) -> dict:
+    if not isinstance(raw, Mapping):
+        return dict(_SAFE_RUNTIME_CONTROLS)
+    sandbox_enabled = raw.get("sandbox_enabled")
+    network_mode = raw.get("network_mode")
+    heartbeat_enabled = raw.get("heartbeat_enabled")
+    if (type(sandbox_enabled) is not bool or network_mode not in {"off", "proxy", "open"}
+            or type(heartbeat_enabled) is not bool):
+        return dict(_SAFE_RUNTIME_CONTROLS)
+    return {"sandbox_enabled": sandbox_enabled, "network_mode": network_mode,
+            "heartbeat_enabled": heartbeat_enabled}
+
+
+def _apply_runtime_controls(ctx: dict, run_context=None) -> dict:
+    """Resolve one turn's controls without ever trusting the derived direct_mode field."""
+    source = "store"
+    if run_context is not None:
+        raw = getattr(run_context, "policy_snapshot", None)
+        source = "run_context"
+    elif (isinstance(ctx.get("_runtime_control_snapshot"), Mapping)
+          and ctx.get("_runtime_control_snapshot_source") != "store"):
+        raw = ctx["_runtime_control_snapshot"]
+        source = "ctx"
+    else:
+        store = ctx.get("_runtime_control_store")
+        if store is None:
+            store = RuntimeControlStore()
+            ctx["_runtime_control_store"] = store
+        try:
+            raw = store.load()
+        except Exception:
+            raw = _SAFE_RUNTIME_CONTROLS
+    snapshot = _normalize_runtime_controls(raw)
+    ctx["_runtime_control_snapshot"] = snapshot
+    ctx["_runtime_control_snapshot_source"] = source
+    ctx["_sandbox_enabled"] = snapshot["sandbox_enabled"]
+    ctx["_network_mode"] = snapshot["network_mode"]
+    ctx["_heartbeat_enabled"] = snapshot["heartbeat_enabled"]
+    # Recomputed per turn. A background process receives this dict once at start
+    # and therefore is never restarted when later controls change.
+    ctx["_child_env"] = ExecutionEnvironment.build(network_mode=snapshot["network_mode"]).env
+    return snapshot
+
+
 def run_once(user_text: str, history: list, model_fn=kimi_chat, approver=_default_approver,
              log_file: Path = LOG_FILE, ctx: dict | None = None, summarizer=None,
              run_context=None) -> str:
@@ -1152,23 +1021,11 @@ def run_once(user_text: str, history: list, model_fn=kimi_chat, approver=_defaul
         ctx = {"todos": [], "memory_file": memory.MEMORY_FILE}
     if run_context is not None:
         ctx["_run_context"] = run_context
-    elif ctx.get("_subagent_depth", 0) == 0 and not ctx.pop("_runtime_features_prebound", False):
-        # REPL/headless callers reuse one context, but each user turn is a new
-        # Runtime scope.  Nested agents inherit the parent snapshot instead.
-        ctx["_runtime_features"] = runtime_feature_snapshot(config.get)
-    # A caller may supply an immutable Task Run snapshot.  Interactive callers
-    # obtain one before their turn begins; nested calls inherit this same value.
-    _runtime_features(ctx)
-    # D1-1b 出网管控：会话首次进入时定一次子进程环境（off=擦除+死代理零出网 / proxy=白名单过滤 /
-    # open=不注入）。子 agent 的 child_ctx 走同一入口（run_once）同规则继承，不留洗白通道。
-    # 注意用「键不在」判定而非 setdefault——open 模式注入的 None 也是已定值，别每轮重算。
-    if "_child_env" not in ctx:
-        ctx["_child_env"] = netguard.session_child_env()
+    _apply_runtime_controls(ctx, run_context or ctx.get("_run_context"))
     # 运行时句柄跟随本次调用参数（不能用 setdefault，否则会被首轮钉死、供 spawn_subagent 复用时串味）
     ctx["_model_fn"] = model_fn
     ctx["_approver"] = approver
     ctx["_log_file"] = log_file
-    compaction_model_fn = _shadow_model_fn(model_fn, ctx, "compaction")
     # #5d 每回合重置分解预算（不用 setdefault——会话级共享 ctx 一旦被首轮钉死，MAX_DECOMPOSE_HINTS=1 会永久耗尽）
     ctx["_decompose_hints"] = 0
     # #1/#23 原子边界：先整表快照 + 快照越权/打转计数，再把压缩也纳入 try——
@@ -1194,10 +1051,10 @@ def run_once(user_text: str, history: list, model_fn=kimi_chat, approver=_defaul
                                 log_file, ctx)
         # 75%触发：真窗口×0.75，含本会话已自校准的窗口
         _observe_compaction(history,
-                            lambda: compaction.maybe_compact(history, compaction_model_fn, summarizer=summarizer,
+                            lambda: compaction.maybe_compact(history, model_fn, summarizer=summarizer,
                                                              used_tokens=anchor,
-                                                             budget_tokens=calibrate.trigger_budget(ctx), state=ctx,
-                                                             open_obligations=_open_obligations(ctx)),
+                                                             budget_tokens=calibrate.trigger_budget(ctx),
+                                                             state=ctx),
                             "auto_compact", "75% 预算触发自动压缩（token 主判据或字符安全网越阈）",
                             log_file, ctx)
         history.append({"role": "user", "content": user_text})
@@ -1240,12 +1097,9 @@ def run_once(user_text: str, history: list, model_fn=kimi_chat, approver=_defaul
             if not tool_calls:
                 # #5c 收尾独立验收：仅 dirty（本会话改过外部状态）+ 顶层 + 开关开时触发一次；判未达成→追加 user 驱动再修。
                 if (not verified and gauge.dirty and ctx.get("_subagent_depth", 0) == 0
-                        and _completion_gate_enabled(ctx)):
+                        and ctx.get("_verify_enabled", VERIFY_ENABLED)):
                     verified = True
-                    objection = _verify_completion(
-                        history, user_text,
-                        _shadow_model_fn(ctx.get("_quiet_model_fn") or model_fn, ctx, "verifier"),
-                    )
+                    objection = _verify_completion(history, user_text, ctx.get("_quiet_model_fn") or model_fn)
                     if objection:
                         nudge = ("[独立验收] 客观证据未显示目标达成：" + objection[:200] + " 请继续修补，别过早收尾。")
                         history.append({"role": "user", "content": nudge})
@@ -1287,10 +1141,10 @@ def run_once(user_text: str, history: list, model_fn=kimi_chat, approver=_defaul
                                         log_file, ctx)
                 # 同上：75%触发用自校准窗口
                 _observe_compaction(history,
-                                    lambda: compaction.maybe_compact(history, compaction_model_fn, summarizer=summarizer,
+                                    lambda: compaction.maybe_compact(history, model_fn, summarizer=summarizer,
                                                                      used_tokens=_anchor,
-                                                                     budget_tokens=calibrate.trigger_budget(ctx), state=ctx,
-                                                                     open_obligations=_open_obligations(ctx)),
+                                                                     budget_tokens=calibrate.trigger_budget(ctx),
+                                                                     state=ctx),
                                     "auto_compact", "75% 预算触发自动压缩（回合内长工具链）",
                                     log_file, ctx)
                 _seen = len(history)   # 压缩改变了长度，重置基准
@@ -1634,34 +1488,15 @@ def _handle_undo_command(text: str, confirm=input, out=print, base=None,
         else:
             out("（没有可撤销的文件改动）")
         return True
-    top_ts = str(top.get("ts", ""))
-
-    def effect_is_not_before_checkpoint(effect: dict) -> bool:
-        """比较 effects 的 UTC 时间与 checkpoint 的本地墙钟时间。
-
-        旧实现直接比较 ISO 字符串；当本机时区不是 UTC 时，同一秒后发生的
-        外部动作会被错误视为更早，造成 ``:undo`` 漏报不可撤副作用。无法
-        解析的历史记录从严告警，不把不确定的时序伪装成安全。
-        """
-        try:
-            checkpoint_time = datetime.fromisoformat(top_ts)
-            effect_time = datetime.fromisoformat(str(effect.get("ts", "")).replace("Z", "+00:00"))
-            if checkpoint_time.tzinfo is None:
-                checkpoint_time = checkpoint_time.astimezone()
-            if effect_time.tzinfo is None:
-                return True
-            return effect_time >= checkpoint_time
-        except (TypeError, ValueError):
-            return True
-
+    top_ts = str(top.get("ts", ""))   # 栈顶之后（含同秒，时序不可细分就从严警告）的撤不了项→如实警告
     # 警告分级：只对真高危（删除/破坏、外部请求）弹 ⚠；「命令副作用不可逆」是常态，弹了会警告疲劳（审查 MED-1）。
     _warn_irreversible = {"删除/破坏命令不可逆", "外部请求不可逆", "原生UI动作不可逆"}
     for e in irrev[-1:]:
-        if effect_is_not_before_checkpoint(e) and e.get("irrev_why") in _warn_irreversible:
+        if str(e.get("ts", "")) >= top_ts and e.get("irrev_why") in _warn_irreversible:
             tgt = memory.oneline(e.get("target", ""))[:80]
             out(f"⚠ 注意：最近一次动作（{tgt}）{e.get('irrev_why', '本质不可逆')}——:undo 撤不了这类，只能撤下面的文件改动。")
     for e in skipped[-1:]:
-        if effect_is_not_before_checkpoint(e):
+        if str(e.get("ts", "")) >= top_ts:
             tgt = memory.oneline(e.get("target", ""))[:80]
             cn = effects.SKIP_REASON_CN.get(e["snapshot_skip"], e["snapshot_skip"])
             out(f"⚠ 注意：最近对 {tgt} 的改动未快照（{cn}）——那一步撤不了。")
@@ -2054,12 +1889,7 @@ def repl() -> None:
     if history is None:
         history = _fresh_history()
         session_id = session.new_session_id()
-    runtime_registry = RuntimeSessionRegistry()
-    runtime_session = AgentRuntimeSession.create(f"cli-{session_id}", registry=runtime_registry)
-    runtime_turn_seq = 0
     ctx["session_id"] = session_id
-    ctx["_runtime_registry"] = runtime_registry
-    ctx["_runtime_session"] = runtime_session
     log_file = session.session_log_file(session_id)  # 一会话一份日志，多开进程互不写串
     jobs.reconcile()  # M4：核对上次留下的后台任务档案——pid 已死的 running 纠为 interrupted，清超限旧记录
     _tty = False      # 是否已开 bracketed paste（退出时据此关；定义在 try 外，保 finally 永远可见）
@@ -2187,14 +2017,9 @@ def repl() -> None:
                 ctx["_quiet_model_fn"] = kimi_chat   # 5e/5c：子 agent 反思/验收/派活用裸句柄，不冲流式屏（审计#3/#26）
                 print(_reply_prefix(), end="", flush=True)
                 try:
-                    runtime_turn_seq += 1
-                    reply = runtime_session.run_turn(
-                        f"cli-turn-{runtime_turn_seq}",
-                        lambda text: run_once(text, history, model_fn=stream_fn, approver=approver_fn,
-                                              log_file=log_file, ctx=ctx,
-                                              summarizer=quiet_summarizer),
-                        user_text,
-                    )
+                    reply = run_once(user_text, history, model_fn=stream_fn, approver=approver_fn,
+                                     log_file=log_file, ctx=ctx,
+                                     summarizer=quiet_summarizer)
                 except KeyboardInterrupt:
                     print("\n（已中断，回到输入）")
                     if _ends_clean(history):   # 1b：打断后 run_once 已收拾干净并保留已完成进度 → 存档，别把成果丢在内存里

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import config
 
-STATE_DIR = config.STATE_DIR
+STATE_DIR = config.ROOT / ".state"
 
 
 def create_backup(archive_path, src_dir=None) -> Path:

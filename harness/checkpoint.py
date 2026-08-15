@@ -24,11 +24,12 @@ import os
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import _io, config, permission
 
-UNDO_DIR = config.STATE_DIR / "undo"
+UNDO_DIR = config.ROOT / ".state" / "undo"
 _MAX_UNDO = 50               # undo 栈上限（含 blob）——防无界增长；超限丢最旧
 _MAX_RECOVERY = 20           # recovery 副本上限——防无界堆积（对抗审查 LOW）
 _MAX_SNAP_BYTES = 5 * 1024 * 1024   # 快照体积上限：超此不纳入 undo（对齐 edit 5MB 护栏，防 OOM/磁盘放大，对抗审查 MED）——校准口
@@ -207,7 +208,7 @@ def commit(token, tool: str, args, ctx=None, ok: bool = True, base=None) -> None
             if not pending:
                 return   # 无对应快照意图（重复 commit / 已被清）——别入残缺记录
             rec = dict(pending)
-            rec["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            rec["ts"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             try:   # 身份指纹（对抗审查 LOW）：记改动后的 size+mtime，undo 时据此判「文件是否又被外部改过」
                 p = permission.resolve(rec.get("abs") or rec.get("rel", ""))
                 if p.exists():

@@ -62,6 +62,15 @@
 
 /* ---- 后台任务 jobs（参考 GitHub Actions） ---- */
 .job-list { list-style: none; }
+.jobs-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+.jobs-toggle {
+  width: 100%; max-width: 100%; box-sizing: border-box;
+  padding: 7px 10px; border: 0; border-top: 1px solid var(--line);
+  background: transparent; color: var(--ink3); text-align: left;
+  font: 10px var(--mono); cursor: pointer; transition: color var(--fast), background var(--fast);
+}
+.jobs-toggle:hover { color: var(--accent-deep); background: var(--card-hover); }
+.jobs-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .job { margin-bottom: 6px; }
 .job-row {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
@@ -72,7 +81,15 @@
 .job.open .job-row { background: var(--card); border-color: var(--line); }
 .job-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px var(--surface); }
 .job-dot.d-running { background: var(--info); animation: pw 1.6s infinite; }
-.job-dot.d-done { background: var(--ok); }
+.job-dot.d-done {
+  position: relative; width: 12px; height: 12px; box-sizing: border-box;
+  background: transparent; border: 1px solid var(--ok); box-shadow: none;
+  color: var(--ok);
+}
+.job-dot.d-done::after {
+  content: "✓"; position: absolute; inset: -1px;
+  display: grid; place-items: center; font: 600 7px/1 var(--sans);
+}
 .job-dot.d-interrupted { background: var(--warn); }
 .job-dot.d-failed { background: var(--err); }
 .job-cmd {
@@ -291,6 +308,65 @@ textarea.mem-edit {
   border: 1px dashed var(--line3); border-radius: var(--r-sm); padding: 1px 7px;
 }
 .sys-note { font-size: 10px; color: var(--faint); line-height: 1.7; margin-top: 8px; }
+
+/* Runtime-control gate: the warning edge appears only for direct host execution. */
+.runtime-console { display: grid; gap: 9px; min-width: 0; }
+.runtime-status {
+  border: 1px solid var(--line2); border-left: 4px solid var(--ok); border-radius: var(--r-md);
+  background: var(--card); padding: 9px 10px; min-width: 0;
+}
+.runtime-status[data-risk="high"] {
+  border-color: color-mix(in srgb, var(--err) 45%, var(--line)); border-left-color: var(--err);
+  background: color-mix(in srgb, var(--err) 7%, var(--card));
+}
+.runtime-status-line { display: flex; flex-wrap: wrap; gap: 5px; }
+.runtime-status-pill {
+  border: 1px solid var(--line2); border-radius: 999px; color: var(--ink2);
+  font: 600 9.5px/1.4 var(--mono); padding: 2px 7px;
+}
+.runtime-status[data-risk="high"] .runtime-status-pill { border-color: var(--err); color: var(--err); }
+.runtime-status p { color: var(--ink3); font-size: 10.5px; line-height: 1.55; margin: 7px 0 0; overflow-wrap: anywhere; }
+.runtime-effective-meta { color: var(--faint); font: 9px/1.5 var(--mono); margin-top: 5px; overflow-wrap: anywhere; }
+.runtime-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.runtime-copy { display: grid; gap: 2px; min-width: 0; }
+.runtime-copy b { color: var(--ink2); font-size: 11px; }
+.runtime-copy span { color: var(--faint); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.runtime-toggle { display: inline-flex; align-items: center; cursor: pointer; }
+.runtime-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.runtime-toggle-track {
+  position: relative; width: 34px; height: 18px; border: 1px solid var(--line3); border-radius: 999px;
+  background: var(--line); transition: background var(--fast), border-color var(--fast);
+}
+.runtime-toggle-track::after {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--ink3); transition: transform var(--fast), background var(--fast);
+}
+.runtime-toggle input:checked + .runtime-toggle-track { background: var(--accent-bg); border-color: var(--accent); }
+.runtime-toggle input:checked + .runtime-toggle-track::after { background: var(--accent); transform: translateX(16px); }
+.runtime-toggle input:focus-visible + .runtime-toggle-track, .runtime-select:focus-visible, .runtime-direct:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.runtime-toggle input:disabled + .runtime-toggle-track, .runtime-select:disabled { opacity: .5; cursor: wait; }
+.runtime-select {
+  width: min(112px, 38vw); max-width: 100%; border: 1px solid var(--line2); border-radius: var(--r-sm);
+  background: var(--card); color: var(--ink2); font: 10px var(--mono); padding: 5px 24px 5px 7px;
+}
+.runtime-heartbeat-note { color: var(--ink3); font: 9.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.runtime-heartbeat-note.error, .runtime-inline-error { color: var(--err); }
+.runtime-direct {
+  width: 100%; border: 1px solid color-mix(in srgb, var(--err) 55%, var(--line)); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--err) 7%, transparent); color: var(--err);
+  font: 600 10.5px var(--sans); padding: 7px 10px; text-align: center;
+  transition: background var(--fast), border-color var(--fast);
+}
+.runtime-direct:hover:not(:disabled) { background: color-mix(in srgb, var(--err) 13%, transparent); border-color: var(--err); }
+.runtime-direct:disabled { opacity: .65; cursor: default; }
+.runtime-inline-error { font-size: 10px; line-height: 1.5; }
+@media (max-width: 420px) {
+  .runtime-row { grid-template-columns: minmax(0, 1fr); }
+  .runtime-toggle, .runtime-select { justify-self: start; }
+  .runtime-select { width: 100%; }
+}
 /* Task 工作台：左栏内的结构化收件箱，状态只来自 /api/v2/inbox。 */
 .tasking-panel { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
 .tasking-panel .side-sec { padding: 0 10px 7px; display: flex; align-items: center; justify-content: space-between; }
@@ -306,7 +382,17 @@ textarea.mem-edit {
 .task-detail p, .task-detail li, .task-detail-empty, .tasking-empty, .tasking-loading { color: var(--ink3); font-size: 12px; line-height: 1.45; }
 .task-detail ul { margin: 0; padding-left: 18px; }.tasking-empty, .tasking-loading, .task-detail-empty { padding: 9px; }
 .task-detail-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.tool-proposal-action { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--accent); }
 .tasking-error { color: var(--err); display: grid; gap: 7px; font-size: 12px; padding: 9px; }
+.tool-proposal-view { width: min(560px, calc(100vw - 36px)); display: grid; gap: 10px; }
+.tool-proposal-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 9px; }
+.tool-proposal-heading h2 { margin: 2px 0 0; font-size: 18px; }.tool-proposal-kicker { margin: 0; color: var(--ink3); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.tool-proposal-status { border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--warn) 9%, transparent); color: var(--warn); font: 600 10px var(--mono); padding: 4px 8px; white-space: nowrap; }
+.tool-proposal-intro { margin: 0; color: var(--ink2); font-size: 12px; line-height: 1.55; }.tool-proposal-form { display: grid; gap: 9px; }
+.tool-proposal-candidate { width: 100%; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--card); color: var(--ink); font: 12px var(--mono); padding: 8px; }
+.tool-proposal-candidate:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-proposal-alert { min-height: 1.4em; margin: 0; color: var(--err); font-size: 12px; line-height: 1.4; }.tool-proposal-alert.ok { color: var(--ok); font-weight: 600; }
+@media (max-width: 520px) { .tool-proposal-view { width: calc(100vw - 20px); }.tool-proposal-heading { gap: 10px; }.tool-proposal-form .confirm-acts { align-items: stretch; }.tool-proposal-form .confirm-acts button { flex: 1; } }
 .review-center { width: min(1080px, calc(100vw - 36px)); display: grid; gap: 12px; }
 .review-center h2 { margin: 0; font-size: 16px; }.review-alert { min-height: 1.2em; margin: 0; color: var(--err); font-size: 12px; }
 .review-grid { display: grid; grid-template-columns: minmax(160px, .8fr) minmax(280px, 2fr) minmax(160px, .8fr); min-height: 320px; border: 1px solid var(--line); }

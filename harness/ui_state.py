@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from . import (_io, approvals, cheatsheet, compaction, jobs, memory, notes, permission, project_memory,
+from . import (_io, approvals, cheatsheet, jobs, memory, notes, permission, project_memory,
                projects, selflearn, session, skills, subagent_store, ui_bus, vision, viewport, config)  # noqa: F401 (config/permission/subagent_store 备溯源表口径)
 
 STATE_LOCK = ui_bus.STATE_LOCK
@@ -312,24 +312,12 @@ def _msg_view(msg: dict, msg_id: int) -> dict:
     return out
 
 
-def _visible_message_pairs(ctx: dict, ids: list) -> list[tuple[dict, int]]:
-    """Project agent history into the user-visible conversation.
-
-    Agent history begins with pinned system context such as behavior rules and
-    skill indexes.  It remains available to the model, but it is not chat
-    content and must not be exposed by either message endpoint.
-    """
-    hist = ctx.get("_history_ref") or []
-    start = compaction.pinned_system_end(hist)
-    return list(zip(hist[start:], ids[start:]))
-
-
 def messages_tail(ctx: dict, limit: int, ids: list) -> list:
     """尾页：[{...消息, msg_id}]。ids 与 ctx history 平行（ui_server 对齐后传入）。"""
     with STATE_LOCK:
+        hist = ctx.get("_history_ref") or []
         n = max(0, int(limit or 0))
-        pairs = _visible_message_pairs(ctx, ids)
-        pairs = pairs[-n:] if n else pairs
+        pairs = list(zip(hist, ids))[-n:] if n else list(zip(hist, ids))
         return [_msg_view(m, i) for m, i in pairs]
 
 
@@ -337,7 +325,8 @@ def messages_page(ctx: dict, limit: int, before_msg_id, ids: list) -> dict:
     """游标分页（D8）：before_msg_id 之前（不含）的末 limit 条 + has_more。
     before 不在编号表（如合成系统消息）→ 取小于它的最大历史编号作游标；before=None → 尾页。"""
     with STATE_LOCK:
-        pairs = _visible_message_pairs(ctx, ids)
+        hist = ctx.get("_history_ref") or []
+        pairs = list(zip(hist, ids))
         limit = max(1, min(int(limit or 50), 200))
         end = len(pairs)
         if before_msg_id is not None:

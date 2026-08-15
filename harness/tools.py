@@ -25,7 +25,6 @@ from pathlib import Path
 from . import (_io, cheatsheet, config, episodic, imaging, jobs, mcp_client, memory, notes, observe, permission,
                platform_caps, ptc, render, sandbox, skills, subagent_store, trust, ui_bus, user_tools, vibaseline, viewport,
                vision, web)
-from .runtime_session import AgentRuntimeSession, RuntimeSessionRegistry
 
 
 def _ui_now() -> str:
@@ -254,6 +253,31 @@ def _clamp_timeout(v, default: int = 30) -> int:
     return max(1, min(t, 300))
 
 
+def _runtime_execution_controls(ctx: dict | None) -> tuple[bool, str]:
+    """Read only the trusted runtime fields injected by Agent/RunContext."""
+    snapshot = (ctx or {}).get("_runtime_control_snapshot")
+    if not isinstance(snapshot, dict):
+        return True, "off"
+    enabled = snapshot.get("sandbox_enabled")
+    mode = snapshot.get("network_mode")
+    if type(enabled) is not bool or mode not in {"off", "proxy", "open"}:
+        return True, "off"
+    return enabled, mode
+
+
+def _execution_result_text(result: dict, *, empty_hint: str) -> str:
+    backend = str(result.get("backend", "unknown"))
+    isolated = "true" if result.get("isolated") is True else "false"
+    annotation = str(result.get("annotation", ""))
+    head = (f"[backend={backend}, isolated={isolated}] {annotation}\n"
+            f"exit code: {result.get('exit', 0)}")
+    if result.get("timed_out"):
+        head += "（超时被杀）"
+    output = (result.get("output") or "").strip()
+    body = f"stdout:\n{output}" if output else empty_hint
+    return _io.truncate(f"{head}\n{body}")
+
+
 def _run_command(args: dict, ctx: dict) -> str:
     command = str(args.get("command", "")).strip()
     if not command:
@@ -408,7 +432,6 @@ def _note_tip(args: dict, ctx: dict) -> str:
 # ── UI 观测层（SPEC §6.5/D10）：subagent 运行清单 ctx['_subagent_runs']，全部 fail-soft ──
 _SUBAGENT_RUNS_MAX = 50               # 运行清单上限（防无限增长）
 _sa_batch_no = itertools.count(1)     # spawn_parallel 批次号（同批共享 b-N）
-_sa_runtime_no = itertools.count(1)   # Runtime 子会话 ID；只用于事件树，不进入业务上下文
 
 
 def _sa_runs_begin(ctx: dict, objective: str, batch_id: str = None):
@@ -518,24 +541,8 @@ def _run_one_subagent(task: str, ctx: dict, model_fn, approver, log_file, depth:
     }
     if on_step:
         child_ctx["_on_subagent_step"] = on_step
-    # 子 Agent 过去直接跳入 run_once；此处仅补 Runtime 会话边界，不改模型、
-    # 工具或权限。无 Runtime 的旧调用方仍使用独立纯内存 registry。
-    registry = ctx.get("_runtime_registry")
-    if not isinstance(registry, RuntimeSessionRegistry):
-        registry = RuntimeSessionRegistry()
-    parent = ctx.get("_runtime_session")
-    parent_id = parent.session_id if isinstance(parent, AgentRuntimeSession) else None
-    child_no = next(_sa_runtime_no)
-    runtime_session = AgentRuntimeSession.create(
-        f"{parent_id or 'legacy'}.subagent-{child_no}", registry=registry, parent_session_id=parent_id)
-    child_ctx["_runtime_registry"] = registry
-    child_ctx["_runtime_session"] = runtime_session
-    reply = runtime_session.run_turn(
-        f"subagent-turn-{child_no}",
-        lambda child_task: agent.run_once(child_task, list(init_history or []), model_fn=model_fn,
-                                          approver=approver, log_file=log_file, ctx=child_ctx),
-        task,
-    )
+    reply = agent.run_once(task, list(init_history or []), model_fn=model_fn,
+                           approver=approver, log_file=log_file, ctx=child_ctx)
     return reply, child_ctx
 
 
@@ -2061,20 +2068,20 @@ def _run_sandboxed(args: dict, ctx: dict) -> str:
     code = str(args.get("code", "")) if isinstance(args, dict) else ""
     if not code.strip():
         raise ValueError("code 不能为空：写一段代码（Windows=PowerShell / Mac=shell），把结果打到 stdout")
-    if not sandbox.available():
-        return "本平台暂不支持沙箱执行（仅 Windows/Mac）。纯组合现有工具用 run_script；跑 shell 用 run_command。"
     timeout = _clamp_timeout(args.get("timeout", 30))
-    wk = config.STATE_DIR / "sandbox" / uuid.uuid4().hex[:12]
+    sandbox_enabled, network_mode = _runtime_execution_controls(ctx)
+    if sandbox_enabled and not sandbox.available():
+        return "本平台暂不支持沙箱执行（仅 Windows/Mac）。已拒绝执行，不降级宿主。"
+    wk = config.ROOT / ".state" / "sandbox" / uuid.uuid4().hex[:12]
     try:
-        r = sandbox.run_sandboxed(code, wk, timeout_s=timeout)
+        r = sandbox.run_with_controls(code, wk, timeout_s=timeout,
+                                      sandbox_enabled=sandbox_enabled, network_mode=network_mode)
     except sandbox.SandboxError as e:
         return f"沙箱执行失败：{e}"
     finally:
         shutil.rmtree(wk, ignore_errors=True)   # 一次性工作目录跑完即删
-    out = (r.get("output") or "").strip()
-    head = f"exit code: {r.get('exit', 0)}" + ("（超时被杀）" if r.get("timed_out") else "")
-    body = f"沙箱 stdout:\n{out}" if out else "（沙箱无输出——记得把结果打到 stdout（Windows 用 Write-Output，Mac 用 echo））"
-    return _io.truncate(f"{head}\n{body}")
+    return _execution_result_text(
+        r, empty_hint="（无输出——记得把结果打到 stdout（Windows 用 Write-Output，Mac 用 echo））")
 
 
 def _propose_tool(args: dict, ctx: dict) -> str:
@@ -2832,8 +2839,6 @@ def _run_user_tool(tool: dict, args: dict, ctx: dict) -> str:
     沙箱档位同 run_sandboxed：读不到密钥/断网/资源上限/超时秒杀，一次性工作目录跑完删。"""
     import shutil
     import uuid
-    if not sandbox.available():
-        return "本平台暂不支持沙箱执行（仅 Windows/Mac），自定义工具无法运行。"
     call_args = {}
     for p in tool["params"]:
         v = args.get(p["name"]) if isinstance(args, dict) else None
@@ -2842,18 +2847,19 @@ def _run_user_tool(tool: dict, args: dict, ctx: dict) -> str:
                 raise ValueError(f"缺少必填参数 {p['name']}")
             continue
         call_args[p["name"]] = str(v)
-    wk = config.STATE_DIR / "sandbox" / uuid.uuid4().hex[:12]
+    wk = config.ROOT / ".state" / "sandbox" / uuid.uuid4().hex[:12]
+    sandbox_enabled, network_mode = _runtime_execution_controls(ctx)
+    if sandbox_enabled and not sandbox.available():
+        return f"自定义工具「{tool['name']}」无法运行：本平台不支持沙箱执行，已拒绝降级宿主。"
     try:
-        r = sandbox.run_sandboxed(_compose_user_tool_code(tool["code"], call_args), wk,
-                                  timeout_s=_clamp_timeout(30))
+        r = sandbox.run_with_controls(_compose_user_tool_code(tool["code"], call_args), wk,
+                                      timeout_s=_clamp_timeout(30), sandbox_enabled=sandbox_enabled,
+                                      network_mode=network_mode)
     except sandbox.SandboxError as e:
         return f"自定义工具「{tool['name']}」沙箱执行失败：{e}"
     finally:
         shutil.rmtree(wk, ignore_errors=True)
-    out = (r.get("output") or "").strip()
-    head = f"exit code: {r.get('exit', 0)}" + ("（超时被杀）" if r.get("timed_out") else "")
-    body = f"沙箱 stdout:\n{out}" if out else "（沙箱无输出——工具代码记得用 Write-Output 回结果）"
-    return _io.truncate(f"{head}\n{body}")
+    return _execution_result_text(r, empty_hint="（无输出——工具代码记得用 Write-Output 回结果）")
 
 
 def user_tool_specs() -> list:

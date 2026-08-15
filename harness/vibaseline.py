@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import _io, config, imaging
 
-BASELINE_FILE = config.STATE_DIR / "render_baseline.json"
+BASELINE_FILE = config.ROOT / ".state" / "render_baseline.json"
 # 真机实测：无头 chrome 对同一 HTML 逐字节确定（同文件两次截图 sha 相同、dHash 距离 0）。
 # 故 _SAME_MAX=0——只有 dHash 逐格一致才算「一致」，任何变化都报「变化」；假「变化」是安全方向（模型照样看截图核实）。
 # 反面（_SAME_MAX>0）会把「换主色+加整块」这种真改动的距离(实测 8×8 仅 1)吞成「一致」，即有害的漏报。

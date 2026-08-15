@@ -47,7 +47,7 @@ def load(path=None) -> dict:
 
 def _default_file():
     from . import config
-    return config.STATE_DIR / "project_memory.json"
+    return config.ROOT / ".state" / "project_memory.json"
 
 
 def _save(data: dict, path=None) -> None:

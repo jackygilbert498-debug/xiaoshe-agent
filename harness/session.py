@@ -21,8 +21,8 @@ _sid_counter = itertools.count(1)      # 进程内单调发号（#35）：同秒
 SESSION_FILE = config.ROOT / ".session" / "last.json"
 
 # —— M1 多会话档案：一会话一文件，存 .state/sessions/，本机私有不进 git —— #
-SESSIONS_DIR = config.STATE_DIR / "sessions"
-LOGS_DIR = config.STATE_DIR / "logs"
+SESSIONS_DIR = config.ROOT / ".state" / "sessions"
+LOGS_DIR = config.ROOT / ".state" / "logs"
 LEGACY_FILE = SESSION_FILE  # v1 单档案（迁移后改名 .migrated，不再读）
 _MAX_SESSIONS = 50  # 交互档案上限：超过静默清最旧（原始逐条日志仍在 .state/logs/ 里，不算丢数据）
 _MAX_BG_SESSIONS = 100  # 无头/调度档案单独一池（M3 分池：定时任务再多也挤不掉交互会话）
@@ -84,7 +84,7 @@ def new_session_id(prefix: str = "") -> str:
 
 
 def save_session(session_id: str, history: list, todos: list, notes: list | None = None,
-                 task_id: str | None = None, run_id: str | None = None,
+                 task_id: str | None = None, run_id: str | None = None, *,
                  tasking_project_id: str | None = None) -> None:
     """按 id 存会话档案（原子写），随手清掉超上限的最旧档案。notes=工作笔记（跨 resume 存活；None/空则省略字段）。"""
     rec = {"id": session_id,

@@ -13,7 +13,6 @@ export const ENUMS = {
     "session.snapshot", "message.append", "tool_call.start", "tool_call.end",
     "approval.request", "approval.resolved", "state.patch", "compaction.event",
     "viewport.update", "job.update", "subagent.update", "system.alert",
-    "runtime.summary",
     "send", "approve", "cancel", "command", "vision_pending.remove",
   ],
   TASK_EVENT_TYPE: [

@@ -41,6 +41,7 @@ from .memory_conflicts import MemoryConflictService
 from .error_codes import REGISTRY, map_exception
 from .diagnostic_bundle import DiagnosticBundle
 from .telemetry import TelemetryQueue
+from .task_tool_proposals import TaskToolProposalService
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,8 @@ class TaskAPI:
                  run_control: RunControl | None = None,
                  artifact_store: ArtifactStore | None = None,
                  changesets: ChangeSetService | None = None,
-                 reviews: ReviewService | None = None):
+                 reviews: ReviewService | None = None,
+                 user_tools_base: Path | None = None):
         self.store = store
         self.engine = engine or TaskEngine(store)
         self.workspace_root = Path(workspace_root or ".").resolve()
@@ -68,6 +70,12 @@ class TaskAPI:
         self.artifact_store = artifact_store or ArtifactStore(self.store.db_path.parent / "review-artifacts")
         self.changesets = changesets or ChangeSetService(DiffCapture(self.artifact_store))
         self.reviews = reviews or ReviewService(store=self.store)
+        self.tool_proposals = TaskToolProposalService(
+            self.store,
+            self.artifact_store,
+            self.reviews,
+            user_tools_base=user_tools_base or (self.store.db_path.parent / "user_tools"),
+        )
         self.engine.changesets = self.changesets
         self.verification = VerificationService(self.store, self.artifact_store)
         self.verification_trust = VerificationTrustStore(self.store)
@@ -395,6 +403,7 @@ class TaskAPI:
         current_changeset = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/changesets/current", path)
         capture_changeset = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/changesets", path)
         artifact_match = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/changesets/(csg_[A-Za-z0-9_-]+)/artifacts/(tracked|staged|untracked-\d+)", path)
+        tool_proposal_match = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/tool-proposals", path)
         review_match = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/reviews", path)
         verification_list = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/verifications", path)
         verification_detail = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/verifications/(vrf_[A-Za-z0-9_-]+)", path)
@@ -409,6 +418,22 @@ class TaskAPI:
         queue_control = re.fullmatch(r"/api/v2/queue/(qit_[A-Za-z0-9_-]+)/(pause|resume|cancel)", path)
         workspace_preflight = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/workspace-preflight", path)
         workspaces_match = re.fullmatch(r"/api/v2/tasks/(tsk_[A-Za-z0-9_-]+)/workspaces", path)
+        if tool_proposal_match and method == "GET":
+            result = self.tool_proposals.verified_candidates(tool_proposal_match.group(1))
+            return HTTPResult(200, result)
+        if tool_proposal_match and method == "POST":
+            params = body.get("params", [])
+            if not isinstance(params, list):
+                raise TaskingError("TASK_BAD_REQUEST", "params 必须是数组")
+            proposal = self.tool_proposals.propose(
+                task_id=tool_proposal_match.group(1),
+                changeset_id=self._required_text(body, "changeset_id"),
+                artifact_key=self._required_text(body, "artifact_key"),
+                name=self._required_text(body, "name"),
+                description=self._required_text(body, "description"),
+                params=params,
+            )
+            return HTTPResult(201, {"proposal": proposal})
         if current_changeset and method == "GET":
             task_id = current_changeset.group(1)
             self.store.get_task(task_id)

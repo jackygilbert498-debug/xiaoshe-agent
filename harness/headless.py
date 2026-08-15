@@ -25,7 +25,6 @@ from . import _io, agent, jobs, mcp_client, memory, netguard, notes, permission,
 from . import tools as tools_mod
 from .kimi_client import KimiError
 from .kimi_client import chat as kimi_chat
-from .runtime_session import AgentRuntimeSession, RuntimeSessionRegistry
 
 
 def _deny_all(tool_name, args, reason):
@@ -59,12 +58,8 @@ def _write_run_summary(ctx: dict, sid: str) -> None:
 
 def run_headless(prompt: str, allow: tuple[str, ...] = (), workdir: str | None = None,
                  model_fn=kimi_chat, no_mcp: bool = False,
-                 session_prefix: str = "headless-",
-                 runtime_registry: RuntimeSessionRegistry | None = None) -> int:
+                 session_prefix: str = "headless-") -> int:
     """免值守跑完一条任务：结果打到 stdout，返回进程退出码（0=完成，1=出错/参数非法）。"""
-    # 每次无头运行默认拥有独立、纯内存的事件树。它不替代会话存档，亦不
-    # 引入新的磁盘状态；嵌入方若需观察，可显式传入自己的 registry。
-    runtime_registry = runtime_registry or RuntimeSessionRegistry()
     root_cm = contextlib.nullcontext()
     if workdir:
         wd = Path(workdir).expanduser().resolve()
@@ -91,13 +86,10 @@ def run_headless(prompt: str, allow: tuple[str, ...] = (), workdir: str | None =
             _io.warn(f"[i] 工具子进程出网管控：TOOL_NET_MODE={netguard._TOOL_NET_MODE}，白名单 {allow_desc}"
                      "（出网经受控代理 + 环境擦除；off=零出网）。")
     sid = session.new_session_id(session_prefix)
-    runtime_session = AgentRuntimeSession.create(f"cli-{sid}", registry=runtime_registry)
     log_file = session.session_log_file(sid)
     ctx = {"todos": [], "memory_file": memory.MEMORY_FILE,
            "session_id": sid,  # 与交互 repl 对齐：后续 notes/episodic 等按 session_id 落盘的特性无头也要能用
-           "_approved_tools": set(allow),
-           "_runtime_registry": runtime_registry,
-           "_runtime_session": runtime_session}
+           "_approved_tools": set(allow)}
     msg = memory.system_message()
     history = [msg] if msg else []
     if model_fn is kimi_chat:            # 只对真 Kimi 布线 cache_key（无头也走 prompt 缓存，与 repl 对齐）
@@ -114,12 +106,8 @@ def run_headless(prompt: str, allow: tuple[str, ...] = (), workdir: str | None =
             n_ut, ut_problems = tools_mod.load_user_tools()  # A2b：装载已批准自定义工具（哈希校验），无头/定时任务也能用
             for p in ut_problems:
                 _io.warn(f"[!] 自定义工具：{p}")
-            reply = runtime_session.run_turn(
-                "headless-turn-1",
-                lambda text: agent.run_once(text, history, model_fn=_model,
-                                            approver=_deny_all, log_file=log_file, ctx=ctx),
-                prompt,
-            )
+            reply = agent.run_once(prompt, history, model_fn=_model,
+                                   approver=_deny_all, log_file=log_file, ctx=ctx)
             _print_reply(reply)
             if agent._ends_clean(history):
                 try:
