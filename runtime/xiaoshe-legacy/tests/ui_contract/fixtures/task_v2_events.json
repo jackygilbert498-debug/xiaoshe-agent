@@ -1,0 +1,19 @@
+{
+  "$doc": "Task v2 已提交事件信封；前端只能依据 seq 增量合并并可通过 events_after 补拉。",
+  "events": [
+    {
+      "v": 2,
+      "event_id": "tsk_example:2",
+      "seq": 2,
+      "type": "task.transitioned",
+      "task_id": "tsk_example",
+      "run_id": null,
+      "at": "2026-08-03T00:00:00Z",
+      "payload": {
+        "from": "Draft",
+        "to": "Planning",
+        "actor": "user"
+      }
+    }
+  ]
+}

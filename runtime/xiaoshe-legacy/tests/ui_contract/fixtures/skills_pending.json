@@ -1,0 +1,53 @@
+{
+  "$doc": "GET /api/skills/pending 响应样例（SPEC §10 skills_pending / D14 / D16 / D18；R3 §1-E7）。pending=selflearn.list_pending()（.state/skills/pending/ 目录隔离），frontmatter {name,description,when}，steps_count 数 SKILL.md 正文步骤行（D16），source 恒 'selflearn'；active=skills.list_skills(.state/skills/)，enabled 恒 true（存在即启用，D16）；cheatsheet=cheatsheet.load_entries + hits 文件：worked_count=hits、nominated=promoted(bool)（D14 冻结钉名）；D18：user_tools 的 pending 第二套待审体系不并入本端点。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "pending": [
+    {
+      "name": "批量重命名剧照",
+      "description": "按 剧名-季-集 规则批量重命名截图文件",
+      "when": "用户要求整理截图目录时",
+      "steps_count": 5,
+      "source": "selflearn",
+      "created_at": "2026-07-25T21:14:00+08:00"
+    },
+    {
+      "name": "日报草拟",
+      "description": "汇总当日 todos/日志产出日报草稿",
+      "when": "用户说「写日报」时",
+      "steps_count": 3,
+      "source": "selflearn",
+      "created_at": "2026-07-26T08:02:00+08:00"
+    }
+  ],
+  "active": [
+    {
+      "name": "表格清洗",
+      "when": "处理 CSV 乱码/错列时",
+      "steps_count": 4,
+      "enabled": true
+    },
+    {
+      "name": "网页存档",
+      "when": "用户给 URL 要求留档时",
+      "steps_count": 6,
+      "enabled": true
+    }
+  ],
+  "cheatsheet": [
+    {
+      "id": 1,
+      "text": "Windows 下 click_at 前先 focus_window，否则坐标落到后台窗口。",
+      "worked_count": 4,
+      "updated_at": "2026-07-24T15:20:00+08:00",
+      "nominated": true
+    },
+    {
+      "id": 2,
+      "text": "长输出先 check_background 拿 tail 再决定 grep，别整段捞。",
+      "worked_count": 1,
+      "updated_at": "2026-07-23T09:45:00+08:00",
+      "nominated": false
+    }
+  ]
+}

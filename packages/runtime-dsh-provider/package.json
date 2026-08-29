@@ -1,0 +1,23 @@
+{
+  "name": "@xiaoshe/runtime-dsh-provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/types/index.d.ts", "lib/client.js"],
+  "scripts": {
+    "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": { "@xiaoshe/runtime-contract": "workspace:*", "esbuild": "0.28.2", "typescript": "5.9.3", "vitest": "3.2.7" },
+  "dsh": {
+    "client": { "inject": ["@deepseek-ai/dsh-client-runtime"], "platform": "web" }
+  }
+}

@@ -1,6 +1,41 @@
-# 统一 .py 为 LF，防跨 Win/Mac 行尾漂移（agent.py 曾被整成 CRLF）
-*.py text eol=lf
+* text=auto
+/.gitattributes text eol=lf
+/.gitignore text eol=lf
 
-# 固定工作包中记录 SHA-256 的 Markdown 字节，避免 Windows checkout 改写行尾
-docs/handoff/专项工作包-2026-08-02-小蛇壳化转型/交付物/xiaoshe-ux-report-v2.agent.final.md text eol=lf
-docs/handoff/专项工作包-2026-08-02-小蛇壳化转型/交付物/xiaoshe-ux-report_ref.md text eol=lf
+# Cross-platform source and launchers
+*.js text eol=lf
+*.mjs text eol=lf
+*.mts text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.command text eol=lf
+*.ps1 text eol=lf
+*.swift text eol=lf
+*.sql text eol=lf
+*.svg text eol=lf
+
+# Native Windows launchers
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

@@ -1,0 +1,8 @@
+{
+  "$doc": "POST /api/send 响应样例（SPEC §11 5 固化路由之一；§9-6 runner 纪律）。accepted=true 表示已入 runner 队列；同时只跑一轮，运行中再 send 会以 system.alert busy 回绝（此时响应 accepted=false 并带 reason，WS 侧另有 system.alert 帧）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "ok": true,
+  "accepted": true,
+  "client_msg_id": "c-8f21"
+}

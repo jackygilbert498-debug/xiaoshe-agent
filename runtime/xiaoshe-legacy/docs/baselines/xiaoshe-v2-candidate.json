@@ -1,0 +1,18 @@
+{
+  "branch": "codex/plan05-effects-plan06",
+  "captured_at": "2026-08-15T14:13:38Z",
+  "command": "py -3 -X utf8 -W error::ResourceWarning -m unittest discover -s tests -q",
+  "counts": {
+    "errors": 0,
+    "expected_failures": 3,
+    "failures": 0,
+    "ran": 2738,
+    "skipped": 45
+  },
+  "head": "852d6df240737402f14fd9ac8ddbbed736150715",
+  "log_sha256": "sha256:fde5a7f9742ba285ee9d1f0d37d00914bcc56290b1ab1002e01ea89aaec66657",
+  "modified": 79,
+  "schema_version": 1,
+  "test_status": "passed",
+  "untracked": 411
+}

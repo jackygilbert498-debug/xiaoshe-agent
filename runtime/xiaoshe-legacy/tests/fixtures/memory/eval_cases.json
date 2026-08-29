@@ -1,0 +1,8 @@
+[
+  {"id":"scope-01","kind":"cross_project"},{"id":"scope-02","kind":"cross_project"},{"id":"scope-03","kind":"cross_project"},{"id":"scope-04","kind":"cross_project"},{"id":"scope-05","kind":"cross_project"},
+  {"id":"state-01","kind":"unapproved"},{"id":"state-02","kind":"unapproved"},{"id":"state-03","kind":"expired"},{"id":"state-04","kind":"expired"},{"id":"state-05","kind":"forgotten"},{"id":"state-06","kind":"forgotten"},{"id":"state-07","kind":"superseded"},{"id":"state-08","kind":"rejected"},
+  {"id":"trust-01","kind":"external"},{"id":"trust-02","kind":"external"},{"id":"trust-03","kind":"source"},{"id":"trust-04","kind":"source"},
+  {"id":"recall-01","kind":"relevant"},{"id":"recall-02","kind":"relevant"},{"id":"recall-03","kind":"relevant"},{"id":"recall-04","kind":"relevant"},{"id":"recall-05","kind":"relevant"},{"id":"recall-06","kind":"relevant"},{"id":"recall-07","kind":"relevant"},{"id":"recall-08","kind":"relevant"},{"id":"recall-09","kind":"relevant"},{"id":"recall-10","kind":"relevant"},
+  {"id":"budget-01","kind":"budget"},{"id":"budget-02","kind":"budget"},{"id":"budget-03","kind":"budget"},{"id":"budget-04","kind":"fts_fallback"},{"id":"budget-05","kind":"receipt"},{"id":"budget-06","kind":"receipt"},
+  {"id":"lifecycle-01","kind":"rewrite"},{"id":"lifecycle-02","kind":"supersede"},{"id":"lifecycle-03","kind":"review"},{"id":"lifecycle-04","kind":"promotion"},{"id":"lifecycle-05","kind":"legacy"},{"id":"lifecycle-06","kind":"receipt"},{"id":"lifecycle-07","kind":"forget_restart"}
+]

@@ -1,0 +1,25 @@
+{
+  "task_transition": {
+    "before": {"id": "tsk_alpha", "status": "Ready", "active_run_id": "run_alpha", "version": 3},
+    "after": {"id": "tsk_alpha", "status": "Running", "active_run_id": "run_alpha", "version": 4}
+  },
+  "reversible_effect": {
+    "id": "eff_reversible", "summary_version": 2, "task_id": "tsk_alpha", "run_id": "run_alpha",
+    "tool": "write_file", "target": "notes.txt", "ok": true, "outcome_state": "succeeded", "irreversible": false
+  },
+  "irreversible_effect": {
+    "id": "eff_irreversible", "summary_version": 2, "task_id": "tsk_alpha", "run_id": "run_alpha",
+    "tool": "run_command", "target": "command", "ok": false, "outcome_state": "failed", "irreversible": true
+  },
+  "irreversible_success_effect": {
+    "id": "eff_irreversible_success", "summary_version": 2, "task_id": "tsk_alpha", "run_id": "run_alpha",
+    "tool": "run_command", "target": "command", "ok": true, "outcome_state": "succeeded", "irreversible": true
+  },
+  "failed_verification": {
+    "id": "vrf_failed", "task_id": "tsk_alpha", "status": "failed",
+    "checks": [{"id": "unit", "status": "passed"}, {"id": "lint", "status": "failed"}]
+  },
+  "legacy_effect": {
+    "id": "eff_old", "task_id": "tsk_alpha", "tool": "write_file", "ok": true
+  }
+}

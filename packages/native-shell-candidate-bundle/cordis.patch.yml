@@ -1,0 +1,8 @@
+# Candidate-only overlay. Install after @xiaoshe/product-bundle in an isolated
+# Profile; removal restores the formal adapted shell without modifying it.
+- id: xiaoshe-native-shell-legacy-adapted
+  disabled: true
+
+- insert:
+    - id: xiaoshe-native-shell-candidate
+      name: '@xiaoshe/native-shell-candidate'

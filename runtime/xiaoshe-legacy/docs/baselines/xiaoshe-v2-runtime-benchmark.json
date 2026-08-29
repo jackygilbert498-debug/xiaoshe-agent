@@ -1,0 +1,135 @@
+{
+  "format": "xiaoshe.synthetic-runtime-benchmark.v2",
+  "generated_at_utc": "2026-08-16T10:59:15Z",
+  "candidate": {
+    "head": "03e99cbdba2f8db7a6d9513fa754f26f9c00465c",
+    "dirty": true,
+    "status_hash": "94d070444d315d9991b1b3e77be626cc20e128c58354314596e2e78c0962a0fb",
+    "patch_hash": "5234d95c5c9e938d4cbe39b14cb3fcd5e40f6f51f5bf3c43a3fbef4653384707"
+  },
+  "environment": {
+    "python": "3.13.15",
+    "implementation": "CPython",
+    "os": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 197 Stepping 2, GenuineIntel",
+    "cpu_count": 14,
+    "memory_bytes": null
+  },
+  "parameters": {
+    "workload": {
+      "sessions": 500,
+      "tasks": 1000,
+      "events": 10000
+    },
+    "chain_sizes": [
+      100,
+      200,
+      400
+    ],
+    "extrapolate_sizes": [
+      1000,
+      5000,
+      10000
+    ],
+    "queue_capacity": 128,
+    "data_source": "synthetic_and_temporary_only"
+  },
+  "phases": {
+    "workload": {
+      "name": "synthetic_workload",
+      "status": "measured",
+      "elapsed_ms": 235.541,
+      "peak_bytes": 3758203,
+      "observed_events": 10000,
+      "retained_streams": 1000,
+      "synthetic_sessions": 500,
+      "synthetic_tasks": 1000,
+      "counts": {
+        "sessions": 500,
+        "tasks": 1000,
+        "events": 10000
+      }
+    },
+    "committed_event_chain": {
+      "measured": [
+        {
+          "name": "committed_event_chain",
+          "status": "measured",
+          "elapsed_ms": 5124.352,
+          "peak_bytes": 594849,
+          "committed": 100,
+          "rebuilds": 100,
+          "events": 100,
+          "measurement": "measured",
+          "published": true
+        },
+        {
+          "name": "committed_event_chain",
+          "status": "measured",
+          "elapsed_ms": 13327.179,
+          "peak_bytes": 737521,
+          "committed": 200,
+          "rebuilds": 200,
+          "events": 200,
+          "measurement": "measured",
+          "published": true
+        },
+        {
+          "name": "committed_event_chain",
+          "status": "measured",
+          "elapsed_ms": 39919.12,
+          "peak_bytes": 1278506,
+          "committed": 400,
+          "rebuilds": 400,
+          "events": 400,
+          "measurement": "measured",
+          "published": true
+        }
+      ],
+      "extrapolated": [
+        {
+          "events": 1000,
+          "measurement": "extrapolated",
+          "elapsed_ms_estimate": 151437.79
+        },
+        {
+          "events": 5000,
+          "measurement": "extrapolated",
+          "elapsed_ms_estimate": 1641657.2
+        },
+        {
+          "events": 10000,
+          "measurement": "extrapolated",
+          "elapsed_ms_estimate": 4581983.048
+        }
+      ],
+      "fitted_exponent": 1.481,
+      "near_quadratic": false,
+      "superlinear": true,
+      "growth_threshold_exponent": 1.25,
+      "extrapolated_budget_ms": 60000,
+      "growth_unacceptable": true
+    },
+    "queue_backpressure": {
+      "name": "queue_backpressure",
+      "status": "measured",
+      "elapsed_ms": 6855.633,
+      "peak_bytes": 446988,
+      "capacity": 128,
+      "offered": 257,
+      "accepted": 129,
+      "backpressured": 128,
+      "bounded": true,
+      "overflow_diagnostics": 1,
+      "committed": 129,
+      "projection_rebuilds": 129,
+      "projection_consumed": true
+    }
+  },
+  "decision": "hold",
+  "blockers": [
+    "candidate_dirty",
+    "committed_event_chain_growth_unacceptable"
+  ],
+  "self_hash": "00e3183b701dc62b567bd6214d18aebebca8d97b4336d9ee800669a8145d98cb"
+}

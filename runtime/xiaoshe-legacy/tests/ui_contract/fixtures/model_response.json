@@ -1,0 +1,10 @@
+{
+  "$doc": "POST /api/model 响应样例。请求必须且只能带 model（旧页面）或 model_id（新页面）；persisted 恒 false，响应不包含密钥。",
+  "v": 1,
+  "server_time": "2026-07-27T15:30:00+08:00",
+  "ok": true,
+  "model": "k2-thinking",
+  "model_id": "builtin-kimi:k2-thinking",
+  "provider": "Kimi",
+  "persisted": false
+}

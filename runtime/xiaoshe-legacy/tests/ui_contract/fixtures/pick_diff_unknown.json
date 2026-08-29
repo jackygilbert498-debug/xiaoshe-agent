@@ -1,0 +1,17 @@
+{
+  "$doc": "GET /api/pick/diff · unknown / 空态：任一环失败（R3 §4 fail-soft）或会话尚无 pick 记录（SPEC §10 pick_diff 空态 {\"status\":\"unknown\",…}）；ratio 与 pair ref 均可为 null。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "unknown",
+  "ratio": null,
+  "pair": {
+    "before_ref": null,
+    "after_ref": null
+  },
+  "target": {
+    "no": null,
+    "screen_cx": 0,
+    "screen_cy": 0
+  },
+  "at": null
+}

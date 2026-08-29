@@ -1,0 +1,169 @@
+{
+  "$doc": "由脚本自 harness/ui_schema.py 的 ENUMS 原样导出（SPEC §11-3 枚举封闭三方比对的镜像方）。validate_contract.py 校验：ui_schema.ENUMS ≡ 本文件.enums ≡ ui/js/lib/enums.js 提取结果。重新生成：python -c \"import json,sys; sys.path.insert(0,'.'); from harness import ui_schema; ...\"",
+  "enums": {
+    "ROLE": [
+      "user",
+      "assistant",
+      "tool",
+      "system"
+    ],
+    "EVENT_TYPE": [
+      "session.snapshot",
+      "message.append",
+      "tool_call.start",
+      "tool_call.end",
+      "approval.request",
+      "approval.resolved",
+      "state.patch",
+      "compaction.event",
+      "viewport.update",
+      "job.update",
+      "subagent.update",
+      "system.alert",
+      "send",
+      "approve",
+      "cancel",
+      "command",
+      "vision_pending.remove"
+    ],
+    "TASK_EVENT_TYPE": [
+      "task.created",
+      "task.definition_updated",
+      "task.transitioned",
+      "run.started",
+      "run.finished",
+      "action.started",
+      "action.finished",
+      "plan.proposed",
+      "plan.reviewed",
+      "plan.superseded",
+      "run.preflight_stopped",
+      "run.deviation_blocked",
+      "run.stop_requested",
+      "run.steered",
+      "run.stopped",
+      "question.asked",
+      "question.answered",
+      "changeset.captured",
+      "changeset.stale",
+      "review.recorded",
+      "verification.started",
+      "verification.check_finished",
+      "verification.finished",
+      "task.completed",
+      "workspace.reserved",
+      "workspace.ready",
+      "workspace.marked",
+      "checkpoint.created",
+      "recovery.previewed",
+      "recovery.started",
+      "recovery.finished",
+      "task.related",
+      "task.forked"
+    ],
+    "TASK_STATUS": [
+      "Draft",
+      "Planning",
+      "AwaitingPlanApproval",
+      "Ready",
+      "Running",
+      "WaitingUser",
+      "Review",
+      "Verifying",
+      "Succeeded",
+      "Failed",
+      "Cancelled",
+      "Archived"
+    ],
+    "DECISION": [
+      "y",
+      "n",
+      "a",
+      "p"
+    ],
+    "PERMISSION": [
+      "allow",
+      "ask",
+      "deny"
+    ],
+    "TOOL_STATUS": [
+      "ok",
+      "error",
+      "denied"
+    ],
+    "CATEGORY": [
+      "file",
+      "process",
+      "memory",
+      "vision",
+      "web",
+      "subagent",
+      "sandbox",
+      "misc"
+    ],
+    "KEY_RULE": [
+      "path",
+      "command",
+      "coords",
+      "bare"
+    ],
+    "MARK_SOURCE": [
+      "uia",
+      "ocr",
+      "uia+ocr"
+    ],
+    "JOB_STATUS": [
+      "running",
+      "done",
+      "interrupted",
+      "failed"
+    ],
+    "SUBAGENT_STATUS": [
+      "running",
+      "done",
+      "failed"
+    ],
+    "DIFF_STATUS": [
+      "effective",
+      "suspected_noop",
+      "unknown"
+    ],
+    "COMPACTION_KIND": [
+      "auto_compact",
+      "force_compact",
+      "emergency_truncate",
+      "tool_result_clearing"
+    ],
+    "ZONE": [
+      "目标",
+      "决策",
+      "现状",
+      "待解",
+      "已完成",
+      "其它"
+    ],
+    "ALERT_LEVEL": [
+      "info",
+      "warn",
+      "error"
+    ],
+    "APPROVAL_SCOPE": [
+      "session",
+      "persist"
+    ],
+    "COMMAND_NAME": [
+      "todos",
+      "memory",
+      "skills",
+      "notes",
+      "effects",
+      "undo",
+      "clear",
+      "help",
+      "recall",
+      "recall_subagent",
+      "sessions",
+      "resume"
+    ]
+  }
+}

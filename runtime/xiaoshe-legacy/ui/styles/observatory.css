@@ -1,0 +1,170 @@
+/* ============================================================================
+ * 小蛇 · observatory.css —— 屏幕观测模态（Wave2-B；SPEC §12.2）
+ * 样式母本 prototypes/pb-dark.html L211-248（列替换 → 抽模态重写，R4 §5）：
+ *   ① .obs-bar 面包屑 .vp[.on]+.arr + .obs-meta
+ *   ② .eye-canvas > .shot（--z 缩放）> .shot-img + .mark（编号牌外凸）
+ *   ③ .eye-hud 坐标链 + 差分条
+ *   ④ .eye-marks .mrow[data-m]（.no/.lb/.srcg）
+ * 纪律：只 var() 语义层；marks 样式语言——uia 实线 / ocr 虚线 /
+ *       uia+ocr 第三视觉（实线框 + 虚线外描双色，R4 §5 原型缺口补齐）；
+ *       模态动画 120–180ms（--fast/--med）；prefers-reduced-motion 由 tokens.css 全局关停。
+ * ========================================================================== */
+
+/* ---- 模态盒（挂 #modal-root；遮罩与居中骨架在 base.css） ---- */
+.obs {
+  width: min(1024px, 94vw); height: min(760px, 82vh);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface-2); border: 1px solid var(--line2);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-pop), 0 0 0 1px rgba(255,255,255,0.05) inset;
+  overflow: hidden;
+  animation: obs-in var(--med) var(--ease);
+}
+.obs.closing { animation: obs-out var(--fast) var(--ease) forwards; }
+@keyframes obs-in { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+@keyframes obs-out { to { opacity: 0; transform: translateY(10px) scale(.99); } }
+
+/* ---- ① 面包屑条 ---- */
+.obs-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 15px; border-bottom: 1px solid var(--line);
+  font-size: 11px; color: var(--ink3);
+}
+.obs-bar > .ic { width: 15px; height: 15px; color: var(--accent); flex: none; }
+.obs-title { font-family: var(--serif); font-weight: 700; font-size: 13px; color: var(--ink); flex: none; }
+.crumb { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; }
+.crumb .vp {
+  border: 1px solid var(--line3); border-radius: var(--r-sm); padding: 2px 8px;
+  color: var(--ink3); transition: color var(--fast), border-color var(--fast);
+}
+.crumb .vp:disabled { cursor: default; opacity: .6; }
+.crumb .vp.on { color: var(--accent-deep); border-color: var(--accent); background: var(--accent-bg); }
+.crumb .arr { color: var(--faint); }
+.obs-meta { font-family: var(--mono); font-size: 9px; color: var(--faint); margin-left: auto; }
+.obs-close {
+  width: 28px; height: 28px; border-radius: var(--r-md); color: var(--ink3); flex: none;
+  display: flex; align-items: center; justify-content: center;
+  transition: background var(--fast), color var(--fast);
+}
+.obs-close:hover { background: var(--card-hover); color: var(--err); }
+.obs-close .ic { width: 13px; height: 13px; }
+
+.obs-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+/* ---- ② 画布 ---- */
+.eye-canvas {
+  flex: 1; position: relative; overflow: auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center; padding: 18px;
+  background: radial-gradient(500px 240px at 50% 0%, var(--accent-bg), transparent);
+}
+.shot {
+  position: relative; width: min(100%, calc((82vh - 260px) * 1.6));
+  max-height: 100%; border-radius: var(--r-md); overflow: hidden;
+  border: 1px solid var(--line3); background: var(--card);
+  transform: scale(var(--z, 1)); transition: transform var(--med) var(--ease);
+  box-shadow: var(--shadow-pop);
+}
+.shot-img { width: 100%; height: 100%; object-fit: fill; display: block; }
+.shot-missing { min-height: 200px; display: flex; align-items: center; justify-content: center; }
+.shot-fallback {
+  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
+  align-items: center; justify-content: center; color: var(--faint); font-size: 11px;
+}
+.shot-fallback .ic { width: 26px; height: 26px; }
+
+/* marks 编号框（数据驱动；源三态） */
+.mark {
+  position: absolute; border: 2px solid var(--mark); border-radius: var(--r-sm);
+  cursor: pointer; background: color-mix(in srgb, var(--mark) 5%, transparent);
+  transition: background var(--fast), border-color var(--fast), transform var(--fast);
+}
+.mark:hover { background: color-mix(in srgb, var(--mark) 16%, transparent); transform: scale(1.04); }
+.mark.ocr { border-style: dashed; }
+/* uia+ocr 第三视觉：实线主框 + 虚线外描（双色，原型缺口补齐） */
+.mark.both {
+  border-style: solid; border-color: var(--mark);
+  outline: 1.5px dashed var(--info); outline-offset: 2px;
+}
+.mark.sel { border-color: var(--accent); background: var(--accent-bg); }
+.mark.sel.both { outline-color: var(--accent-deep); }
+/* 编号牌外凸 */
+.mark .no {
+  position: absolute; top: -11px; left: -7px;
+  font-family: var(--mono); font-size: 9px; font-weight: 800;
+  background: var(--mark); color: var(--bg);
+  border-radius: 3px; padding: 0 4px; line-height: 14px;
+}
+.mark.both .no { box-shadow: 3px 0 0 0 var(--info); }
+.mark.sel .no { background: var(--accent); box-shadow: none; }
+
+/* ---- ③ HUD ---- */
+.eye-hud {
+  padding: 10px 15px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 9.5px; color: var(--ink3); line-height: 2;
+  background: var(--surface-2);
+}
+.hud-line { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.hud-k { color: var(--faint); flex: none; }
+.eye-hud b { color: var(--ink); font-weight: 600; }
+.eye-hud b.j { color: var(--accent-deep); }
+.eye-hud b.bad { color: var(--err); }
+.hud-dim { color: var(--faint); }
+.hud-tip { color: var(--faint); font-size: 8.5px; }
+.diffbar {
+  width: 90px; height: 5px; border-radius: 3px; background: var(--line);
+  overflow: hidden; display: inline-block; flex: none;
+}
+.diffbar i { display: block; height: 100%; background: var(--faint); }
+.diffbar.ok i { background: var(--accent); }
+.diffbar.bad i { background: var(--err); }
+.diffbar.mute i { background: var(--faint); }
+.noop-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 8.5px; color: var(--err);
+  border: 1px solid color-mix(in srgb, var(--err) 50%, transparent); border-radius: var(--r-sm);
+  padding: 1px 7px; background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.noop-badge .ic { width: 10px; height: 10px; }
+
+/* ---- ④ 编号表 ---- */
+.eye-marks { max-height: 168px; overflow-y: auto; border-top: 1px solid var(--line); flex: none; }
+.mrow {
+  display: flex; align-items: center; gap: 9px; padding: 6px 14px;
+  border-bottom: 1px solid var(--line); cursor: pointer; font-size: 11px;
+  transition: background var(--fast);
+}
+.mrow:last-child { border-bottom: none; }
+.mrow:hover { background: var(--card-hover); }
+.mrow.sel { background: var(--accent-bg); }
+.mrow .no {
+  width: 18px; height: 18px; border-radius: var(--r-sm); flex: none;
+  background: var(--mark); color: var(--bg);
+  font-family: var(--mono); font-size: 9px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.mrow.sel .no { background: var(--accent); }
+.mrow .lb { flex: 1; min-width: 0; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srcg { font-family: var(--mono); font-size: 8px; color: var(--faint); flex: none; letter-spacing: .06em; }
+.srcg.g-ocr {
+  color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--r-sm); padding: 1px 6px; background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.srcg.g-both {
+  color: var(--info); border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
+  border-radius: var(--r-sm); padding: 1px 6px; background: color-mix(in srgb, var(--info) 8%, transparent);
+}
+
+/* ---- 空态 ---- */
+.obs-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 40px 20px; text-align: center; color: var(--ink3);
+}
+.obs-empty .e-mark { width: 46px; height: 46px; color: var(--faint); margin-bottom: 6px; }
+.obs-empty .e-title { font-family: var(--serif); font-size: 15px; font-weight: 700; color: var(--ink2); }
+.obs-empty .e-desc { font-size: 12px; line-height: 1.8; max-width: 420px; }
+.obs-empty .e-act { font-family: var(--mono); font-size: 9.5px; color: var(--faint); margin-top: 6px; }
+
+/* 窄模态宽时 HUD 字号收敛 */
+@media (max-width: 720px) {
+  .obs { width: 96vw; height: 88vh; }
+  .obs-title { display: none; }
+}

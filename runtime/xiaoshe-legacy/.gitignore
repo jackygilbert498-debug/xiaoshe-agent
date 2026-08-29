@@ -1,0 +1,43 @@
+# 密钥与本地配置：永不进 git
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行日志与状态
+logs/
+*.log
+state.json
+!tests/ui_contract/fixtures/state.json
+memory.json
+memory.json.*
+.session/
+.state/
+.worktrees/
+mcp.json
+
+# 系统噪声与工具残留
+.DS_Store
+.playwright-mcp/
+.render_audit_*.html   # render 布局审计的临时副本（正常用完即删；兜底防意外残留进 git）
+sealcolor_shot.png
+sealtest_shot.png
+screenshot-*.png   # screenshot 工具默认命名的整屏截图（含屏幕隐私，别随 git add -A 推远端）
+
+# 金标准验收的整屏/局部截图（含屏幕隐私，铁律不入 git；证据 md 在仓库里、图留本机）
+docs/验收/裁剪重问-Mac金标准-截图/
+docs/验收/裁剪重问-Win金标准-截图/
+
+# D3 真实任务 eval 沙盒（真跑产物：合成 fixtures/模型产物/结果 JSON，全可再生成）
+.d3/
+
+# 界面参考截图（30MB 设计参照，刻意不入库；双机各留本地一份）
+界面截图/
+
+# 体验优化专项的三套对标壳本地镜像：由固定 commit 清单恢复，不进主仓库
+docs/handoff/专项工作包-2026-08-02-小蛇壳化转型/对标壳源码/

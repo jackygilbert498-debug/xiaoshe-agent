@@ -1,0 +1,89 @@
+{
+  "$doc": "GET /api/tools 响应样例（SPEC §5-2/§11；R3 §1-E1、§2）。tools 条目 = tools.REGISTRY 描述与 SPECS args_schema + ui_schema.TOOL_META 元数据；permission_default 由 permission.SAFE_TOOLS/_USER_TOOL_SAFE 推导（allow|ask，无默认 deny，R2 §8）；approval_key_rule 四值含 coords（D4）；persistable 仅 5 工具（R2 §4）；taint_high_risk = permission._TAINT_HIGH_RISK ∪ mcp__ 前缀；count=注册表工具数（38），registry_rev=注册表内容 sha256[:12]（D12）。此处给 3 个完整代表条目（file 写/path、process 命令/command、file 只读/bare+allow）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "count": 38,
+  "registry_rev": "3f9a1c2e7b04",
+  "tools": [
+    {
+      "name": "write_file",
+      "description": "在工作区内写入（或整体覆盖）一个文本文件。",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "目标路径（工作区内相对或绝对）"
+          },
+          "content": {
+            "type": "string",
+            "description": "要写入的完整内容"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      },
+      "category": "file",
+      "permission_default": "ask",
+      "approval_key_rule": "path",
+      "persistable": true,
+      "taint_high_risk": true,
+      "display": {
+        "icon": "file-pen",
+        "arg_format": "path: {path}，内容长度: {content.len}"
+      }
+    },
+    {
+      "name": "run_command",
+      "description": "在工作区执行一条 shell 命令并返回输出。",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "要执行的命令行"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      },
+      "category": "process",
+      "permission_default": "ask",
+      "approval_key_rule": "command",
+      "persistable": true,
+      "taint_high_risk": true,
+      "display": {
+        "icon": "terminal",
+        "arg_format": "command: {command}"
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "读取工作区内一个文本文件的内容。",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件路径"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "category": "file",
+      "permission_default": "allow",
+      "approval_key_rule": "bare",
+      "persistable": false,
+      "taint_high_risk": false,
+      "display": {
+        "icon": "file-read",
+        "arg_format": "path: {path}"
+      }
+    }
+  ]
+}

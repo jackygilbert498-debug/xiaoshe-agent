@@ -1,0 +1,89 @@
+# Product-only layer. The Profile composes dsh-web-app and the optional
+# Windows capability Bundle independently.
+# Full-text history is a disposable Product projection over the authoritative
+# Session Log. Keep startup clean; the first real search opens the dedicated
+# index, and removing this Bundle restores the Web layer's disabled default.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-query.sqlite')
+    openAt: first-search
+
+- insert:
+    - id: xiaoshe-verification-policy
+      name: '@xiaoshe/verification-policy'
+    - id: xiaoshe-heartbeat
+      name: '@xiaoshe/heartbeat'
+    - id: xiaoshe-plugin-governance
+      name: '@xiaoshe/plugin-governance'
+    - id: xiaoshe-completion-receipt
+      name: '@xiaoshe/completion-receipt'
+    - id: xiaoshe-task-timeline
+      name: '@xiaoshe/task-timeline'
+    - id: xiaoshe-memory
+      name: '@xiaoshe/memory'
+    # Workspace authorization, cursor hiding and lineage redaction remain
+    # owned by this independent model-facing Consumer plugin.
+    - id: xiaoshe-session-continuity
+      name: '@deepseek-ai/dsh-tool-session-query'
+      config:
+        maxSearchResults: 20
+        searchTimeoutMs: 30000
+    - id: xiaoshe-runtime-dsh-provider
+      name: '@xiaoshe/runtime-dsh-provider'
+    - id: xiaoshe-native-shell-legacy-adapted
+      name: '@xiaoshe/native-shell-legacy-adapted'
+
+# Xiaoshe owns the single root seat. Generic transport/runtime/renderer/theme
+# rows remain. The settings shell and settings-only contributors stay enabled
+# because the native shell declares only their sidebar.settings hole.
+- id: ui-sidebar
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+- id: ui-attachment
+  disabled: true
+- id: ui-tool
+  disabled: true
+- id: ui-cordis
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: ui-workspace
+  disabled: true
+- id: ui-input-trigger
+  disabled: true
+- id: ui-commands
+  disabled: true
+- id: ui-skill
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-reference
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-message-feedback
+  disabled: true
+- id: ui-model-selection
+  disabled: true
+# ui-conversation owns the complete generic chat surface, not only its settings
+# row. Keep it disabled to preserve Xiaoshe's single root; the native shell
+# contributes its own real composer preference and applies it to its textarea.
+- id: ui-conversation
+  disabled: true
+# The permission settings row also injects commandUi. Xiaoshe intentionally
+# leaves that generic command presenter disabled, so enabling this row would
+# hold the whole web boot pending. Current-session permission stays available
+# through @xiaoshe/runtime-dsh-provider until a narrow settings-only adapter exists.
+- id: ui-permission
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-user-questions
+  disabled: true
+- id: ui-trajectory
+  disabled: true

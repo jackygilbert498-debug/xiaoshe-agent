@@ -1,0 +1,8 @@
+# V6 candidate-only overlay. Product services remain owned by Product Bundle;
+# only the current formal adapted root seat is replaced for comparison.
+- id: xiaoshe-native-shell-legacy-adapted
+  disabled: true
+
+- insert:
+    - id: xiaoshe-native-shell-candidate-v6
+      name: '@xiaoshe/native-shell-candidate-v6'

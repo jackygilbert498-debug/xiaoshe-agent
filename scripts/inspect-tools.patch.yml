@@ -1,0 +1,3 @@
+- insert:
+    - id: xiaoshe-tool-composition-inspector
+      name: '/Users/example/Desktop/XS/scripts/inspect-tools-plugin.mjs'

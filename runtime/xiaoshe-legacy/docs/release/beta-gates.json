@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "cohorts": {"personal":{"days":14,"min_tasks":30},"second_user":{"days":7,"min_tasks":5},"design_partner":{"days":14,"min_tasks":50},"closed_beta":{"days":30,"min_tasks":300},"commercial_beta":{"days":30,"min_tasks":1000}},
+  "rollback": ["user_work_loss>0","unauthorized_severe_side_effect>0","cross_project_leak>0","destructive_false_success>0","migration_unrecoverable>0"],
+  "hold": {"crash_free_task_rate_min":0.99,"verification_evidence_completeness_min":0.99,"recovery_success_min":0.98}
+}

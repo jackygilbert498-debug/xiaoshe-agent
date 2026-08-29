@@ -1,0 +1,3 @@
+- insert:
+    - id: xiaoshe-plugin-governance-failing-fixture
+      name: '@xiaoshe/plugin-governance-failing-fixture'

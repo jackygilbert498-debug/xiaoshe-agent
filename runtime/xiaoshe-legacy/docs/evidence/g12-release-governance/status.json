@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "kind": "xiaoshe-v2-release-governance-status",
+  "candidate_id": "xiaoshe-v2-20260816-15609b0",
+  "functional_head": "15609b0c09309bedf8e192c77b3ba59384be5827",
+  "candidate_hash": "sha256:21fafcf3e2077ed630d0ecff5cbf02e9f54f68ce4c93fe669845a3e8a0c34d8c",
+  "observation_hash": "sha256:7b86571c3ed5915def1872bd1893eddcc4a3a5c438723863283d62cc67a3d32d",
+  "action": "hold",
+  "blockers_hash": "sha256:2bf7a25e593bf98ca5e3d8739c4ca0f9c3070afae51ba34b0da17a210adda3f1",
+  "self_hash": "sha256:f10228c5d201ded6a7663adb1f46d516325ed0621411474bcee16cc227eb3cff"
+}

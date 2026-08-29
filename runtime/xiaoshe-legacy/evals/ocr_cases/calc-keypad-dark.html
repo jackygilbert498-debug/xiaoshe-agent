@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!-- OCR 盲区回归用例：计算器式稀疏按钮（深色，白字深底）。与浅色版同布局，验证深色主题下孤立数字
+     丢弃率与反色补跑救回率。纯文本用例源可入 git；渲染图现跑现生成、不落 git。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ocr-case calc-keypad-dark</title>
+<style>
+  body { margin: 0; background: #1f1f1f; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .calc { width: 560px; margin: 40px auto; background: #2b2b2b; border-radius: 12px; padding: 24px; }
+  .history { text-align: right; color: #9a9a9a; font-size: 22px; min-height: 28px; padding-right: 12px; }
+  .display { text-align: right; color: #f5f5f5; font-size: 72px; font-weight: 600; padding: 18px 12px; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; padding: 12px; }
+  .key { background: #3a3a3a; border: 1px solid #4a4a4a; border-radius: 8px;
+         font-size: 44px; color: #f5f5f5; text-align: center; padding: 26px 0; }
+</style>
+</head>
+<body>
+  <div class="calc">
+    <div class="history">52</div>
+    <div class="display">0</div>
+    <div class="pad">
+      <div class="key">7</div><div class="key">8</div><div class="key">9</div>
+      <div class="key">4</div><div class="key">5</div><div class="key">6</div>
+      <div class="key">1</div><div class="key">2</div><div class="key">3</div>
+      <div class="key">CE</div><div class="key">0</div><div class="key">=</div>
+    </div>
+  </div>
+</body>
+</html>

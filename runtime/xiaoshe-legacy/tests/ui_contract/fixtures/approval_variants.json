@@ -1,0 +1,77 @@
+{
+  "$doc": "审批卡三变体样例（SPEC §8 / §12.2 render/approval；R2 §2 taint 语义、§3 resolved_path、§5 headless）。每条 payload 为 approval.request 完整八件：request_id/tool/args/reason/approval_key/resolved_path/tainted/force_ask；expect 段是前端渲染语义钉样（渲染快照测试吃这份）：\n1) normal 常规：四键 y/n/a/p 全可用，meta 行显真实 approval_key + resolved_path（realpath 规范化，红线 2）；\n2) tainted 污点：红框，resolved_path 为字符串，tainted:true——a/p 禁用降级为 y 语义并配原因说明（答 a/p ≠ 拒绝：agent.py:206 仍算本次批准，只是 :185/:203 的 not tainted 闸不落白名单，R2 §2）；\n3) force_ask 无头只读展示语义：force_ask:true（混淆管道/触达 .state/PreToolUse hook 产生，R2 §2），a/p 同样禁用（不落白名单），卡面注明「每次都必须重新问」；无头模式下此类 ask 直接 deny 不弹卡（R2 §5-1，此样例仅钉 serve 进程的展示语义）。\nresolved_path 形状规则（SPEC §8-1）：path 类单值字符串/多值列表/无路径参数 null/resolve 异常 {\"error\":\"path_error\",\"raw\":原始串}——本文件覆盖字符串与 null 两种。",
+  "variants": [
+    {
+      "variant": "normal",
+      "payload": {
+        "request_id": "ap-1",
+        "tool": "write_file",
+        "args": {
+          "path": "纪要.md",
+          "content": "# 构建纪要\n……"
+        },
+        "reason": "write_file 不在白名单且非 SAFE_TOOLS，需用户批准",
+        "approval_key": "write_file:纪要.md",
+        "resolved_path": "C:/work/proj/纪要.md",
+        "tainted": false,
+        "force_ask": false
+      },
+      "expect": {
+        "y_enabled": true,
+        "n_enabled": true,
+        "a_enabled": true,
+        "p_enabled": true,
+        "frame": "normal",
+        "copy": "批准一次 = 放行该指纹；a = 本会话记住它，p = 跨会话记住它"
+      }
+    },
+    {
+      "variant": "tainted",
+      "payload": {
+        "request_id": "ap-2",
+        "tool": "edit",
+        "args": {
+          "path": "发布脚本.py",
+          "old_string": "v1",
+          "new_string": "v2"
+        },
+        "reason": "参数命中不可信污点文本（web_fetch 抓取内容），需用户批准",
+        "approval_key": "edit:发布脚本.py",
+        "resolved_path": "C:/work/proj/发布脚本.py",
+        "tainted": true,
+        "force_ask": false
+      },
+      "expect": {
+        "y_enabled": true,
+        "n_enabled": true,
+        "a_enabled": false,
+        "p_enabled": false,
+        "frame": "red",
+        "copy": "参数含不可信来源文本：本次可放行（y），但不会记入任何白名单（a/p 已禁用）"
+      }
+    },
+    {
+      "variant": "force_ask",
+      "payload": {
+        "request_id": "ap-4",
+        "tool": "run_command",
+        "args": {
+          "command": "cat .state/sessions/20260725-221000-pid-4012-1.json"
+        },
+        "reason": "命令触达 .state 目录，即使白名单命中也必须重新问",
+        "approval_key": "run_command:cat .state/sessions/20260725-221000-pid-4012-1.json",
+        "resolved_path": null,
+        "tainted": false,
+        "force_ask": true
+      },
+      "expect": {
+        "y_enabled": true,
+        "n_enabled": true,
+        "a_enabled": false,
+        "p_enabled": false,
+        "frame": "readonly",
+        "copy": "该操作受安全策略约束，每次都必须单独批准（a/p 不可用）；无头模式下此类请求直接拒绝不弹卡"
+      }
+    }
+  ]
+}

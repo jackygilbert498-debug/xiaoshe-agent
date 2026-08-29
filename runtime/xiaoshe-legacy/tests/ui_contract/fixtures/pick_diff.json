@@ -1,0 +1,17 @@
+{
+  "$doc": "GET /api/pick/diff 响应样例 · effective（SPEC §10 pick_diff / D5；R3 §1-E4）。ctx['_pick_diff_last'] 结构化记录（tools.py 仪表化）：AX 差分有增减 或 像素 ratio≥0.01 → effective；前后帧 fail-soft 落 vision blob 取 ref（失败则 null）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "effective",
+  "ratio": 0.0231,
+  "pair": {
+    "before_ref": "img-11",
+    "after_ref": "img-13"
+  },
+  "target": {
+    "no": 5,
+    "screen_cx": 812,
+    "screen_cy": 437
+  },
+  "at": "2026-07-26T10:41:55+08:00"
+}

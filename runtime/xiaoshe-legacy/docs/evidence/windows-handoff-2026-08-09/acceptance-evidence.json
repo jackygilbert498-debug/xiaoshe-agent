@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "integrity_pass": true,
+  "action": "hold",
+  "source_summary": [
+    {
+      "id": "plan11_handbook",
+      "pass": true,
+      "count": 18
+    },
+    {
+      "id": "real_tasks",
+      "pass": true,
+      "count": 40
+    },
+    {
+      "id": "failure_injection",
+      "pass": true,
+      "count": 50
+    },
+    {
+      "id": "gherkin",
+      "pass": true,
+      "count": 38
+    }
+  ],
+  "automated_evidence": [
+    {
+      "id": "g6-memory-frozen",
+      "level": "E2",
+      "pass": true
+    },
+    {
+      "id": "g7-resource-hygiene",
+      "level": "E2",
+      "pass": true
+    },
+    {
+      "id": "g8-tasking-suite-structure",
+      "level": "E2",
+      "pass": true
+    }
+  ],
+  "phase_gates": [
+    {
+      "phase": "G0",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G1",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G2",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G3",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G4",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G5",
+      "status": "unverified",
+      "pass": true
+    },
+    {
+      "phase": "G6",
+      "status": "local_passed",
+      "pass": true
+    },
+    {
+      "phase": "G7",
+      "status": "partial",
+      "pass": true
+    },
+    {
+      "phase": "G8",
+      "status": "partial",
+      "pass": true
+    }
+  ],
+  "phase_status_counts": {
+    "local_passed": 1,
+    "partial": 2,
+    "unverified": 6
+  },
+  "errors": []
+}

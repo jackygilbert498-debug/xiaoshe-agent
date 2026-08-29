@@ -1,0 +1,7 @@
+{
+  "$doc": "POST /api/autonomy 响应样例（UI 批次 D：会话级自主模式 A 案）。on=true 后本会话 ask 级动作自动放行（不弹审批卡、不写会话白名单、不落 .state/approvals.json）；deny 级硬护栏（敏感文件/越界/密钥类命令）照拦不误——deny 在 permission.check 截流，根本到不了审批通道；force_ask（混淆管道/.state 触达）与污点参数仍逐条问。状态存 ctx['_autonomy']，会话级不落盘；开新会话/重启服务回 false。",
+  "v": 1,
+  "server_time": "2026-07-27T15:30:00+08:00",
+  "ok": true,
+  "autonomy": true
+}

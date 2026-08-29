@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "kind": "xiaoshe-v2-release-candidate",
+  "candidate_id": "xiaoshe-v2-20260816-15609b0",
+  "release_version": "2.0.0-candidate.1",
+  "functional_head": "15609b0c09309bedf8e192c77b3ba59384be5827",
+  "generated_at": "2026-08-16T14:42:47Z",
+  "repository": {
+    "dirty": true,
+    "status_sha256": "sha256:7e6fc801e14c7df62d7e94ada872a3c8b1aee539e97c9d258afe4167d6016157",
+    "patch_sha256": "sha256:43cf95d63178f99007885647a406602444705f2e8bcdefe236476964a9e152aa"
+  },
+  "artifacts": [
+    {
+      "id": "runtime-benchmark",
+      "sha256": "sha256:f8d21f8caa801d94c2076b3c5a4c40b6f3ed7fe3fe9b8adcbc9518b051ac6f92"
+    },
+    {
+      "id": "windows-launcher",
+      "sha256": "sha256:638220f68528840dd7073bdeb8430902b9d6386ecb4f6bf41fbf03084ccb5ca8"
+    }
+  ],
+  "local_gates": [
+    {
+      "id": "plan11-task1-8-focused",
+      "command": "py -3 -X utf8 -m unittest tests.test_model_registry tests.test_model_client tests.test_model_adapters tests.test_model_secrets tests.test_provider_switch tests.test_provider_delivery_closure tests.test_context_budget tests.test_prompt_prefix tests.test_calibrate tests.test_headless_ctx tests.test_runtime_metrics tests.test_inbox_adapters tests.test_task_inbox tests.test_task_api tests.test_feishu_inbox tests.test_doctor tests.test_handoff_package_portability tests.test_s_command_installer -q",
+      "status": "passed",
+      "count": 244,
+      "log_sha256": "sha256:7c28781ead736bb9bb9ee2597cd4b50ac149fbb3fc1b7658627e383db034169b"
+    },
+    {
+      "id": "generated-docs-validation",
+      "command": "py -3 -X utf8 scripts/check_docs.py",
+      "status": "passed",
+      "count": 1,
+      "log_sha256": "sha256:1b421472e7416c329c001214a11fecc4480274350cb3a253bad3b51ec46840d2"
+    },
+    {
+      "id": "node-ui-gates",
+      "command": "node --experimental-vm-modules --test tests/*.test.mjs",
+      "status": "passed",
+      "count": 83,
+      "log_sha256": "sha256:d32c9aa91e6613c7bd72c3e1cade814df4409e80020d324a9966454f1c1b6b60"
+    },
+    {
+      "id": "secret-diff-scan",
+      "command": "py -3 -X utf8 -m unittest tests.test_model_secrets tests.test_evidence_redaction tests.test_repository_hygiene -q",
+      "status": "passed",
+      "count": 11,
+      "log_sha256": "sha256:b0c76c7edbd0668cc1cb263164525be0138daaabca10ecc6cff844b8018e025e"
+    },
+    {
+      "id": "strict-python-full-suite",
+      "command": "py -3 -X utf8 -W error::ResourceWarning -m unittest discover -s tests -q",
+      "status": "failed",
+      "count": 3124,
+      "log_sha256": "sha256:ea63d38130778c522c0592a76e3e94466aeef1b0543f2a119f383d7fbf4599ee"
+    },
+    {
+      "id": "v2-release-validator",
+      "command": "py -3 -X utf8 -m unittest tests.test_v2_release_evidence -q",
+      "status": "passed",
+      "count": 28,
+      "log_sha256": "sha256:3ab40d16851fa111794c94e013b951347db1cfd3a48c2584bddbf99f89533dd1"
+    }
+  ],
+  "self_hash": "sha256:21fafcf3e2077ed630d0ecff5cbf02e9f54f68ce4c93fe669845a3e8a0c34d8c"
+}

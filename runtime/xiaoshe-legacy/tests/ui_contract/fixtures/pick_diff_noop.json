@@ -1,0 +1,17 @@
+{
+  "$doc": "GET /api/pick/diff · suspected_noop：AX 与像素两层都无变化（R3 §4）；前端 HUD 差分比例条变红告警徽标（SPEC §12.2 observatory.js）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "suspected_noop",
+  "ratio": 0.0,
+  "pair": {
+    "before_ref": "img-11",
+    "after_ref": "img-13"
+  },
+  "target": {
+    "no": 5,
+    "screen_cx": 812,
+    "screen_cy": 437
+  },
+  "at": "2026-07-26T10:41:55+08:00"
+}

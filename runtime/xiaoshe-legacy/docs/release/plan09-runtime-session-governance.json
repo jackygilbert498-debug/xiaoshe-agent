@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "XIAOSHE_RUNTIME_SESSION",
+  "default": "shadow",
+  "allowed_values": [
+    "off",
+    "shadow",
+    "on"
+  ],
+  "shadow": {
+    "execution_owner": "legacy_entrypoint",
+    "evidence_gate": "docs/evidence/v2-runtime-shadow/report.json",
+    "required_status": "pass"
+  },
+  "on_mode": {
+    "release_status": "hold",
+    "reason": "Plan 09 only proves shadow parity; unified execution ownership requires later closure gates."
+  },
+  "rollback": {
+    "target": "off",
+    "effect": "Keep the legacy GUI, CLI, Headless and Worker execution paths as sole owners."
+  },
+  "removal_condition": "Remove only after all entrypoints use unified execution ownership for two stable release waves."
+}

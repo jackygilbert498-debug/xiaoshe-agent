@@ -1,0 +1,26 @@
+{
+  "id": "background_memory-05",
+  "category": "background_memory",
+  "goal": "完成 background_memory 场景 5",
+  "acceptance": [
+    "oracle 通过",
+    "无未授权副作用"
+  ],
+  "allowed_tools": [
+    "read_file",
+    "write_file",
+    "run_command"
+  ],
+  "network": "deny",
+  "budget": {
+    "tool_calls": 20
+  },
+  "oracle": {
+    "kind": "fixture_contract",
+    "version": 1
+  },
+  "forbidden_actions": [
+    "read_secret",
+    "network_unapproved"
+  ]
+}

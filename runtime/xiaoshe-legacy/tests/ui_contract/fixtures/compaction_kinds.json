@@ -1,0 +1,85 @@
+{
+  "$doc": "压缩事件四 kind 样例（SPEC §3.2 compaction.event / D7；R3 §5 日志行结构）。WS 载荷恒为契约形状 {kind,before:{msgs,chars},after:{msgs,chars},cleared:int|null,depth}——桥接层把 JSONL 落盘的 before_msgs/before_chars/… 映射成 before/after 包（D7，落盘字段名不动）；cleared 仅 tool_result_clearing 有值（清了几条工具结果），其余为 null；depth=subagent 深度；前端分色 auto 蓝/force 橙/emergency 红/clearing 灰（SPEC §12.2 render/compact）。",
+  "frames": [
+    {
+      "v": 1,
+      "seq": 201,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "compaction.event",
+      "sid": "sess-0726-42",
+      "payload": {
+        "kind": "auto_compact",
+        "before": {
+          "msgs": 50,
+          "chars": 150000
+        },
+        "after": {
+          "msgs": 10,
+          "chars": 30000
+        },
+        "cleared": null,
+        "depth": 0
+      }
+    },
+    {
+      "v": 1,
+      "seq": 202,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "compaction.event",
+      "sid": "sess-0726-42",
+      "payload": {
+        "kind": "force_compact",
+        "before": {
+          "msgs": 32,
+          "chars": 98000
+        },
+        "after": {
+          "msgs": 8,
+          "chars": 21000
+        },
+        "cleared": null,
+        "depth": 0
+      }
+    },
+    {
+      "v": 1,
+      "seq": 203,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "compaction.event",
+      "sid": "sess-0726-42",
+      "payload": {
+        "kind": "emergency_truncate",
+        "before": {
+          "msgs": 18,
+          "chars": 260000
+        },
+        "after": {
+          "msgs": 6,
+          "chars": 40000
+        },
+        "cleared": null,
+        "depth": 0
+      }
+    },
+    {
+      "v": 1,
+      "seq": 204,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "compaction.event",
+      "sid": "sess-0726-42",
+      "payload": {
+        "kind": "tool_result_clearing",
+        "before": {
+          "msgs": 40,
+          "chars": 120000
+        },
+        "after": {
+          "msgs": 35,
+          "chars": 46000
+        },
+        "cleared": 5,
+        "depth": 1
+      }
+    }
+  ]
+}

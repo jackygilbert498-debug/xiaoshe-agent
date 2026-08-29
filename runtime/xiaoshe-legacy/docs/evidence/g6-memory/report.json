@@ -1,0 +1,11 @@
+{
+  "case_count": 40,
+  "project_leakage": 0,
+  "unapproved_injection": 0,
+  "expired_injection": 0,
+  "forgotten_recovery": 0,
+  "receipt_precision": 1.0,
+  "relevant_recall_at_5": 1.0,
+  "irrelevant_injection_rate": 0.0,
+  "fixture_sha256": "sha256:28401b9fd3c88f1cbbcc0622bbecc86596c1f5a3bc489c194b11fe692392fa7e"
+}

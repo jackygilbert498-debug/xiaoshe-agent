@@ -1,0 +1,46 @@
+{
+  "$doc": "GET /api/memory/layers 响应样例（UI 批次 C：三层记忆 + 实时编辑）。long_term=ROOT/memory.json v2 分区记录（跨会话，条目形状=memory_stats.items + source——untrusted 来源前端亮「外部来源」徽标）；project=当前会话归属项目的共享记忆（.state/project_memory.json {pid:[v2记录]}，模型不可写走 .state 硬护栏；未归属项目如实 unassigned=true + project_id/name=null + items=[]）；short_term=本会话 notes 便签（会话结束即弃）。编辑走 POST /api/memory/item{action:add|edit|forget|revive,layer:long|project}（edit=supersede 取代留审计链）与 /api/memory/notes{action:add|remove}，文本经 remember 同款净化（折行中和+注入话术拒+污点→source=untrusted）。",
+  "v": 1,
+  "server_time": "2026-07-27T15:20:00+08:00",
+  "long_term": {
+    "total": 2,
+    "injectable": 1,
+    "superseded": 1,
+    "items": [
+      {
+        "id": "a1b2c3d4e5f6",
+        "zone": "现状",
+        "text": "用户偏好深色主题。",
+        "source": "user",
+        "created_at": "2026-07-20T09:00:00+08:00",
+        "superseded_by": null
+      },
+      {
+        "id": "b2c3d4e5f6a1",
+        "zone": "决策",
+        "text": "旧决定：面板用双栏。",
+        "source": "user",
+        "created_at": "2026-07-21T10:00:00+08:00",
+        "superseded_by": "c3d4e5f6a1b2"
+      }
+    ]
+  },
+  "project": {
+    "project_id": "proj-1a2b3c4d",
+    "project_name": "小蛇界面",
+    "unassigned": false,
+    "items": [
+      {
+        "id": "d4e5f6a1b2c3",
+        "zone": "目标",
+        "text": "本项目右侧面板做三层记忆。",
+        "source": "user",
+        "created_at": "2026-07-27T15:00:00+08:00",
+        "superseded_by": null
+      }
+    ]
+  },
+  "short_term": {
+    "notes": ["临时记一下：演示服务端口别动 7788"]
+  }
+}

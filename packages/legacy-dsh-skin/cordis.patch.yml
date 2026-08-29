@@ -1,0 +1,5 @@
+# Compatibility-only layer. It mounts the old browser skin and owns no Host
+# capability; the Windows Bundle is installed independently when required.
+- insert:
+    - id: xiaoshe-legacy-dsh-skin
+      name: '@xiaoshe/legacy-dsh-skin'

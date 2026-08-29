@@ -1,0 +1,33 @@
+{
+  "$doc": "GET /api/models 响应样例。保留 models/current/default/switchable 给旧页面；items/current_id/default_id 为跨服务商的稳定档案 ID。items 从不包含密钥、密钥长度或指纹。",
+  "v": 1,
+  "server_time": "2026-07-27T15:30:00+08:00",
+  "models": ["kimi-for-coding", "k2-thinking"],
+  "current": "kimi-for-coding",
+  "default": "kimi-for-coding",
+  "switchable": true,
+  "items": [
+    {
+      "id": "builtin-kimi:kimi-for-coding",
+      "label": "kimi-for-coding",
+      "provider": "Kimi",
+      "protocol": "openai_compatible",
+      "configured": true,
+      "capabilities": ["stream", "tools"],
+      "source": "environment",
+      "enabled": true
+    },
+    {
+      "id": "builtin-deepseek:deepseek-v4-flash",
+      "label": "deepseek-v4-flash",
+      "provider": "DeepSeek",
+      "protocol": "openai_compatible",
+      "configured": true,
+      "capabilities": ["stream", "tools"],
+      "source": "environment",
+      "enabled": true
+    }
+  ],
+  "current_id": "builtin-kimi:kimi-for-coding",
+  "default_id": "builtin-kimi:kimi-for-coding"
+}

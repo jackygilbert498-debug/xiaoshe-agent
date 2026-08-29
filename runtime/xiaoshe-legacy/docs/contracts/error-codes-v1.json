@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "errors": [
+    {
+      "code": "TASK_BAD_REQUEST",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查填写内容后重试",
+      "safe_message": "请求内容无效。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_EXPECTED_VERSION_REQUIRED",
+      "http_status": 400,
+      "retryable": true,
+      "user_action": "刷新任务后重试",
+      "safe_message": "写入需要最新版本。",
+      "allowed_detail_keys": [
+        "field"
+      ]
+    },
+    {
+      "code": "TASK_VERSION_CONFLICT",
+      "http_status": 409,
+      "retryable": true,
+      "user_action": "刷新任务后重试",
+      "safe_message": "任务已被其他操作更新。",
+      "allowed_detail_keys": [
+        "current_version"
+      ]
+    },
+    {
+      "code": "TASK_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "刷新列表后重试",
+      "safe_message": "任务或项目不存在。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PROJECT_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "刷新项目列表后重试",
+      "safe_message": "项目不存在。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_INVALID",
+      "http_status": 422,
+      "retryable": false,
+      "user_action": "修正计划后重新提交",
+      "safe_message": "计划未通过校验。",
+      "allowed_detail_keys": [
+        "fields"
+      ]
+    },
+    {
+      "code": "TASK_UNATTENDED_PRECONDITION_REQUIRED",
+      "http_status": 422,
+      "retryable": false,
+      "user_action": "补齐计划和隔离工作区后重试",
+      "safe_message": "后台运行前置条件不足。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "PERMISSION_WAITING_USER",
+      "http_status": 409,
+      "retryable": true,
+      "user_action": "确认权限后恢复运行",
+      "safe_message": "操作正在等待你的确认。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "NETWORK_DENIED",
+      "http_status": 403,
+      "retryable": false,
+      "user_action": "检查网络白名单或改为离线操作",
+      "safe_message": "网络请求被安全策略拒绝。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "SANDBOX_UNAVAILABLE",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "在支持隔离的环境中重试",
+      "safe_message": "当前环境无法提供所需隔离。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "MCP_UNTRUSTED",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "审阅外部工具输出后手动继续",
+      "safe_message": "外部工具内容需要确认。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "INTERNAL_UNEXPECTED",
+      "http_status": 500,
+      "retryable": true,
+      "user_action": "稍后重试；若持续发生请导出诊断包",
+      "safe_message": "发生了未预期的内部错误。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "COMPLETION_PROOF_REQUIRED",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "REVIEW_CHANGESET_STALE",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "REVIEW_DECISION_INVALID",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "REVIEW_DIFF_MISMATCH",
+      "http_status": 409,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_ACCEPTANCE_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_ARTIFACT_HASH_MISMATCH",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_ARTIFACT_NOT_TEXT",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_BUDGET_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_BUDGET_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_CHANGESET_BASELINE_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_CHANGESET_CAPTURE_FAILED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_CHECKPOINT_MISMATCH",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_FORGET_REASON_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_LEGACY_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_NOTE_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_REVIEW_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_SOURCE_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_SOURCE_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_MEMORY_SUPERSEDE_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_DUPLICATE",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_IMMUTABLE",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_REQUIRED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_PLAN_REVISION_MISMATCH",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_POLICY_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_QUESTION_ALREADY_ANSWERED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_QUESTION_ALREADY_OPEN",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_QUESTION_ANSWER_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_QUESTION_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_QUESTION_NOT_OPEN",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_RUN_NOT_ACTIVE",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_STEER_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_TRANSITION_INVALID",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_VERIFICATION_PROFILE_NOT_FOUND",
+      "http_status": 404,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_VERIFICATION_PROFILE_UNTRUSTED",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_VERIFICATION_WORKSPACE_UNAVAILABLE",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    },
+    {
+      "code": "TASK_WORKSPACE_MODE_UNAVAILABLE",
+      "http_status": 400,
+      "retryable": false,
+      "user_action": "检查任务状态和输入后重试",
+      "safe_message": "任务操作未能完成。",
+      "allowed_detail_keys": []
+    }
+  ]
+}

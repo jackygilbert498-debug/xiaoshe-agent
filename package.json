@@ -1,0 +1,73 @@
+{
+  "name": "@xiaoshe/dsh-desktop-control",
+  "version": "0.2.0",
+  "description": "DSH desktop-observation and control bundle backed by the existing Xiaoshe Python runtime",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./desktop-capability": "./dist/plugins/desktop-capability.js",
+    "./memory": "./dist/plugins/memory.js",
+    "./product-identity": "./dist/plugins/product-identity.js",
+    "./runtime-routes": "./dist/plugins/runtime-routes.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "python/xiaoshe_desktop_bridge.py",
+    "scripts/start-xiaoshe-web.sh",
+    "scripts/start-xiaoshe-terminal.sh",
+    "scripts/stop-xiaoshe-web.sh",
+    "scripts/check-private-path-windows.ps1",
+    "scripts/windows-process-owner.mjs",
+    "scripts/windows-start-entry.ps1",
+    "scripts/windows-stop-entry.ps1",
+    "scripts/windows-doctor-entry.ps1",
+    "启动小蛇.ps1",
+    "停止小蛇.ps1",
+    "诊断小蛇-Windows.ps1",
+    "启动小蛇-Windows.cmd",
+    "停止小蛇-Windows.cmd",
+    "诊断小蛇-Windows.cmd",
+    "启动小蛇.command",
+    "启动小蛇终端.command",
+    "停止小蛇.command",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:python": "node ./scripts/test-python.mjs",
+    "smoke:bridge": "pnpm run build && node ./scripts/smoke-bridge.mjs --observe",
+    "accept:phase7": "node ./scripts/verify-relocatable-product-artifacts.mjs",
+    "accept:real-model-approval": "node ./scripts/run-real-model-approval-acceptance.mjs",
+    "accept:real-compaction-receipt": "node ./scripts/run-real-compaction-receipt-acceptance.mjs",
+    "accept:terminal-shared-runtime": "pnpm --filter @xiaoshe/terminal-client run build && node ./scripts/run-terminal-shared-runtime-acceptance.mjs",
+    "accept:macos-desktop": "pnpm run build && node ./scripts/run-macos-bridge-acceptance.mjs",
+    "accept:macos-multidisplay-safety": "pnpm run build && node ./scripts/run-macos-multidisplay-safety-acceptance.mjs",
+    "handoff:generate": "node ./scripts/handoff-manifest.mjs generate",
+    "handoff:verify": "node ./scripts/handoff-manifest.mjs verify",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run test:python && pnpm run build"
+  },
+  "dependencies": {
+    "@xiaoshe/memory": "workspace:*"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.7",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "packageManager": "pnpm@11.7.0"
+}

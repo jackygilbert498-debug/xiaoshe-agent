@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!-- OCR 盲区回归用例：繁简混排 + 白字深底。对应方案 §4.4.3 的 ja 误判/反色补跑场景；此类是
+     UIA 框源承接不了、OCR 独担的场景（画布/自绘界面里的文本），计入门禁主判据。
+     纯文本用例源可入 git；渲染图现跑现生成、不落 git。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ocr-case cjk-mixed-dark</title>
+<style>
+  body { margin: 0; background: #202124; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+  .panel { width: 760px; margin: 48px auto; background: #2d2f33; border-radius: 10px; padding: 36px 44px; }
+  .panel p { color: #f1f3f4; font-size: 30px; line-height: 1.9; margin: 6px 0; }
+  .dim { color: #bdc1c6; font-size: 24px; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <p>显示为 52</p>
+    <p>简体中文与繁體中文混排測試</p>
+    <p>設定與设置　檔案和文件　訪問与访问</p>
+    <p class="dim">計算器 键盘 窗口 标题</p>
+  </div>
+</body>
+</html>

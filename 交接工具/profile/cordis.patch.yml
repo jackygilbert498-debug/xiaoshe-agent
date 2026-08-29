@@ -1,0 +1,4 @@
+# 小蛇交接包只同步可公开配置，不同步任何密钥。
+- id: modlens
+  config:
+    upstream: deepseek-official

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "candidate_head": "d9837f49f15bf2a7c8b557ad4e501f24c4cbce5c",
+  "command": "py -3 -X utf8 scripts/check_runtime_shadow.py --output docs/evidence/v2-runtime-shadow/report.json",
+  "scenario_model": "stateful_entrypoint_adapter",
+  "observed_fields": [
+    "history",
+    "task_status",
+    "approvals",
+    "tool_calls",
+    "ui_payload"
+  ],
+  "combination_count": 14,
+  "mismatch_count": 0,
+  "mismatches": [],
+  "gate_status": "pass",
+  "sensitive_scan": {
+    "status": "pass",
+    "absolute_path_matches": 0,
+    "credential_matches": 0
+  }
+}

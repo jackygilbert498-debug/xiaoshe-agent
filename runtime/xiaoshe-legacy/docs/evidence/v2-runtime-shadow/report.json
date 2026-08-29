@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "candidate_head": "65e7417a8d138b23fadee05cf6f87b7fccd4c2ac",
+  "command": "py -3 -X utf8 scripts/check_runtime_shadow.py --output docs/evidence/v2-runtime-shadow/report.json",
+  "scenario_model": "production_runtime_adapters",
+  "adapter_routes": [
+    "cli",
+    "gui",
+    "headless",
+    "worker"
+  ],
+  "observed_fields": [
+    "history",
+    "task_status",
+    "approvals",
+    "tool_calls",
+    "ui_payload"
+  ],
+  "combination_count": 14,
+  "mismatch_count": 0,
+  "mismatches": [],
+  "gate_status": "pass",
+  "sensitive_scan": {
+    "status": "pass",
+    "absolute_path_matches": 0,
+    "credential_matches": 0
+  }
+}

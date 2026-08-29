@@ -1,43 +1,62 @@
-# 密钥与本地配置：永不进 git
+# Dependencies and generated output
+node_modules/
+dist/
+packages/*/lib/
+packages/*/dist/
+runtime/DSH/packages/*/lib/
+runtime/DSH/packages/*/dist/
+coverage/
+.vitest/
+.cache/
+.turbo/
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+
+# Local configuration and credentials
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+**/.credentials/
+**/credentials.local.json
+**/secrets.local.*
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# 运行日志与状态
-logs/
+# Runtime state and diagnostics
 *.log
-state.json
-!tests/ui_contract/fixtures/state.json
-memory.json
-memory.json.*
-.session/
-.state/
-.worktrees/
-mcp.json
-
-# 系统噪声与工具残留
+*.status
+*.tmp
+*.bak
 .DS_Store
-.playwright-mcp/
-.render_audit_*.html   # render 布局审计的临时副本（正常用完即删；兜底防意外残留进 git）
-sealcolor_shot.png
-sealtest_shot.png
-screenshot-*.png   # screenshot 工具默认命名的整屏截图（含屏幕隐私，别随 git add -A 推远端）
+Thumbs.db
+/.xiaoshe/
+/.dsh/
+/runtime-state/
+/var/
 
-# 金标准验收的整屏/局部截图（含屏幕隐私，铁律不入 git；证据 md 在仓库里、图留本机）
-docs/验收/裁剪重问-Mac金标准-截图/
-docs/验收/裁剪重问-Win金标准-截图/
+# Private/local acceptance evidence
+artifacts/
+docs/evidence/
+runtime/DSH/website/.dist/
+runtime/xiaoshe-legacy/界面截图/
+runtime/xiaoshe-legacy/小蛇完善方案/
+runtime/xiaoshe-legacy/docs/验收/
+runtime/xiaoshe-legacy/docs/handoff/
 
-# D3 真实任务 eval 沙盒（真跑产物：合成 fixtures/模型产物/结果 JSON，全可再生成）
-.d3/
-
-# 界面参考截图（30MB 设计参照，刻意不入库；双机各留本地一份）
-界面截图/
-
-# 体验优化专项的三套对标壳本地镜像：由固定 commit 清单恢复，不进主仓库
-docs/handoff/专项工作包-2026-08-02-小蛇壳化转型/对标壳源码/
+# Cross-device handoff payloads are distributed separately
+交接工具/完整性清单.json
+交接工具/离线工件/
+交接工具/XS-完整交接包-*.tar.gz
+交接工具/XS-完整交接包-*.tar.gz.sha256
+交接工具/XS-完整交接包-*.zip
+交接工具/XS-完整交接包-*.zip.sha256
+*.tgz
+*.tar.gz
+*.zip
+*.7z

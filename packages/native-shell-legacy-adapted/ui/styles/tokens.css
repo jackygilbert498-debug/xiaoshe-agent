@@ -1,0 +1,220 @@
+/* ============================================================================
+ * 小蛇 · 设计 token 三层（双主题定稿：亮白留白 / 墨玉银白）
+ * 视觉真源：/Users/example/Desktop/界面设计方向/
+ *   fresh-L4-云白薄荷流光.html（亮 · 默认 :root，底色 #f9fcfa，薄荷 #2e8b6a 点缀）
+ *   bplus.html / bplus-empty.html（暗 · [data-theme="ink-jade"]，近黑 #0a0a0a，
+ *   奶油黄 #f3d67c 唯一强调色，发丝线 rgba(255,255,255,.08)）
+ * 第一层 色板层：两主题色板 + 蛇鳞流光渐变（空态字标/蛇形水印）
+ * 第二层 语义层：阴影/圆角/字体/间距分层（组件只准引用本层）
+ * 第三层 组件层：见 base.css / components.css / panels.css / observatory.css
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * 主题 1 · 亮白留白（默认，:root）
+ * 大面积亮白与中性灰；玉色和香槟色只留给品牌标识。
+ * ------------------------------------------------------------------------- */
+:root {
+  /* ---- 第一层：亮白中性色板 ---- */
+  --p-bg: #fbfcfb;            /* 侧栏/面板底 */
+  --p-rail: #fbfcfb;          /* inspector 底 */
+  --p-stage: #ffffff;         /* 对话区亮白 */
+  --p-card: #ffffff;          /* 卡面 */
+  --p-card-hover: #f3f4f3;    /* hover 底 / 次卡 */
+  --p-line: rgba(27, 29, 28, .08);    /* 发丝线 */
+  --p-line2: rgba(27, 29, 28, .14);
+  --p-line3: rgba(27, 29, 28, .22);
+  --p-ink: #1b1d1c;
+  --p-ink2: #555b57;
+  --p-ink3: #68716c;
+  --p-faint: #7d8580;
+  --p-mint: #6f8779;          /* 低饱和玉灰，仅作细小交互提示 */
+  --p-mint-deep: #415e4f;
+  --p-mint-bg: rgba(79, 110, 92, .08);
+  --p-cream: #202321;         /* 主控件：石墨黑 */
+  --p-cream-deep: #151716;
+  --p-cream-ink: #ffffff;
+  --p-blue: #657384;
+  --p-amber: #927b5d;
+  --p-err: #925e58;
+  --p-mark: #9a625b;          /* 观测台 SoM 框暖红 */
+
+  /* ---- 第二层：语义层 ---- */
+  --bg: var(--p-bg);
+  --surface: var(--p-stage);
+  --surface-2: var(--p-rail);
+  --card: var(--p-card);
+  --card-hover: var(--p-card-hover);
+  --line: var(--p-line);
+  --line2: var(--p-line2);
+  --line3: var(--p-line3);
+  --ink: var(--p-ink);
+  --ink2: var(--p-ink2);
+  --ink3: var(--p-ink3);
+  --faint: var(--p-faint);
+  --accent: var(--p-mint);
+  --accent-deep: var(--p-mint-deep);
+  --accent-bg: var(--p-mint-bg);
+  --cta: var(--p-cream);           /* 药丸 CTA：新会话/批准/发送/自主开关 */
+  --cta-deep: var(--p-cream-deep);
+  --cta-ink: var(--p-cream-ink);
+  --cta-glow: rgba(32, 35, 33, .28);
+  --ok: var(--p-mint);
+  --info: var(--p-blue);
+  --warn: var(--p-amber);
+  --err: var(--p-err);
+  --mark: var(--p-mark);
+
+  /* ---- 蛇鳞流光（空态巨型字标 + 蛇形水印；亮主题深色系渐变） ---- */
+  --sheen-1: #23362d;
+  --sheen-2: #4f8069;
+  --sheen-3: #9cc2b1;
+  --sheen-4: #d7c27f;
+  --ghost-op: .16;          /* 线稿可辨但仍退居金属字标之后 */
+  --wm-op: .17;             /* 消息流右下线稿保持为低对比空间签名 */
+
+  /* ---- 字体栈 ---- */
+  --serif: "Noto Serif SC", "Songti SC", serif;
+  --sans: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* ---- 字体大小分层 ---- */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+
+  /* ---- 间距分层 ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* ---- 圆角分层 ---- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 20px;
+
+  /* ---- 阴影分层 ---- */
+  --sh-xs: 0 1px 2px rgba(16, 24, 40, .04);
+  --sh-sm: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+  --sh-md: 0 4px 12px rgba(16, 24, 40, .07), 0 2px 4px rgba(16, 24, 40, .05);
+  --sh-lg: 0 12px 32px rgba(16, 24, 40, .12), 0 4px 10px rgba(16, 24, 40, .08);
+  --sh-xl: 0 24px 64px rgba(16, 24, 40, .18), 0 8px 20px rgba(16, 24, 40, .10);
+
+  /* ---- 动效 ---- */
+  --fast: 120ms;
+  --med: 180ms;
+  --slow: 260ms;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- 弹出层阴影 ---- */
+  --shadow-pop: var(--sh-lg);
+
+  /* ---- 层级 ---- */
+  --z-modal: 90;
+  --z-toast: 100;
+}
+
+/* ---------------------------------------------------------------------------
+ * 主题 2 · 墨玉银白（[data-theme="ink-jade"]）
+ * 墨玉黑而非纯黑；主控件用柔和银白，品牌保留玉色与香槟色。
+ * ------------------------------------------------------------------------- */
+[data-theme="ink-jade"] {
+  /* ---- 第一层：墨玉银白色板 ---- */
+  --p-bg: #151a17;            /* 侧栏/面板底（比舞台亮半度） */
+  --p-rail: #151a17;
+  --p-stage: #0f1311;         /* 主舞台墨玉黑 */
+  --p-card: #191d1b;          /* 媒体卡 */
+  --p-card-hover: #202522;
+  --p-line: rgba(255, 255, 255, .08);   /* 发丝线 */
+  --p-line2: rgba(255, 255, 255, .14);
+  --p-line3: rgba(255, 255, 255, .20);
+  --p-ink: #eef0ee;
+  --p-ink2: #acb2ae;
+  --p-ink3: #98a19b;
+  --p-faint: #818a84;
+  --p-cream: #d7dad7;         /* 主控件：柔和银白 */
+  --p-cream-deep: #eef0ee;
+  --p-cream-ink: #181b19;
+  --p-cream-bg: rgba(215, 218, 215, .09);
+  --p-jade-br: #7e9f8e;       /* 低饱和状态玉色 */
+  --p-blue: #7f8fa3;
+  --p-amber: #a99171;
+  --p-err: #a87670;
+  --p-mark: #a87670;
+
+  /* ---- 第二层：语义层（与亮主题同名不同值） ---- */
+  --bg: var(--p-bg);
+  --surface: var(--p-stage);
+  --surface-2: var(--p-rail);
+  --card: var(--p-card);
+  --card-hover: var(--p-card-hover);
+  --line: var(--p-line);
+  --line2: var(--p-line2);
+  --line3: var(--p-line3);
+  --ink: var(--p-ink);
+  --ink2: var(--p-ink2);
+  --ink3: var(--p-ink3);
+  --faint: var(--p-faint);
+  --accent: var(--p-cream);
+  --accent-deep: var(--p-cream-deep);
+  --accent-bg: var(--p-cream-bg);
+  --cta: var(--p-cream);
+  --cta-deep: var(--p-cream-deep);
+  --cta-ink: var(--p-cream-ink);
+  --cta-glow: rgba(215, 218, 215, .20);
+  --ok: var(--p-jade-br);
+  --info: var(--p-blue);
+  --warn: var(--p-amber);
+  --err: var(--p-err);
+  --mark: var(--p-mark);
+
+  /* ---- 蛇鳞流光（暗主题浅色系渐变：#e8f5ec→#7fdcae→#f0d68a） ---- */
+  --sheen-1: #f0f4f1;
+  --sheen-2: #a7d6bf;
+  --sheen-3: #5fa17f;
+  --sheen-4: #dbc788;
+  --ghost-op: .15;          /* 暗底也能辨认线稿，不形成第二视觉中心 */
+  --wm-op: .18;
+
+  /* 深底阴影换深色 */
+  --sh-xs: 0 1px 2px rgba(0, 0, 0, .4);
+  --sh-sm: 0 1px 2px rgba(0, 0, 0, .4), 0 1px 3px rgba(0, 0, 0, .45);
+  --sh-md: 0 4px 12px rgba(0, 0, 0, .45), 0 2px 4px rgba(0, 0, 0, .4);
+  --sh-lg: 0 12px 32px rgba(0, 0, 0, .55), 0 4px 10px rgba(0, 0, 0, .45);
+  --sh-xl: 0 24px 64px rgba(0, 0, 0, .65), 0 8px 20px rgba(0, 0, 0, .5);
+
+  --shadow-pop: var(--sh-lg);
+}
+
+/* ---------------------------------------------------------------------------
+ * 动效可达性：prefers-reduced-motion 下关停一切动画
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fast: 0ms;
+    --med: 0ms;
+    --slow: 0ms;
+  }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Task-first status colors stay subordinate to content in both themes. */
+:root {
+  --task-active: color-mix(in srgb, var(--info) 58%, var(--faint));
+  --task-passive: color-mix(in srgb, var(--ink3) 42%, transparent);
+  --task-attention: color-mix(in srgb, var(--warn) 52%, var(--ink3));
+}

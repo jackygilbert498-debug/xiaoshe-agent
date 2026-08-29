@@ -1,0 +1,1193 @@
+{
+  "commit": "71b11f87a4f2926a5b4ea4607951de7189b8b5ec",
+  "contract": {
+    "enums": {
+      "ALERT_LEVEL": [
+        "info",
+        "warn",
+        "error"
+      ],
+      "APPROVAL_SCOPE": [
+        "session",
+        "persist"
+      ],
+      "CATEGORY": [
+        "file",
+        "process",
+        "memory",
+        "vision",
+        "web",
+        "subagent",
+        "sandbox",
+        "misc"
+      ],
+      "COMMAND_NAME": [
+        "todos",
+        "memory",
+        "skills",
+        "notes",
+        "effects",
+        "undo",
+        "clear",
+        "help",
+        "recall",
+        "recall_subagent",
+        "sessions",
+        "resume"
+      ],
+      "COMPACTION_KIND": [
+        "auto_compact",
+        "force_compact",
+        "emergency_truncate",
+        "tool_result_clearing"
+      ],
+      "DECISION": [
+        "y",
+        "n",
+        "a",
+        "p"
+      ],
+      "DIFF_STATUS": [
+        "effective",
+        "suspected_noop",
+        "unknown"
+      ],
+      "EVENT_TYPE": [
+        "session.snapshot",
+        "message.append",
+        "tool_call.start",
+        "tool_call.end",
+        "approval.request",
+        "approval.resolved",
+        "state.patch",
+        "compaction.event",
+        "viewport.update",
+        "job.update",
+        "subagent.update",
+        "system.alert",
+        "send",
+        "approve",
+        "cancel",
+        "command",
+        "vision_pending.remove"
+      ],
+      "JOB_STATUS": [
+        "running",
+        "done",
+        "interrupted",
+        "failed"
+      ],
+      "KEY_RULE": [
+        "path",
+        "command",
+        "coords",
+        "bare"
+      ],
+      "MARK_SOURCE": [
+        "uia",
+        "ocr",
+        "uia+ocr"
+      ],
+      "PERMISSION": [
+        "allow",
+        "ask",
+        "deny"
+      ],
+      "ROLE": [
+        "user",
+        "assistant",
+        "tool",
+        "system"
+      ],
+      "SUBAGENT_STATUS": [
+        "running",
+        "done",
+        "failed"
+      ],
+      "TASK_EVENT_TYPE": [
+        "task.created",
+        "task.definition_updated",
+        "task.transitioned",
+        "run.started",
+        "run.finished",
+        "action.started",
+        "action.finished"
+      ],
+      "TASK_STATUS": [
+        "Draft",
+        "Planning",
+        "AwaitingPlanApproval",
+        "Ready",
+        "Running",
+        "WaitingUser",
+        "Review",
+        "Verifying",
+        "Succeeded",
+        "Failed",
+        "Cancelled",
+        "Archived"
+      ],
+      "TOOL_STATUS": [
+        "ok",
+        "error",
+        "denied"
+      ],
+      "ZONE": [
+        "目标",
+        "决策",
+        "现状",
+        "待解",
+        "已完成",
+        "其它"
+      ]
+    },
+    "schemas": {
+      "SCHEMA_APPROVE": {
+        "decision": {
+          "enum": [
+            "y",
+            "n",
+            "a",
+            "p"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "request_id": {
+          "max_len": 64,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_AUTONOMY": {
+        "on": {
+          "required": true,
+          "type": "bool"
+        }
+      },
+      "SCHEMA_COMMAND": {
+        "args": {
+          "type": "dict"
+        },
+        "name": {
+          "enum": [
+            "todos",
+            "memory",
+            "skills",
+            "notes",
+            "effects",
+            "undo",
+            "clear",
+            "help",
+            "recall",
+            "recall_subagent",
+            "sessions",
+            "resume"
+          ],
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_MEMORY_ITEM": {
+        "action": {
+          "enum": [
+            "add",
+            "edit",
+            "forget",
+            "revive"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "id": {
+          "max_len": 32,
+          "type": "str"
+        },
+        "layer": {
+          "enum": [
+            "long",
+            "project"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "project_id": {
+          "max_len": 32,
+          "type": "str"
+        },
+        "text": {
+          "max_len": 1000,
+          "type": "str"
+        },
+        "zone": {
+          "max_len": 8,
+          "type": "str"
+        }
+      },
+      "SCHEMA_MEMORY_NOTE": {
+        "action": {
+          "enum": [
+            "add",
+            "remove"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "index": {
+          "type": "int"
+        },
+        "text": {
+          "max_len": 4000,
+          "type": "str"
+        }
+      },
+      "SCHEMA_MODEL": {
+        "model": {
+          "max_len": 128,
+          "type": "str"
+        },
+        "model_id": {
+          "max_len": 128,
+          "type": "str"
+        }
+      },
+      "SCHEMA_MODEL_PROFILE_CREATE": {
+        "api_key": {
+          "max_len": 4096,
+          "type": "str"
+        },
+        "auth_mode": {
+          "enum": [
+            "bearer",
+            "x_api_key",
+            "query_key",
+            "none"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "base_url": {
+          "max_len": 500,
+          "required": true,
+          "type": "str"
+        },
+        "capabilities": {
+          "max_len": 16,
+          "required": true,
+          "type": "list"
+        },
+        "display_name": {
+          "max_len": 160,
+          "required": true,
+          "type": "str"
+        },
+        "enabled": {
+          "required": false,
+          "type": "bool"
+        },
+        "protocol": {
+          "enum": [
+            "openai_compatible",
+            "anthropic",
+            "gemini",
+            "ollama"
+          ],
+          "required": true,
+          "type": "str"
+        },
+        "provider_name": {
+          "max_len": 120,
+          "required": true,
+          "type": "str"
+        },
+        "upstream_model": {
+          "max_len": 240,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_MODEL_PROFILE_PATCH": {
+        "api_key": {
+          "max_len": 4096,
+          "type": "str"
+        },
+        "auth_mode": {
+          "enum": [
+            "bearer",
+            "x_api_key",
+            "query_key",
+            "none"
+          ],
+          "type": "str"
+        },
+        "base_url": {
+          "max_len": 500,
+          "type": "str"
+        },
+        "capabilities": {
+          "max_len": 16,
+          "type": "list"
+        },
+        "display_name": {
+          "max_len": 160,
+          "type": "str"
+        },
+        "enabled": {
+          "type": "bool"
+        },
+        "protocol": {
+          "enum": [
+            "openai_compatible",
+            "anthropic",
+            "gemini",
+            "ollama"
+          ],
+          "type": "str"
+        },
+        "provider_name": {
+          "max_len": 120,
+          "type": "str"
+        },
+        "upstream_model": {
+          "max_len": 240,
+          "type": "str"
+        }
+      },
+      "SCHEMA_PROJECT_ASSIGN": {
+        "id": {
+          "max_len": 32,
+          "required": true,
+          "type": "str"
+        },
+        "sid": {
+          "max_len": 64,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_PROJECT_CREATE": {
+        "name": {
+          "max_len": 120,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_PROJECT_ID": {
+        "id": {
+          "max_len": 32,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_PROJECT_RENAME": {
+        "id": {
+          "max_len": 32,
+          "required": true,
+          "type": "str"
+        },
+        "name": {
+          "max_len": 120,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_RESUME": {
+        "sid": {
+          "max_len": 128,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_SEND": {
+        "client_msg_id": {
+          "max_len": 64,
+          "type": "str"
+        },
+        "text": {
+          "max_len": 100000,
+          "required": true,
+          "type": "str"
+        }
+      },
+      "SCHEMA_VISION_REMOVE": {
+        "ref": {
+          "max_len": 64,
+          "required": true,
+          "type": "str"
+        }
+      }
+    },
+    "tool_meta": {
+      "check_background": [
+        "process",
+        "eye",
+        "job_id: {job_id}"
+      ],
+      "click": [
+        "vision",
+        "cursor",
+        "uid: {uid}"
+      ],
+      "click_at": [
+        "vision",
+        "cursor-xy",
+        "({x}, {y})"
+      ],
+      "edit": [
+        "file",
+        "file-edit",
+        "path: {path}，替换 {old_string.len} → {new_string.len} 字符"
+      ],
+      "focus_window": [
+        "vision",
+        "focus",
+        "title: {title}"
+      ],
+      "glob": [
+        "file",
+        "search-files",
+        "pattern: {pattern}"
+      ],
+      "grep": [
+        "file",
+        "search-text",
+        "pattern: {pattern}，path: {path}"
+      ],
+      "list_background": [
+        "process",
+        "list",
+        "（无参数）"
+      ],
+      "list_windows": [
+        "vision",
+        "windows",
+        "（无参数）"
+      ],
+      "look": [
+        "vision",
+        "eye-screen",
+        "（无参数）"
+      ],
+      "note": [
+        "memory",
+        "notebook",
+        "{content.len} 字符笔记"
+      ],
+      "note_tip": [
+        "memory",
+        "zap",
+        "{tip.len} 字符小招"
+      ],
+      "observe": [
+        "vision",
+        "window",
+        "include_screenshot: {include_screenshot}"
+      ],
+      "ocr": [
+        "vision",
+        "ocr",
+        "path: {path}"
+      ],
+      "pick": [
+        "vision",
+        "target",
+        "viewport: {viewport_id}，mark_no: {mark_no}"
+      ],
+      "press_keys": [
+        "vision",
+        "keyboard",
+        "keys: {keys}"
+      ],
+      "propose_tool": [
+        "sandbox",
+        "tool-plus",
+        "name: {name}"
+      ],
+      "read_file": [
+        "file",
+        "file-read",
+        "path: {path}"
+      ],
+      "read_image": [
+        "vision",
+        "image",
+        "path: {path}"
+      ],
+      "read_skill": [
+        "misc",
+        "bookmark",
+        "name: {name}"
+      ],
+      "recall": [
+        "memory",
+        "hook",
+        "ref: {ref}"
+      ],
+      "recall_subagent": [
+        "subagent",
+        "user-search",
+        "ref_id: {ref_id}"
+      ],
+      "remember": [
+        "memory",
+        "brain",
+        "zone: {zone}，{fact.len} 字符"
+      ],
+      "render_check": [
+        "vision",
+        "render",
+        "path: {path}，keywords: {keywords}"
+      ],
+      "run_command": [
+        "process",
+        "terminal",
+        "command: {command}"
+      ],
+      "run_in_background": [
+        "process",
+        "clock-bg",
+        "command: {command}"
+      ],
+      "run_sandboxed": [
+        "sandbox",
+        "shield-play",
+        "code 长度: {code.len}，timeout: {timeout}"
+      ],
+      "run_script": [
+        "process",
+        "scroll-code",
+        "script 长度: {script.len}"
+      ],
+      "save_skill": [
+        "misc",
+        "bookmark-plus",
+        "name: {name}"
+      ],
+      "screenshot": [
+        "vision",
+        "camera",
+        "path: {path}"
+      ],
+      "spawn_parallel": [
+        "subagent",
+        "users",
+        "{subtasks.len} 个子任务并行"
+      ],
+      "spawn_subagent": [
+        "subagent",
+        "user-plus",
+        "task: {task.len} 字符"
+      ],
+      "type_text": [
+        "vision",
+        "type",
+        "text: {text.len} 字符"
+      ],
+      "update_todos": [
+        "memory",
+        "list-check",
+        "{todos.len} 条待办"
+      ],
+      "web_fetch": [
+        "web",
+        "globe",
+        "url: {url}"
+      ],
+      "web_search": [
+        "web",
+        "search-web",
+        "query: {query}"
+      ],
+      "write_file": [
+        "file",
+        "file-pen",
+        "path: {path}，内容长度: {content.len}"
+      ],
+      "zoom": [
+        "vision",
+        "zoom-in",
+        "viewport: {viewport_id}，mark_no: {mark_no}"
+      ]
+    }
+  },
+  "dirty_files": [
+    {
+      "path": ".env.example",
+      "status": " M"
+    },
+    {
+      "path": ".gitattributes",
+      "status": " M"
+    },
+    {
+      "path": ".gitignore",
+      "status": " M"
+    },
+    {
+      "path": "README.md",
+      "status": " M"
+    },
+    {
+      "path": "docs/GUIDE.md",
+      "status": " M"
+    },
+    {
+      "path": "docs/LOCAL_VERIFY.md",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/D1-\\345\\256\\211\\345\\205\\250\\347\\241\\254\\345\\214\\226.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/D2-\\344\\270\\212\\344\\270\\213\\346\\226\\207\\344\\270\\216\\346\\210\\220\\346\\234\\254.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/D3-\\347\\234\\237\\345\\256\\236\\344\\273\\273\\345\\212\\241eval.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/D4-\\344\\277\\256\\345\\244\\215\\346\\211\\271.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/D5-\\350\\203\\275\\345\\212\\233\\345\\215\\207\\347\\272\\247.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/README-\\347\\264\\242\\345\\274\\225.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\346\\226\\271\\346\\241\\210/_\\345\\215\\225\\345\\205\\203\\346\\230\\216\\347\\273\\206-\\346\\226\\271\\346\\241\\210\\344\\270\\216\\350\\257\\204\\345\\256\\241.json\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\344\\274\\230\\345\\214\\226\\350\\267\\257\\347\\272\\277-\\345\\256\\241\\350\\256\\241\\344\\270\\216SOTA\\344\\272\\244\\345\\217\\211.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\345\\273\\272\\351\\200\\240\\347\\272\\252\\344\\272\\213.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\344\\272\\244\\344\\272\\222\\351\\252\\214\\346\\224\\266\\346\\270\\205\\345\\215\\225.md\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\350\\265\\204\\346\\226\\231/mcp-echo.json\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\350\\265\\204\\346\\226\\231/mcp-\\345\\235\\217\\344\\270\\200\\345\\217\\260\\345\\245\\275\\344\\270\\200\\345\\217\\260.json\"",
+      "status": " M"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\350\\265\\204\\346\\226\\231/\\350\\256\\260\\345\\277\\206\\345\\206\\262\\347\\252\\201\\346\\240\\267\\344\\276\\213.json\"",
+      "status": " M"
+    },
+    {
+      "path": "harness/agent.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/config.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/curl_transport.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/effects.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/kimi_client.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/session.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/ui_schema.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/ui_server.py",
+      "status": " M"
+    },
+    {
+      "path": "harness/ui_state.py",
+      "status": " M"
+    },
+    {
+      "path": "scripts/e2e/run_e2e.py",
+      "status": " M"
+    },
+    {
+      "path": "scripts/smoke_serve.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_curl_unify.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_effects.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_m2.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_netguard.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_p2c_cache.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_sandbox_docker.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_sandbox_mac.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_smoke.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/test_tools_permission.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/enums_mirror.json",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/model_response.json",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/models.json",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_contract/validate_contract.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_server/test_autonomy_model.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_server/test_contract_unit.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_server/test_review_fixes.py",
+      "status": " M"
+    },
+    {
+      "path": "tests/ui_server/test_server.py",
+      "status": " M"
+    },
+    {
+      "path": "ui/dev.html",
+      "status": " M"
+    },
+    {
+      "path": "ui/index.html",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/input.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/lib/enums.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/main.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/net.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/observatory.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/palette.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/panels/memory.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/projects.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/render/compact.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/js/render/image.js",
+      "status": " M"
+    },
+    {
+      "path": "ui/styles/base.css",
+      "status": " M"
+    },
+    {
+      "path": "ui/styles/components.css",
+      "status": " M"
+    },
+    {
+      "path": "ui/styles/observatory.css",
+      "status": " M"
+    },
+    {
+      "path": "ui/styles/panels.css",
+      "status": " M"
+    },
+    {
+      "path": "ui/styles/tokens.css",
+      "status": " M"
+    },
+    {
+      "path": "\"\\345\\220\\257\\345\\212\\250\\345\\260\\217\\350\\233\\207\\347\\225\\214\\351\\235\\242.bat\"",
+      "status": " M"
+    },
+    {
+      "path": "\"\\345\\220\\257\\345\\212\\250\\345\\260\\217\\350\\233\\207\\347\\225\\214\\351\\235\\242.command\"",
+      "status": " M"
+    },
+    {
+      "path": "\"\\345\\224\\244\\351\\206\\222Harness.bat\"",
+      "status": " M"
+    },
+    {
+      "path": "\"\\345\\260\\217\\350\\233\\207\\347\\225\\214\\351\\235\\242-\\345\\220\\257\\345\\212\\250\\346\\214\\207\\345\\215\\227.md\"",
+      "status": " M"
+    },
+    {
+      "path": "docs/baselines/",
+      "status": "??"
+    },
+    {
+      "path": "docs/evidence/",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/handoff/\\344\\270\\223\\351\\241\\271\\345\\267\\245\\344\\275\\234\\345\\214\\205-2026-08-02-\\345\\260\\217\\350\\233\\207\\345\\243\\263\\345\\214\\226\\350\\275\\254\\345\\236\\213/\"",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/handoff/\\345\\260\\217\\350\\233\\207\\345\\275\\223\\345\\211\\215\\344\\272\\244\\346\\216\\245\\346\\200\\273\\350\\247\\210-2026-08-02.md\"",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/handoff/\\346\\215\\242\\346\\234\\272\\346\\211\\213\\345\\206\\214-v15-\\345\\243\\263\\345\\214\\226\\350\\275\\254\\345\\236\\213\\345\\267\\245\\344\\275\\234\\345\\214\\205.md\"",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-deepseek-provider-switch.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-handoff-package-integrity.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-model-adapters-switching.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-model-manager-ui.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-model-registry-secrets.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-ux-p0.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-02-windows-contract-reproducibility.md",
+      "status": "??"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-02-handoff-ux-p0-design.md",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/superpowers/specs/2026-08-02-\\345\\244\\232\\346\\234\\215\\345\\212\\241\\345\\225\\206\\346\\250\\241\\345\\236\\213\\347\\256\\241\\347\\220\\206-design.md\"",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\344\\275\\223\\351\\252\\214\\344\\274\\230\\345\\214\\226-P0-Gherkin.md\"",
+      "status": "??"
+    },
+    {
+      "path": "\"docs/\\351\\252\\214\\346\\224\\266/\\344\\275\\223\\351\\252\\214\\344\\274\\230\\345\\214\\226-P0-\\350\\265\\260\\346\\237\\245\\346\\270\\205\\345\\215\\225-v1.md\"",
+      "status": "??"
+    },
+    {
+      "path": "harness/model_adapters.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/model_client.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/model_registry.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/model_secrets.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/model_transport.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/session_import.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/task_api.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/task_engine.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/task_events.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/task_model.py",
+      "status": "??"
+    },
+    {
+      "path": "harness/task_store.py",
+      "status": "??"
+    },
+    {
+      "path": "scripts/check_watermark_contrast.py",
+      "status": "??"
+    },
+    {
+      "path": "scripts/validate_tasking_baseline.py",
+      "status": "??"
+    },
+    {
+      "path": "scripts/verify_windows.ps1",
+      "status": "??"
+    },
+    {
+      "path": "scripts/walkthrough_p0.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/fixtures/",
+      "status": "??"
+    },
+    {
+      "path": "tests/tasking_store.test.mjs",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_handoff_package_portability.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_model_adapters.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_model_client.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_model_manager_contract.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_model_registry.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_model_secrets.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_provider_switch.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_repository_hygiene.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_restore_benchmarks.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_session_import.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_api.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_engine.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_model.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_run_adapter.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_session_metadata.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_task_store.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_tasking_baseline.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_tasking_feature_flag.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/test_walkthrough_p0.py",
+      "status": "??"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/state.json",
+      "status": "??"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/task_v2_events.json",
+      "status": "??"
+    },
+    {
+      "path": "tests/ui_contract/fixtures/task_v2_responses.json",
+      "status": "??"
+    },
+    {
+      "path": "ui/js/command-receipt.js",
+      "status": "??"
+    },
+    {
+      "path": "ui/js/modal.js",
+      "status": "??"
+    },
+    {
+      "path": "ui/js/model-manager.js",
+      "status": "??"
+    },
+    {
+      "path": "ui/js/tasking/",
+      "status": "??"
+    },
+    {
+      "path": "\"\\345\\260\\217\\350\\233\\207\\345\\256\\214\\345\\226\\204\\346\\226\\271\\346\\241\\210/\"",
+      "status": "??"
+    }
+  ],
+  "platform": {
+    "release": "25.3.0",
+    "system": "Darwin"
+  },
+  "python": "3.13.12",
+  "tests": {
+    "command": "python -X utf8 -m unittest discover -s tests -p test_*.py"
+  },
+  "ux_mapping": {
+    "ids": [
+      "O1",
+      "O2",
+      "O3",
+      "O4",
+      "O5",
+      "O6",
+      "O7",
+      "O8",
+      "O9",
+      "O10",
+      "O11",
+      "O12",
+      "O13",
+      "O14",
+      "O15",
+      "O16",
+      "O17",
+      "O18",
+      "O19",
+      "O20",
+      "O21",
+      "O22",
+      "O23",
+      "O24",
+      "O25",
+      "O26",
+      "O27",
+      "O28",
+      "O29",
+      "O30",
+      "O31",
+      "O32",
+      "O33",
+      "O34",
+      "O35",
+      "O36",
+      "O37",
+      "O38",
+      "O39",
+      "O40",
+      "O41",
+      "O42",
+      "O43",
+      "O44",
+      "O45",
+      "O46",
+      "O47",
+      "O48",
+      "O49",
+      "O50",
+      "O51",
+      "O52",
+      "O53",
+      "O54"
+    ]
+  }
+}

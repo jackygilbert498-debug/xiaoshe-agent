@@ -1,0 +1,8 @@
+{
+  "$doc": "错误响应统一形状样例（SPEC §11：错误 {\"error\":{\"code\",\"message\",\"hint\"}}）。此例为 GET /api/images/{ref} 引用不存在 → 404（R3 §1-E12：meta→None→404）；hint 给修复指引（SchemaError 同款 message/hint 分工）。",
+  "error": {
+    "code": "not_found",
+    "message": "图片引用 img-999 不存在或已驱逐",
+    "hint": "用 GET /api/state 的 vision_pending 核对当前有效 ref；旧图可能已被金字塔降档驱逐"
+  }
+}

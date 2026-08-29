@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "小蛇",
+  "short_name": "小蛇",
+  "description": "小蛇本地任务收件箱",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#f7f8f6",
+  "icons": [
+    { "src": "/assets/icon-256.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

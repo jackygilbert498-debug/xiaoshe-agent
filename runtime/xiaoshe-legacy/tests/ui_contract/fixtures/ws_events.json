@@ -1,0 +1,373 @@
+{
+  "$doc": "WS 全事件信封样例（SPEC §3.1 信封 + §3.2 事件表，逐 type 一帧）。信封五件 {v,seq,ts,type,sid} + payload：下行 seq 由 ui_bus 持锁自增单调，上行 seq 恒 0；ts=ISO 8601 带时区秒级；下行 12 种 + 上行 5 种 = EVENT_TYPE 枚举封闭全集；payload 与 §3.2 表逐字段一致（approval.request 八件、compaction.event 五件契约形状 D7、message.append 单条含 msg_id D8、approve 上行 decision 仅 y|n|a|p）。",
+  "downstream": [
+    {
+      "v": 1,
+      "seq": 101,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "session.snapshot",
+      "sid": "sess-0726-42",
+      "payload": {
+        "contract_v": 1,
+        "messages_tail": [
+          {
+            "msg_id": 44,
+            "role": "assistant",
+            "content": "构建还在跑。我先把已完成部分整理出来，跑完再补尾段。",
+            "ts": "2026-07-26T10:38:20+08:00"
+          },
+          {
+            "msg_id": 45,
+            "role": "system",
+            "content": "[compaction] auto_compact：50→10 条消息，150k→30k 字符。",
+            "ts": "2026-07-26T10:39:02+08:00"
+          }
+        ],
+        "state": {
+          "todos": [
+            {
+              "content": "跑通契约三道校验",
+              "status": "in_progress"
+            }
+          ],
+          "notes": [
+            "用户偏好暖纸主题为默认"
+          ],
+          "jobs": [],
+          "subagents": [],
+          "vision_pending": [
+            {
+              "ref": "img-12",
+              "target": "look 编号截图(SoM)"
+            }
+          ],
+          "approved_tools": [
+            {
+              "key": "run_command:git status",
+              "scope": "session"
+            }
+          ],
+          "denied_calls": 2,
+          "stall": null,
+          "usage": {
+            "input_tokens": 48210,
+            "output_tokens": 3560,
+            "turn": 17
+          },
+          "compaction_recent": null
+        },
+        "pending_approvals": [
+          {
+            "request_id": "ap-3",
+            "tool": "write_file",
+            "args": {
+              "path": "纪要.md",
+              "content": "# 构建纪要\n……"
+            },
+            "reason": "write_file 不在白名单且非 SAFE_TOOLS，需用户批准",
+            "approval_key": "write_file:纪要.md",
+            "resolved_path": "C:/work/proj/纪要.md",
+            "tainted": false,
+            "force_ask": false
+          }
+        ],
+        "negotiated": {
+          "v": 1
+        }
+      }
+    },
+    {
+      "v": 1,
+      "seq": 102,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "message.append",
+      "sid": "sess-0726-42",
+      "payload": {
+        "msg_id": 46,
+        "role": "assistant",
+        "content": "构建完成，纪要已更新到第二段。",
+        "ts": "2026-07-26T10:42:01+08:00"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 103,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "tool_call.start",
+      "sid": "sess-0726-42",
+      "payload": {
+        "call_id": "call_9f2e",
+        "name": "write_file",
+        "args": {
+          "path": "纪要.md",
+          "content": "# 构建纪要\n……"
+        },
+        "permission": "ask",
+        "approval_key": "write_file:纪要.md",
+        "reason": "write_file 不在白名单且非 SAFE_TOOLS，需用户批准"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 104,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "tool_call.end",
+      "sid": "sess-0726-42",
+      "payload": {
+        "call_id": "call_9f2e",
+        "status": "ok",
+        "is_error": false,
+        "duration_ms": 182
+      }
+    },
+    {
+      "v": 1,
+      "seq": 105,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "approval.request",
+      "sid": "sess-0726-42",
+      "payload": {
+        "request_id": "ap-3",
+        "tool": "write_file",
+        "args": {
+          "path": "纪要.md",
+          "content": "# 构建纪要\n……"
+        },
+        "reason": "write_file 不在白名单且非 SAFE_TOOLS，需用户批准",
+        "approval_key": "write_file:纪要.md",
+        "resolved_path": "C:/work/proj/纪要.md",
+        "tainted": false,
+        "force_ask": false
+      }
+    },
+    {
+      "v": 1,
+      "seq": 106,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "approval.resolved",
+      "sid": "sess-0726-42",
+      "payload": {
+        "request_id": "ap-3",
+        "decision": "y"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 107,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "state.patch",
+      "sid": "sess-0726-42",
+      "payload": {
+        "todos": [
+          {
+            "content": "跑通契约三道校验",
+            "status": "completed"
+          }
+        ],
+        "denied_calls": 3
+      }
+    },
+    {
+      "v": 1,
+      "seq": 108,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "compaction.event",
+      "sid": "sess-0726-42",
+      "payload": {
+        "kind": "auto_compact",
+        "before": {
+          "msgs": 50,
+          "chars": 150000
+        },
+        "after": {
+          "msgs": 10,
+          "chars": 30000
+        },
+        "cleared": null,
+        "depth": 0
+      }
+    },
+    {
+      "v": 1,
+      "seq": 109,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "viewport.update",
+      "sid": "sess-0726-42",
+      "payload": {
+        "viewport_id": "v3",
+        "size": [
+          1600,
+          900
+        ],
+        "scale": 0.5,
+        "parent_id": "v1",
+        "chain": [
+          "v1",
+          "v3"
+        ],
+        "marks": {
+          "1": {
+            "no": 1,
+            "label": "确定",
+            "screen_cx": 812,
+            "screen_cy": 437,
+            "screen_w": 64,
+            "screen_h": 24,
+            "source": "uia"
+          },
+          "2": {
+            "no": 2,
+            "label": "取消",
+            "screen_cx": 912,
+            "screen_cy": 437,
+            "screen_w": 64,
+            "screen_h": 24,
+            "source": "ocr"
+          }
+        },
+        "screenshot_ref": "img-12",
+        "updated_at": "2026-07-26T10:41:58+08:00"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 110,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "job.update",
+      "sid": "sess-0726-42",
+      "payload": {
+        "jobs": [
+          {
+            "id": "job-20260726-103000-4231-1",
+            "command": "python scripts/build.py",
+            "pid": 5821,
+            "log_path": ".state/jobs/job-20260726-103000-4231-1.log",
+            "status": "done",
+            "started_at": "2026-07-26T10:30:00+08:00",
+            "returncode": 0,
+            "ended_at": "2026-07-26T10:42:00+08:00",
+            "tail": [
+              "链接完成",
+              "构建成功 exit 0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "v": 1,
+      "seq": 111,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "subagent.update",
+      "sid": "sess-0726-42",
+      "payload": {
+        "subagents": [
+          {
+            "ref_id": "sa_2",
+            "objective": "扫描前端原型可复用资产",
+            "status": "done",
+            "summary": "原型可复用 tokens 与审批卡骨架。",
+            "text_ref": "txt-4",
+            "batch_id": "b-1"
+          }
+        ]
+      }
+    },
+    {
+      "v": 1,
+      "seq": 112,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "system.alert",
+      "sid": "sess-0726-42",
+      "payload": {
+        "level": "warn",
+        "code": "busy",
+        "text": "上一轮还在运行，新消息已忽略（steering 留 backlog）。"
+      }
+    }
+  ],
+  "upstream": [
+    {
+      "v": 1,
+      "seq": 0,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "send",
+      "sid": "sess-0726-42",
+      "payload": {
+        "text": "构建跑完了吗？",
+        "client_msg_id": "c-8f21"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 0,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "approve",
+      "sid": "sess-0726-42",
+      "payload": {
+        "request_id": "ap-3",
+        "decision": "y"
+      }
+    },
+    {
+      "v": 1,
+      "seq": 0,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "cancel",
+      "sid": "sess-0726-42",
+      "payload": {}
+    },
+    {
+      "v": 1,
+      "seq": 0,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "command",
+      "sid": "sess-0726-42",
+      "payload": {
+        "name": "todos",
+        "args": {}
+      }
+    },
+    {
+      "v": 1,
+      "seq": 0,
+      "ts": "2026-07-26T10:42:03+08:00",
+      "type": "vision_pending.remove",
+      "sid": "sess-0726-42",
+      "payload": {
+        "ref": "img-14"
+      }
+    }
+  ],
+  "runtime_projection_cases": {
+    "$doc": "Plan 11 UI 仅消费公开投影视图：任何消息正文、插件 DOM 或原始 RuntimeEvent payload 均不在此契约中。",
+    "public_view": {
+      "v": 1,
+      "task_id": "task-fixture",
+      "RuntimeSummaryProjection": [
+        {
+          "runtime_id": "runtime-task-fixture",
+          "task_id": "task-fixture",
+          "run_id": "run-task-fixture",
+          "status": "active",
+          "task_state": "Running",
+          "last_event_id": "event-4",
+          "last_seq": 4,
+          "schema_version": 1
+        }
+      ],
+      "TaskTimelineProjection": [
+        {
+          "event_id": "verify-4",
+          "runtime_id": "runtime-task-fixture",
+          "task_id": "task-fixture",
+          "run_id": "run-task-fixture",
+          "event_type": "verification.finished",
+          "occurred_at": "2026-08-16T00:00:00Z",
+          "seq": 4,
+          "verification_status": "passed"
+        }
+      ]
+    }
+  }
+}

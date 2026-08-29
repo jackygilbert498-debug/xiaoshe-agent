@@ -1,0 +1,42 @@
+name: tests
+
+# P2·统一地基 + P6·CI 增强：每次 push / PR 自动跑三道离线门（纯标准库、无网络、无密钥、无代理依赖）：
+#   ① 全套中文单测 ② 注入安全回归专项（显性安全门）③ 离线 eval 套件 pass^1（脚本模型、防行为回归）。
+# 前置：项目用了 3.12+ 的 f-string 语法（scheduler_install.py），故最低锁 3.12。
+# setup-python 会提供 `python` shim——测试里有用 `python` 起子进程的用例，靠它满足。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支/PR 只跑最新一次，旧的自动取消，省额度。
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 全套单测
+        run: python -m unittest discover -s tests -v
+      - name: 注入安全回归（专项显性门）
+        run: python -m unittest tests.test_injection_safety tests.test_p2b_taint tests.test_vision_taint_spill -v
+      - name: eval 套件（离线 pass^1，脚本模型零网络）
+        run: python -m evals.run --k 1
+      - name: 资源卫生硬门
+        run: python -X utf8 -W error::ResourceWarning scripts/check_resource_hygiene.py --iterations 20 --strict --output docs/evidence/g7-resources/ci-report.json

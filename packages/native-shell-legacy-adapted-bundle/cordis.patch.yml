@@ -1,0 +1,7 @@
+# Isolated legacy-adapted overlay. Product services remain owned by Product Bundle.
+- id: xiaoshe-native-shell
+  disabled: true
+
+- insert:
+    - id: xiaoshe-native-shell-legacy-adapted
+      name: '@xiaoshe/native-shell-legacy-adapted'

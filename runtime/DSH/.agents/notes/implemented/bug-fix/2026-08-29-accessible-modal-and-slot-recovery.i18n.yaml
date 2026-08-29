@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-29-accessible-modal-and-slot-recovery.md
+2026-08-29-accessible-modal-and-slot-recovery.md: ed205454abec49306342733ce268627ce21dc7ca
+2026-08-29-accessible-modal-and-slot-recovery.zh.md: f70dc164858635ab01f79018f9f3c8cbbe777a33

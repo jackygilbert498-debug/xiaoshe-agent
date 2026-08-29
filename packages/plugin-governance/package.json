@@ -1,0 +1,13 @@
+{
+  "name": "@xiaoshe/plugin-governance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": { ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" }, "./client": "./lib/client.js", "./package.json": "./package.json" },
+  "files": ["lib"],
+  "scripts": { "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
+  "devDependencies": { "typescript": "5.9.3", "vitest": "3.2.7" },
+  "dsh": { "client": { "inject": ["@deepseek-ai/dsh-client-runtime"], "platform": "web" } }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "noEmit": false
+  },
+  "include": ["src/index.ts", "src/service.ts", "src/types.ts", "src/http.ts"],
+  "exclude": ["src/client", "tests"]
+}

@@ -1,0 +1,38 @@
+{
+  "$doc": "Task v2 REST 响应样例：任务详情、ETag 对应的 version 以及按状态分组的 inbox。",
+  "task_detail": {
+    "v": 1,
+    "server_time": "2026-08-03T00:00:00+00:00",
+    "task": {
+      "id": "tsk_example",
+      "project_id": "prj_example",
+      "title": "修复解析器",
+      "goal": "修复空输入的解析异常",
+      "acceptance": ["相关单元测试通过"],
+      "status": "Draft",
+      "version": 0,
+      "active_run_id": null,
+      "last_seq": 1
+    },
+    "events": []
+  },
+  "inbox": {
+    "v": 1,
+    "server_time": "2026-08-03T00:00:00+00:00",
+    "tasks": [],
+    "groups": {
+      "Draft": [],
+      "Planning": [],
+      "AwaitingPlanApproval": [],
+      "Ready": [],
+      "Running": [],
+      "WaitingUser": [],
+      "Review": [],
+      "Verifying": [],
+      "Succeeded": [],
+      "Failed": [],
+      "Cancelled": [],
+      "Archived": []
+    }
+  }
+}

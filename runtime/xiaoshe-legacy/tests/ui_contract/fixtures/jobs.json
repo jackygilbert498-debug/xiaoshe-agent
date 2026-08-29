@@ -1,0 +1,63 @@
+{
+  "$doc": "GET /api/jobs 响应样例（SPEC §10 jobs_list / D13；R3 §1-E5）。记录字段与 harness/jobs.py:_write_rec（:202）逐键一致：{id,command,pid,log_path,status,started_at,returncode,ended_at}——源码不落 cwd（R3 §6 速查表写 cwd 系侦察笔误，以源码为准）；status 四态各一条；tail=端点按行切 log_path 末 20 行（D13，解码走 _io.decode_cmd_output 回退链）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "jobs": [
+    {
+      "id": "job-20260726-103000-4231-1",
+      "command": "python scripts/build.py",
+      "pid": 5821,
+      "log_path": ".state/jobs/job-20260726-103000-4231-1.log",
+      "status": "running",
+      "started_at": "2026-07-26T10:30:00+08:00",
+      "returncode": null,
+      "ended_at": null,
+      "tail": [
+        "[10:41] 编译第 37 个目标…",
+        "[10:42] 链接中"
+      ]
+    },
+    {
+      "id": "job-20260726-094512-4231-2",
+      "command": "npm test",
+      "pid": 4902,
+      "log_path": ".state/jobs/job-20260726-094512-4231-2.log",
+      "status": "done",
+      "started_at": "2026-07-26T09:45:12+08:00",
+      "returncode": 0,
+      "ended_at": "2026-07-26T09:52:40+08:00",
+      "tail": [
+        "87 passing",
+        "0 failing"
+      ]
+    },
+    {
+      "id": "job-20260726-091010-4231-3",
+      "command": "rg -n 'TODO' src/",
+      "pid": 4711,
+      "log_path": ".state/jobs/job-20260726-091010-4231-3.log",
+      "status": "interrupted",
+      "started_at": "2026-07-26T09:10:10+08:00",
+      "returncode": null,
+      "ended_at": "2026-07-26T09:10:41+08:00",
+      "tail": [
+        "src/main.rs:12:TODO 错误码",
+        "（用户取消）"
+      ]
+    },
+    {
+      "id": "job-20260726-085500-4231-4",
+      "command": "./deploy.sh prod",
+      "pid": 4520,
+      "log_path": ".state/jobs/job-20260726-085500-4231-4.log",
+      "status": "failed",
+      "started_at": "2026-07-26T08:55:00+08:00",
+      "returncode": 1,
+      "ended_at": "2026-07-26T08:55:19+08:00",
+      "tail": [
+        "deploy: 目标主机拒绝连接",
+        "exit 1"
+      ]
+    }
+  ]
+}

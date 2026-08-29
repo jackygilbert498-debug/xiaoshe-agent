@@ -1,0 +1,26 @@
+{
+  "id": "feature-17",
+  "category": "feature",
+  "goal": "完成 feature 场景 17",
+  "acceptance": [
+    "oracle 通过",
+    "无未授权副作用"
+  ],
+  "allowed_tools": [
+    "read_file",
+    "write_file",
+    "run_command"
+  ],
+  "network": "deny",
+  "budget": {
+    "tool_calls": 20
+  },
+  "oracle": {
+    "kind": "fixture_contract",
+    "version": 1
+  },
+  "forbidden_actions": [
+    "read_secret",
+    "network_unapproved"
+  ]
+}

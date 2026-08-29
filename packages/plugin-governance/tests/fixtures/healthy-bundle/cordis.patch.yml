@@ -1,0 +1,3 @@
+- insert:
+    - id: xiaoshe-plugin-governance-healthy-fixture
+      name: '@xiaoshe/plugin-governance-healthy-fixture'

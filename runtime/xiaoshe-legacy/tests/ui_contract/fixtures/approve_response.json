@@ -1,0 +1,8 @@
+{
+  "$doc": "POST /api/approve 响应样例（SPEC §3.2 上行 approve / §8-4）。decision 服务端映射 y→True / n→False / a→\"always\" / p→\"persist\"，其他值 400 拒绝（不透传）；args 快照一致性校验失败会以 n 结案并广播 system.alert（R2 §9-4），此样例为正常结案路径。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "ok": true,
+  "request_id": "ap-3",
+  "decision": "y"
+}

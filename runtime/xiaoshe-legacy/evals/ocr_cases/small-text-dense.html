@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- OCR 盲区回归用例：zoom 小字（小字号密集文本）。对应整屏截图里不放大就难认的密集小字场景
+     （zoom 子系统的上游输入）；UIA 看不到的自绘区域小字由 OCR 独担，计入门禁主判据。
+     纯文本用例源可入 git；渲染图现跑现生成、不落 git。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ocr-case small-text-dense</title>
+<style>
+  body { margin: 0; background: #ffffff; font-family: "Consolas", "Microsoft YaHei", monospace; }
+  .log { width: 980px; margin: 32px auto; color: #222; font-size: 12px; line-height: 1.55; }
+  .log div { white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div class="log">
+    <div>2026-07-24T17:36:25 INFO  render pipeline started width=1600 height=1000 scale=1</div>
+    <div>2026-07-24T17:36:26 INFO  viewport v1 created origin=(0,0) marks=42 merged sources uia+ocr</div>
+    <div>2026-07-24T17:36:27 DEBUG zoom k=3 子视口 scale=3.0 校验通过 x/y 两向一致</div>
+    <div>2026-07-24T17:36:28 WARN  ocr low confidence token=52 retry invert supplement langs=ja</div>
+    <div>2026-07-24T17:36:29 INFO  pick mark_no=17 五 center=(374,994) diff=新增 显示为 5</div>
+    <div>2026-07-24T17:36:30 INFO  checkpoint saved session=goldstd-win elapsed=84.844s tests=1397</div>
+    <div>2026-07-24T17:36:31 ERROR focus_window 计算器 failed 5/5 前台锁 fallback titlebar click</div>
+    <div>2026-07-24T17:36:32 INFO  tesseract candidate psm=7 confidence=0.93 vote pass quorum=2</div>
+  </div>
+</body>
+</html>

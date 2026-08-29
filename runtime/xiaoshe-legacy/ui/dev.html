@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  ============================================================================
+  小蛇 · 开发测试台（Wave2-B 自验用 · 不进导航 · 不进生产链路）
+  用途：渲染右栏三 tab 面板 + 屏幕观测的五组样态
+        （state / memory / jobs / viewport / pick_diff 与空/noop/unknown 变体），
+        供截图验证四态（数据/骨架/空/错）与双主题。
+  数据：下方 <script type="application/json"> 为 tests/ui_contract/fixtures/
+        同形片段内嵌（惰性数据块，CSP script-src 'self' 下不执行）。
+  启动：python scripts/serve_demo.py --port 7788 后访问 /dev.html?token=...，
+        或 ui/ 目录任意静态伺服。逻辑在 js/dev-boot.js。
+  ============================================================================
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*">
+<title>小蛇 · 开发测试台</title>
+<link rel="icon" type="image/svg+xml" href="assets/snake.svg">
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/panels.css">
+<link rel="stylesheet" href="styles/observatory.css">
+<style>/* 测试台布局（非组件层，仅本页） */
+  body { overflow: auto; }
+  .dev-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 10; }
+  .dev-bar .dt { font-family: var(--serif); font-weight: 700; margin-right: 8px; }
+  .dev-bar button { font-family: var(--mono); font-size: 10px; color: var(--ink2); border: 1px solid var(--line2); border-radius: var(--r-sm); padding: 4px 10px; }
+  .dev-bar button:hover { border-color: var(--accent); color: var(--accent-deep); background: var(--accent-bg); }
+  .dev-cols { display: grid; grid-template-columns: 320px 320px 1fr; gap: 0; align-items: start; }
+  .dev-cols .insp { border-left: none; border-right: 1px solid var(--line); min-height: calc(100vh - 45px); }
+  .dev-stage { padding: 18px; color: var(--ink3); font-size: 12px; line-height: 2; }
+  .dev-stage h3 { font-family: var(--serif); color: var(--ink); margin-bottom: 6px; }
+  .dev-stage code { font-family: var(--mono); font-size: 10px; color: var(--accent-deep); }
+</style>
+</head>
+<body>
+<!-- 内嵌 fixtures（与 tests/ui_contract/fixtures/ 同形；惰性数据块非脚本） -->
+<script type="application/json" id="fx-state">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "todos": [
+    {
+      "content": "跑通契约三道校验",
+      "status": "in_progress"
+    },
+    {
+      "content": "补齐 WS 事件样例",
+      "status": "completed"
+    },
+    {
+      "content": "联调审批三变体渲染",
+      "status": "pending"
+    }
+  ],
+  "notes": [
+    "用户偏好云白薄荷流光主题为默认",
+    "构建纪要每周五汇总一次"
+  ],
+  "jobs": [
+    {
+      "id": "job-20260726-103000-4231-1",
+      "command": "python scripts/build.py",
+      "pid": 5821,
+      "log_path": ".state/jobs/job-20260726-103000-4231-1.log",
+      "status": "running",
+      "started_at": "2026-07-26T10:30:00+08:00",
+      "returncode": null,
+      "ended_at": null,
+      "tail": [
+        "[10:41] 编译第 37 个目标…",
+        "[10:42] 链接中"
+      ]
+    }
+  ],
+  "subagents": [
+    {
+      "ref_id": "sa_1",
+      "objective": "并行核对 R3 端点映射与源码实况",
+      "status": "done",
+      "summary": "13 条路由映射核对完毕，4 条需新仪表化。",
+      "text_ref": "txt-3",
+      "batch_id": "b-1"
+    },
+    {
+      "ref_id": "sa_2",
+      "objective": "扫描前端原型可复用资产",
+      "status": "running",
+      "summary": "",
+      "text_ref": null,
+      "batch_id": "b-1"
+    }
+  ],
+  "vision_pending": [
+    {
+      "ref": "img-12",
+      "target": "look 编号截图(SoM)"
+    },
+    {
+      "ref": "img-14",
+      "target": null
+    }
+  ],
+  "approved_tools": [
+    {
+      "key": "run_command:git status",
+      "scope": "session"
+    },
+    {
+      "key": "write_file:纪要.md",
+      "scope": "persist"
+    }
+  ],
+  "denied_calls": 2,
+  "stall": {
+    "count": 1,
+    "limit": 3,
+    "at": "2026-07-26T10:40:31+08:00"
+  },
+  "usage": {
+    "input_tokens": 48210,
+    "output_tokens": 3560,
+    "cache_read": 39100,
+    "window": 131072,
+    "turn": 17
+  },
+  "compaction_recent": {
+    "ts": "2026-07-26T10:39:02+08:00",
+    "kind": "auto_compact",
+    "reason": "上下文接近窗口上限",
+    "before": {
+      "msgs": 50,
+      "chars": 150000
+    },
+    "after": {
+      "msgs": 10,
+      "chars": 30000
+    },
+    "cleared": null,
+    "depth": 0
+  }
+}</script>
+<script type="application/json" id="fx-jobs">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "jobs": [
+    {
+      "id": "job-20260726-103000-4231-1",
+      "command": "python scripts/build.py",
+      "pid": 5821,
+      "log_path": ".state/jobs/job-20260726-103000-4231-1.log",
+      "status": "running",
+      "started_at": "2026-07-26T10:30:00+08:00",
+      "returncode": null,
+      "ended_at": null,
+      "tail": [
+        "[10:41] 编译第 37 个目标…",
+        "[10:42] 链接中"
+      ]
+    },
+    {
+      "id": "job-20260726-094512-4231-2",
+      "command": "npm test",
+      "pid": 4902,
+      "log_path": ".state/jobs/job-20260726-094512-4231-2.log",
+      "status": "done",
+      "started_at": "2026-07-26T09:45:12+08:00",
+      "returncode": 0,
+      "ended_at": "2026-07-26T09:52:40+08:00",
+      "tail": [
+        "87 passing",
+        "0 failing"
+      ]
+    },
+    {
+      "id": "job-20260726-091010-4231-3",
+      "command": "rg -n 'TODO' src/",
+      "pid": 4711,
+      "log_path": ".state/jobs/job-20260726-091010-4231-3.log",
+      "status": "interrupted",
+      "started_at": "2026-07-26T09:10:10+08:00",
+      "returncode": null,
+      "ended_at": "2026-07-26T09:10:41+08:00",
+      "tail": [
+        "src/main.rs:12:TODO 错误码",
+        "（用户取消）"
+      ]
+    },
+    {
+      "id": "job-20260726-085500-4231-4",
+      "command": "./deploy.sh prod",
+      "pid": 4520,
+      "log_path": ".state/jobs/job-20260726-085500-4231-4.log",
+      "status": "failed",
+      "started_at": "2026-07-26T08:55:00+08:00",
+      "returncode": 1,
+      "ended_at": "2026-07-26T08:55:19+08:00",
+      "tail": [
+        "deploy: 目标主机拒绝连接",
+        "exit 1"
+      ]
+    }
+  ]
+}</script>
+<script type="application/json" id="fx-memory">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "total": 7,
+  "injectable": 5,
+  "superseded": 1,
+  "by_zone": {
+    "目标": 1,
+    "决策": 2,
+    "现状": 2,
+    "待解": 1,
+    "已完成": 1,
+    "其它": 0
+  },
+  "items": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "zone": "目标",
+      "text": "本季度把回归测试推进到全绿并保持。",
+      "created_at": "2026-07-20T09:00:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "b2c3d4e5f6a1",
+      "zone": "决策",
+      "text": "UI 前端采用无构建 vanilla ESM，双主题。",
+      "created_at": "2026-07-22T14:30:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "c3d4e5f6a1b2",
+      "zone": "决策",
+      "text": "审批指纹沿用 _approval_key 原文直拼，不改哈希。",
+      "created_at": "2026-07-23T10:12:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "d4e5f6a1b2c3",
+      "zone": "现状",
+      "text": "ui_server 施工到 REST 路由阶段，WS 未联调。",
+      "created_at": "2026-07-25T18:40:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "e5f6a1b2c3d4",
+      "zone": "现状",
+      "text": "旧口径：memory 在 .state/ 下。",
+      "created_at": "2026-07-18T08:00:00+08:00",
+      "superseded_by": "d4e5f6a1b2c3"
+    },
+    {
+      "id": "f6a1b2c3d4e5",
+      "zone": "待解",
+      "text": "steering 队列与多客户端同步待实现。",
+      "created_at": "2026-07-24T11:05:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "0718293a4b5c",
+      "zone": "已完成",
+      "text": "R1-R4 侦察与 SPEC 定稿已完成。",
+      "created_at": "2026-07-21T16:00:00+08:00",
+      "superseded_by": null
+    }
+  ]
+}</script>
+<script type="application/json" id="fx-skills">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "pending": [
+    {
+      "name": "批量重命名剧照",
+      "description": "按 剧名-季-集 规则批量重命名截图文件",
+      "when": "用户要求整理截图目录时",
+      "steps_count": 5,
+      "source": "selflearn",
+      "created_at": "2026-07-25T21:14:00+08:00"
+    },
+    {
+      "name": "日报草拟",
+      "description": "汇总当日 todos/日志产出日报草稿",
+      "when": "用户说「写日报」时",
+      "steps_count": 3,
+      "source": "selflearn",
+      "created_at": "2026-07-26T08:02:00+08:00"
+    }
+  ],
+  "active": [
+    {
+      "name": "表格清洗",
+      "when": "处理 CSV 乱码/错列时",
+      "steps_count": 4,
+      "enabled": true
+    },
+    {
+      "name": "网页存档",
+      "when": "用户给 URL 要求留档时",
+      "steps_count": 6,
+      "enabled": true
+    }
+  ],
+  "cheatsheet": [
+    {
+      "id": 1,
+      "text": "Windows 下 click_at 前先 focus_window，否则坐标落到后台窗口。",
+      "worked_count": 4,
+      "updated_at": "2026-07-24T15:20:00+08:00",
+      "nominated": true
+    },
+    {
+      "id": 2,
+      "text": "长输出先 check_background 拿 tail 再决定 grep，别整段捞。",
+      "worked_count": 1,
+      "updated_at": "2026-07-23T09:45:00+08:00",
+      "nominated": false
+    }
+  ]
+}</script>
+<script type="application/json" id="fx-viewport">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "viewport_id": "v3",
+  "origin": [
+    120,
+    80
+  ],
+  "scale": 0.5,
+  "size": [
+    1600,
+    900
+  ],
+  "parent_id": "v1",
+  "chain": [
+    "v1",
+    "v3"
+  ],
+  "marks": {
+    "1": {
+      "no": 1,
+      "label": "确定",
+      "screen_cx": 812,
+      "screen_cy": 437,
+      "screen_w": 64,
+      "screen_h": 24,
+      "source": "uia"
+    },
+    "2": {
+      "no": 2,
+      "label": "取消",
+      "screen_cx": 912,
+      "screen_cy": 437,
+      "screen_w": 64,
+      "screen_h": 24,
+      "source": "ocr"
+    },
+    "3": {
+      "no": 3,
+      "label": "文件名输入框",
+      "screen_cx": 640,
+      "screen_cy": 210,
+      "screen_w": 320,
+      "screen_h": 28,
+      "source": "uia+ocr"
+    }
+  },
+  "screenshot_ref": "img-12",
+  "updated_at": "2026-07-26T10:41:58+08:00"
+}</script>
+<script type="application/json" id="fx-viewport-empty">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "viewport_id": null,
+  "marks": {}
+}</script>
+<script type="application/json" id="fx-diff">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "effective",
+  "ratio": 0.0231,
+  "pair": {
+    "before_ref": "img-11",
+    "after_ref": "img-13"
+  },
+  "target": {
+    "no": 5,
+    "screen_cx": 812,
+    "screen_cy": 437
+  },
+  "at": "2026-07-26T10:41:55+08:00"
+}</script>
+<script type="application/json" id="fx-diff-noop">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "suspected_noop",
+  "ratio": 0.0,
+  "pair": {
+    "before_ref": "img-11",
+    "after_ref": "img-13"
+  },
+  "target": {
+    "no": 5,
+    "screen_cx": 812,
+    "screen_cy": 437
+  },
+  "at": "2026-07-26T10:41:55+08:00"
+}</script>
+<script type="application/json" id="fx-diff-unknown">{
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "status": "unknown",
+  "ratio": null,
+  "pair": {
+    "before_ref": null,
+    "after_ref": null
+  },
+  "target": {
+    "no": null,
+    "screen_cx": 0,
+    "screen_cy": 0
+  },
+  "at": null
+}</script>
+
+<!-- 内联图标 sprite 子集（与 index.html 同源符号，仅供观测台模态引用） -->
+<svg xmlns="http://www.w3.org/2000/svg" hidden aria-hidden="true">
+  <symbol id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+  </symbol>
+  <symbol id="close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 6l12 12M18 6 6 18"/>
+  </symbol>
+  <symbol id="camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 7.5h3l1.8-2.5h6.4L17 7.5h3a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5z"/><circle cx="12" cy="13" r="3.6"/>
+  </symbol>
+  <symbol id="eye-screen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M12 17v3M8.5 20h7"/><path d="M7 10.5s1.9-2.6 5-2.6 5 2.6 5 2.6-1.9 2.6-5 2.6-5-2.6-5-2.6z"/><circle cx="12" cy="10.5" r="1.1"/>
+  </symbol>
+  <symbol id="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 9.5v5M12 17.3h.01"/>
+  </symbol>
+</svg>
+
+<div class="dev-bar" id="dev-bar">
+  <span class="dt">小蛇 · 开发测试台</span>
+  <button data-sc="full">重放全量样态</button>
+  <button data-sc="skel">骨架态</button>
+  <button data-sc="theme">切换主题</button>
+  <button data-sc="obs-data">观测台 · 活动态</button>
+  <button data-sc="obs-empty">观测台 · 空态</button>
+  <button data-sc="diff-noop">差分 · suspected_noop 告警</button>
+  <button data-sc="diff-unknown">差分 · unknown</button>
+</div>
+
+<div class="dev-cols">
+  <aside class="insp" aria-label="状态面板（测试台实例一）">
+    <div class="insp-head" role="tablist">
+      <button class="itab on" data-panel="p-state" role="tab" aria-selected="true">状态</button>
+      <button class="itab" data-panel="p-mem" role="tab" aria-selected="false">记忆</button>
+      <button class="itab" data-panel="p-sys" role="tab" aria-selected="false">系统</button>
+    </div>
+    <div class="insp-body">
+      <div class="panel on" id="p-state" role="tabpanel"></div>
+      <div class="panel" id="p-mem" role="tabpanel"></div>
+      <div class="panel" id="p-sys" role="tabpanel"></div>
+    </div>
+  </aside>
+  <div class="dev-stage">
+    <h3>操作提示</h3>
+    ① 左栏点页签看三 tab：todos 进度条 / jobs 四色状态点（点击展开日志 tail）/
+    subagents / 白名单两色 scope 标 / 记忆六分区 + superseded 删除线 + revive /
+    技能两列 approve·reject / 小抄奏效徽标。<br>
+    ② 「观测台 · 活动态」开模态：面包屑 / 画布 marks 三源样式（实线 uia · 虚线 ocr ·
+    双色 uia+ocr）/ 编号表双向联动 / HUD 差分条；数字键 1-9 直选，Esc / ◉ / 遮罩关闭。<br>
+    ③ 「差分 · suspected_noop 告警」看红色告警徽标；「观测台 · 空态」看空文案。<br>
+    ④ 「切换主题」验双主题只 var() 语义层；「骨架态」看四态之加载。<br>
+    ⑤ 命令按钮走 <code>XS.net stub</code>（toast 回显载荷）；job 日志补拉同 stub。
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+<script type="module" src="js/dev-boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+{
+  "$doc": "工具卡双行状态 16 格矩阵（SPEC §12.2 render/tool；折叠规则已经仲裁接受，契约以本文件为准，前端 Wave 2 照此渲染）。权限 4 态 × 执行 4 态：permission ∈ allow（直接放行）/ approved_once（用户批准·本次）/ approved_persist（用户批准·持久）/ deny（硬拒）——SPEC §12.2 权限行的六个子态折叠为四，规则：①「用户批准·会话」与「用户批准·本次」同格渲染，仅 scope 徽标差异（会话蓝徽标钉样见 state.json approved_tools）；②「策略拒绝」并入「硬拒」（硬护栏 deny 无批准通道，R2 §9-7）。status ∈ running（执行中）/ ok（成功·d）/ error（失败·d）/ denied（被拒绝）。expect ∈ card|deny_bar，唯一 deny_bar 格 = deny+denied（SPEC 原文「『硬拒+被拒』格渲染为 deny 条」）；deny×{running,ok,error} 三格物理不可能（possible=false，硬拒不发 tool_call.end ok/error），保留以锁死矩阵完备性；前端渲染快照测试逐格吃本文件：permission/status/expect/copy 四键缺一不可。",
+  "cells": [
+    {
+      "permission": "allow",
+      "permission_label": "直接放行",
+      "status": "running",
+      "status_label": "执行中",
+      "expect": "card",
+      "possible": true,
+      "copy": "SAFE_TOOLS/白名单捷径，权限行显示「直接放行」；执行行显示「执行中…」脉冲动效（prefers-reduced-motion 关停）"
+    },
+    {
+      "permission": "allow",
+      "permission_label": "直接放行",
+      "status": "ok",
+      "status_label": "成功",
+      "expect": "card",
+      "possible": true,
+      "copy": "SAFE_TOOLS/白名单捷径，权限行显示「直接放行」；执行行显示「成功 · {duration_ms}」"
+    },
+    {
+      "permission": "allow",
+      "permission_label": "直接放行",
+      "status": "error",
+      "status_label": "失败",
+      "expect": "card",
+      "possible": true,
+      "copy": "SAFE_TOOLS/白名单捷径，权限行显示「直接放行」；执行行显示「失败 · {duration_ms}」"
+    },
+    {
+      "permission": "allow",
+      "permission_label": "直接放行",
+      "status": "denied",
+      "status_label": "被拒绝",
+      "expect": "card",
+      "possible": true,
+      "copy": "SAFE_TOOLS/白名单捷径，权限行显示「直接放行」；执行行显示「被拒绝」"
+    },
+    {
+      "permission": "approved_once",
+      "permission_label": "用户批准·本次",
+      "status": "running",
+      "status_label": "执行中",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 y：权限行显示「用户批准 · 本次」（approved_session 会话级同款渲染加蓝 scope 徽标）；执行行显示「执行中…」脉冲动效（prefers-reduced-motion 关停）"
+    },
+    {
+      "permission": "approved_once",
+      "permission_label": "用户批准·本次",
+      "status": "ok",
+      "status_label": "成功",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 y：权限行显示「用户批准 · 本次」（approved_session 会话级同款渲染加蓝 scope 徽标）；执行行显示「成功 · {duration_ms}」"
+    },
+    {
+      "permission": "approved_once",
+      "permission_label": "用户批准·本次",
+      "status": "error",
+      "status_label": "失败",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 y：权限行显示「用户批准 · 本次」（approved_session 会话级同款渲染加蓝 scope 徽标）；执行行显示「失败 · {duration_ms}」"
+    },
+    {
+      "permission": "approved_once",
+      "permission_label": "用户批准·本次",
+      "status": "denied",
+      "status_label": "被拒绝",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 y：权限行显示「用户批准 · 本次」（approved_session 会话级同款渲染加蓝 scope 徽标）；执行行显示「被拒绝」"
+    },
+    {
+      "permission": "approved_persist",
+      "permission_label": "用户批准·持久",
+      "status": "running",
+      "status_label": "执行中",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 p 且 persistable：权限行显示「用户批准 · 持久」加玉色 scope 徽标；执行行显示「执行中…」脉冲动效（prefers-reduced-motion 关停）"
+    },
+    {
+      "permission": "approved_persist",
+      "permission_label": "用户批准·持久",
+      "status": "ok",
+      "status_label": "成功",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 p 且 persistable：权限行显示「用户批准 · 持久」加玉色 scope 徽标；执行行显示「成功 · {duration_ms}」"
+    },
+    {
+      "permission": "approved_persist",
+      "permission_label": "用户批准·持久",
+      "status": "error",
+      "status_label": "失败",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 p 且 persistable：权限行显示「用户批准 · 持久」加玉色 scope 徽标；执行行显示「失败 · {duration_ms}」"
+    },
+    {
+      "permission": "approved_persist",
+      "permission_label": "用户批准·持久",
+      "status": "denied",
+      "status_label": "被拒绝",
+      "expect": "card",
+      "possible": true,
+      "copy": "答 p 且 persistable：权限行显示「用户批准 · 持久」加玉色 scope 徽标；执行行显示「被拒绝」"
+    },
+    {
+      "permission": "deny",
+      "permission_label": "硬拒",
+      "status": "running",
+      "status_label": "执行中",
+      "expect": "card",
+      "possible": false,
+      "copy": "permission 硬护栏 deny：无批准通道，权限行显示「策略拒绝」；执行行显示「执行中…」脉冲动效（prefers-reduced-motion 关停）。不可能组合（硬拒不产生执行），仅作矩阵完备性"
+    },
+    {
+      "permission": "deny",
+      "permission_label": "硬拒",
+      "status": "ok",
+      "status_label": "成功",
+      "expect": "card",
+      "possible": false,
+      "copy": "permission 硬护栏 deny：无批准通道，权限行显示「策略拒绝」；执行行显示「成功 · {duration_ms}」。不可能组合（硬拒不产生执行），仅作矩阵完备性"
+    },
+    {
+      "permission": "deny",
+      "permission_label": "硬拒",
+      "status": "error",
+      "status_label": "失败",
+      "expect": "card",
+      "possible": false,
+      "copy": "permission 硬护栏 deny：无批准通道，权限行显示「策略拒绝」；执行行显示「失败 · {duration_ms}」。不可能组合（硬拒不产生执行），仅作矩阵完备性"
+    },
+    {
+      "permission": "deny",
+      "permission_label": "硬拒",
+      "status": "denied",
+      "status_label": "被拒绝",
+      "expect": "deny_bar",
+      "possible": true,
+      "copy": "permission 硬护栏 deny：无批准通道，权限行显示「策略拒绝」；执行行显示「被拒绝」。【硬拒+被拒】整格降级为 deny 条（不渲染工具卡）"
+    }
+  ]
+}

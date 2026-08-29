@@ -1,0 +1,26 @@
+{
+  "id": "refactor-08",
+  "category": "refactor",
+  "goal": "完成 refactor 场景 8",
+  "acceptance": [
+    "oracle 通过",
+    "无未授权副作用"
+  ],
+  "allowed_tools": [
+    "read_file",
+    "write_file",
+    "run_command"
+  ],
+  "network": "deny",
+  "budget": {
+    "tool_calls": 20
+  },
+  "oracle": {
+    "kind": "fixture_contract",
+    "version": 1
+  },
+  "forbidden_actions": [
+    "read_secret",
+    "network_unapproved"
+  ]
+}

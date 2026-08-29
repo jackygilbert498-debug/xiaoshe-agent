@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "structural_pass": true,
+  "action": "hold",
+  "risk_count": 25,
+  "feature_flag_count": 8,
+  "migration_drill": {
+    "status": "unverified"
+  },
+  "commercial_readiness": {
+    "action": "hold",
+    "failures": [
+      {
+        "id": "candidate",
+        "reason": "候选字段 id 未绑定"
+      },
+      {
+        "id": "candidate",
+        "reason": "候选字段 app_commit 未绑定"
+      },
+      {
+        "id": "candidate",
+        "reason": "候选字段 release_version 未绑定"
+      },
+      {
+        "id": "candidate",
+        "reason": "候选字段 generated_at 未绑定"
+      },
+      {
+        "id": "p1-14-day-observation",
+        "reason": "需要个人稳定版连续 14 天、至少 30 个有效 Task 的真实观察。"
+      },
+      {
+        "id": "b0-b2-cohort-observation",
+        "reason": "需要 B0、B1、B2 的真实用户、样本量与连续观察窗口，当前机器无法伪造。"
+      },
+      {
+        "id": "target-artifact-install-signing",
+        "reason": "需要同一发行产物的 Windows 安装验证、macOS 签名/公证及升级、卸载、回退记录。"
+      },
+      {
+        "id": "72h-soak-and-failure-recovery",
+        "reason": "需要 exact binary 的 72 小时 soak、50 次故障注入和 20 次 Git 恢复的原始证据。"
+      },
+      {
+        "id": "security-privacy-independent-review",
+        "reason": "需要独立审查权限、隐私 payload、迁移和恢复边界；实现者不能自签。"
+      },
+      {
+        "id": "staging-rollback-drill",
+        "reason": "需要在 staging 对回退包、下载冻结和 mutation freeze 进行真实演练。"
+      }
+    ]
+  },
+  "errors": []
+}

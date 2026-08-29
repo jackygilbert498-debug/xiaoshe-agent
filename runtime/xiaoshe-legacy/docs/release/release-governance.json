@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "commercial_readiness_ledger": "docs/release/commercial-beta-readiness.json",
+  "risks": [
+    {"id":"R-01","signal":"Task 与 Session 显示不一致","prevention":"Task 为唯一业务状态源","rollback":"关闭 Task UI，保留旧 Session 只读","stop_condition":"状态漂移影响已完成或恢复判断"},
+    {"id":"R-02","signal":"schema 或版本校验异常","prevention":"事务迁移和迁移前备份","rollback":"恢复验证过的备份并只读启动","stop_condition":"数据库不能可靠打开或恢复"},
+    {"id":"R-03","signal":"无关测试大面积失败","prevention":"事件适配与分波提交","rollback":"关闭开关并回退该波","stop_condition":"核心 Agent 回归无法隔离"},
+    {"id":"R-04","signal":"出现第二套 queued 或 blocked 状态","prevention":"有限 TaskStatus 与事件视图","rollback":"拒绝新持久状态并迁回事件","stop_condition":"状态枚举破坏兼容"},
+    {"id":"R-05","signal":"低风险任务频繁被计划门打断","prevention":"仅拦复杂、变异或高风险任务","rollback":"收紧触发规则","stop_condition":"计划门阻断日常工作"},
+    {"id":"R-06","signal":"批准计划后工具不再询问","prevention":"Plan 与 Action Approval 分表","rollback":"关闭计划门并审计授权","stop_condition":"权限边界被扩大"},
+    {"id":"R-07","signal":"Git 状态与 ChangeSet 不一致","prevention":"工作区前后捕获","rollback":"标记 unknown 并阻止完成","stop_condition":"改动无法可靠审阅"},
+    {"id":"R-08","signal":"Review 时工作区版本已变","prevention":"diff hash 与 workspace version","rollback":"返回冲突并重新审阅","stop_condition":"漂移 diff 被应用"},
+    {"id":"R-09","signal":"模型报告成功而确定性验证失败","prevention":"失败证据拥有否决权","rollback":"进入 Failed 或 WaitingUser","stop_condition":"false success 未被阻断"},
+    {"id":"R-10","signal":"同一 Task 重复运行大量测试","prevention":"profile、预算、缓存和超时","rollback":"转人工 Review","stop_condition":"验证成本失控"},
+    {"id":"R-11","signal":"worktree 路径越过注册目录","prevention":"绝对路径与注册表校验","rollback":"停止操作并保留诊断","stop_condition":"主目录可能被误伤"},
+    {"id":"R-12","signal":"发现自动 stash、reset 或 clean","prevention":"dirty baseline 与禁止覆盖","rollback":"停止发布并使用备份恢复","stop_condition":"用户未提交改动受影响"},
+    {"id":"R-13","signal":"UI 声称外部操作可撤销","prevention":"强制范围与不可逆字段","rollback":"移除无范围文案","stop_condition":"恢复承诺超过支持边界"},
+    {"id":"R-14","signal":"恢复 hash 不一致","prevention":"部分结果模型与测试","rollback":"Task 转 Failed 或 WaitingUser","stop_condition":"部分恢复被报为成功"},
+    {"id":"R-15","signal":"同一 Run 有两个 lease","prevention":"租约、心跳和幂等 Action","rollback":"未知 Action 转人工审阅","stop_condition":"可能重复外部副作用"},
+    {"id":"R-16","signal":"无人态请求被自动批准","prevention":"allowlist 与硬拒","rollback":"总开关停止 Trigger","stop_condition":"定时任务越权"},
+    {"id":"R-17","signal":"项目 A 的事实出现在项目 B","prevention":"project_id 硬过滤","rollback":"关闭自动检索并修复索引","stop_condition":"跨项目泄漏"},
+    {"id":"R-18","signal":"不可信网页内容进入正式记忆","prevention":"candidate、来源和人工审阅","rollback":"忘记或取代并审计","stop_condition":"不可信内容被晋升"},
+    {"id":"R-19","signal":"诊断 payload 包含路径或正文","prevention":"allowlist schema 与敏感扫描","rollback":"停止上传并清理队列","stop_condition":"遥测或诊断泄密"},
+    {"id":"R-20","signal":"同一测试在 Windows/macOS 语义分叉","prevention":"能力探测和平台专项测试","rollback":"平台降级并公开限制","stop_condition":"目标平台行为不一致"},
+    {"id":"R-21","signal":"后端回执前出现成功绿态","prevention":"后端事件是唯一事实源","rollback":"移除乐观态并恢复稳定 UI","stop_condition":"UI 伪报成功"},
+    {"id":"R-22","signal":"54 项与新 Backlog 重复排期","prevention":"唯一需求 ID 和逐项映射","rollback":"以 G0–G8 Backlog 为准","stop_condition":"两套路线冲突"},
+    {"id":"R-23","signal":"路由数或测试数与现状不符","prevention":"机器生成清单与新鲜证据","rollback":"标记过期并重新审计","stop_condition":"文档指导错误发布"},
+    {"id":"R-24","signal":"多周没有可用增量","prevention":"纵向切片且每波可停","rollback":"停在上一个通过门","stop_condition":"方案阻断交付"},
+    {"id":"R-25","signal":"关键路径引入云依赖或假自动化","prevention":"产品过滤器与不做清单","rollback":"拒绝或移出关键路径","stop_condition":"违背本地 Agent 定位"}
+  ],
+  "feature_flags": [
+    {"name":"HARNESS_TASK_MODE","default":"off→G1 内测 on","enable_gate":"G1 任务路径通过","removal_condition":"旧 Session 两个稳定波兼容","rollback":"关闭完整 Task 路径"},
+    {"name":"HARNESS_PLAN_GATE","default":"off→G2 协作档 on","enable_gate":"G2 全路径与习惯化观察通过","removal_condition":"硬风险门稳定","rollback":"关闭计划门，不扩大权限"},
+    {"name":"HARNESS_REVIEW_CENTER","default":"off→G3 on","enable_gate":"ChangeSet 漏报门通过","removal_condition":"审阅链稳定","rollback":"关闭 Review Center 完整路径"},
+    {"name":"HARNESS_COMPLETION_POLICY","default":"shadow→enforce","enable_gate":"shadow 与人工判断一致","removal_condition":"完成判定稳定","rollback":"退回 shadow，不伪报完成"},
+    {"name":"HARNESS_ISOLATED_WORKSPACE","default":"opt-in→Git 默认","enable_gate":"20 项恢复通过","removal_condition":"恢复边界稳定","rollback":"回到 opt-in"},
+    {"name":"HARNESS_TASK_WORKER","default":"off→受邀 on","enable_gate":"lease 与重复副作用测试通过","removal_condition":"后台执行稳定","rollback":"停止 worker 与 Trigger"},
+    {"name":"XIAOSHE_RUNTIME_SESSION","default":"shadow","enable_gate":"Plan 09 pairwise 对照 mismatch_count=0 且完整门通过；on 仅受控测试","removal_condition":"所有入口统一运行时语义连续两个稳定波一致","rollback":"切到 off，完整保留旧 GUI/CLI/Headless/Worker 路径"},
+    {"name":"HARNESS_PROJECT_MEMORY","default":"candidate-only","enable_gate":"项目隔离与来源 UI 通过","removal_condition":"来源审阅稳定","rollback":"关闭自动检索与注入"},
+    {"name":"HARNESS_TELEMETRY","default":"off","enable_gate":"用户明确选择且隐私审查通过","removal_condition":"字段审计稳定","rollback":"停止上传并清理队列"}
+  ],
+  "migration": {
+    "backup_required": true,
+    "backup_verification": "备份 DB、WAL、SHM 与元数据后，必须在隔离目录实际打开。",
+    "transactional": true,
+    "old_format_compatibility": "新版本第一次稳定写入前保留旧格式兼容。",
+    "unsafe_downgrade": "不可安全降级时必须阻止并说明，不能猜测转换。",
+    "read_only_export": true,
+    "drill": {"status":"unverified","evidence_ref":"","evidence_sha256":""}
+  },
+  "stop_conditions": [
+    "用户数据损坏或未授权覆盖。",
+    "权限硬护栏被绕过。",
+    "Task 数据库无法稳定恢复。",
+    "false success 无法被 CompletionPolicy 阻断。",
+    "受支持 Git 恢复误删文件。",
+    "遥测或诊断泄漏敏感数据。",
+    "双状态源无法通过兼容层消除。"
+  ]
+}

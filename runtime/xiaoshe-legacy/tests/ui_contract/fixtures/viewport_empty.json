@@ -1,0 +1,7 @@
+{
+  "$doc": "GET /api/viewport/current 空态样例（SPEC §10：空 → {viewport_id:null,marks:{}}；前端空态文案「当前没有活动视口——发起 look/observe 后此处显示模型所见」SPEC §12.2 observatory.js）。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "viewport_id": null,
+  "marks": {}
+}

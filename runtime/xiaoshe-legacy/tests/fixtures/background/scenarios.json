@@ -1,0 +1,6 @@
+[
+  "worker_killed_before_run", "worker_killed_during_read", "worker_killed_during_write",
+  "heartbeat_db_locked", "workspace_lease_lost", "model_timeout", "tool_timeout",
+  "permission_wait", "budget_wall", "budget_token", "budget_tool", "network_denied",
+  "duplicate_schedule_fire", "pause_resume_race", "cancel_during_action"
+]

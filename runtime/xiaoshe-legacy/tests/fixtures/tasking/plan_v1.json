@@ -1,0 +1,29 @@
+{
+  "objective": "为解析器补齐确定性的错误提示",
+  "assumptions": ["现有解析器 API 保持兼容"],
+  "steps": [
+    {
+      "id": "inspect",
+      "title": "确认现有行为",
+      "intent": "读取现有解析器与测试，确定最小修复范围。",
+      "files": ["harness/parser.py", "tests/test_parser.py"],
+      "validation": ["运行解析器单元测试"],
+      "risk": "low",
+      "depends_on": []
+    },
+    {
+      "id": "implement",
+      "title": "实现错误提示",
+      "intent": "只修改解析器的错误分支并新增回归测试。",
+      "files": ["harness/parser.py", "tests/test_parser.py"],
+      "validation": ["运行 tests.test_parser", "检查错误消息"],
+      "risk": "medium",
+      "depends_on": ["inspect"]
+    }
+  ],
+  "acceptance_mapping": {
+    "解析器返回明确错误": ["implement"],
+    "回归测试通过": ["inspect", "implement"]
+  },
+  "estimated_budget": {"minutes": 20, "actions": 8}
+}

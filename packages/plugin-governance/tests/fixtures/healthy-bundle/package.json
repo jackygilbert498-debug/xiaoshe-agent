@@ -1,0 +1,18 @@
+{
+  "name": "@xiaoshe/plugin-governance-healthy-fixture",
+  "version": "1.0.0",
+  "displayName": "小蛇验证插件",
+  "description": "验证受控安装、健康检查与来源披露",
+  "author": { "name": "Xiaoshe Verification" },
+  "license": "MIT",
+  "homepage": "https://example.test/xiaoshe-verification",
+  "keywords": ["xiaoshe", "verification", "plugin"],
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "files": ["index.js", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "health": { "path": "/api/xiaoshe/plugin-governance-fixture" }
+  }
+}

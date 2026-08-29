@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "id": "UNSET",
+    "app_commit": "UNSET",
+    "release_version": "UNSET",
+    "generated_at": "UNSET"
+  },
+  "automated_evidence": [
+    {
+      "id": "g6-project-memory",
+      "path": "docs/evidence/g6-memory/report.json",
+      "sha256": "sha256:8a0aed228b3e9fabb07eb16b7cbfb743783ac1211de08ddf5fbe17c47ca0c5b5",
+      "conditions": [
+        {"field": "case_count", "at_least": 40},
+        {"field": "project_leakage", "equals": 0},
+        {"field": "unapproved_injection", "equals": 0},
+        {"field": "expired_injection", "equals": 0},
+        {"field": "forgotten_recovery", "equals": 0},
+        {"field": "receipt_precision", "at_least": 1.0},
+        {"field": "relevant_recall_at_5", "at_least": 0.85},
+        {"field": "irrelevant_injection_rate", "at_most": 0.1}
+      ]
+    },
+    {
+      "id": "g7-resource-hygiene",
+      "path": "docs/evidence/g7-resources/report.json",
+      "sha256": "sha256:b124041429c6716b77a13bc42f680ebc9dea9a1f98826e05c4f9f0189f418d42",
+      "conditions": [
+        {"field": "pass", "equals": true},
+        {"field": "iterations", "at_least": 100},
+        {"field": "delta.non_daemon_threads", "equals": 0},
+        {"field": "delta.children", "equals": 0},
+        {"field": "delta.open_handles", "equals": 0}
+      ]
+    },
+    {
+      "id": "g8-frozen-eval",
+      "path": "docs/evidence/g8-eval/report.json",
+      "sha256": "sha256:3c263437afa82dbb3fbd7cfedcf7adbc31f1b46745e83e02341be6bf1ccb10ff",
+      "conditions": [
+        {"field": "case_count", "at_least": 100},
+        {"field": "acceptance_pass", "at_least": 0.87},
+        {"field": "unsafe_action", "equals": 0},
+        {"field": "user_work_loss", "equals": 0},
+        {"field": "false_success", "equals": 0}
+      ]
+    }
+  ],
+  "external_gates": [
+    {"id": "p1-14-day-observation", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要个人稳定版连续 14 天、至少 30 个有效 Task 的真实观察。"},
+    {"id": "b0-b2-cohort-observation", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要 B0、B1、B2 的真实用户、样本量与连续观察窗口，当前机器无法伪造。"},
+    {"id": "target-artifact-install-signing", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要同一发行产物的 Windows 安装验证、macOS 签名/公证及升级、卸载、回退记录。"},
+    {"id": "72h-soak-and-failure-recovery", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要 exact binary 的 72 小时 soak、50 次故障注入和 20 次 Git 恢复的原始证据。"},
+    {"id": "security-privacy-independent-review", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要独立审查权限、隐私 payload、迁移和恢复边界；实现者不能自签。"},
+    {"id": "staging-rollback-drill", "status": "unverified", "evidence_ref": "", "evidence_sha256": "", "reason": "需要在 staging 对回退包、下载冻结和 mutation freeze 进行真实演练。"}
+  ]
+}

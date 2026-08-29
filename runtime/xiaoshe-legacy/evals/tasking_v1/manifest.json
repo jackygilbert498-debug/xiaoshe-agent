@@ -1,0 +1,617 @@
+{
+  "version": "tasking_v1",
+  "frozen": true,
+  "tasks": [
+    {
+      "id": "bugfix-01",
+      "path": "tasks/bugfix-01.json",
+      "sha256": "sha256:bca907feb2b088bbc417fcfd8d47fe6294026b54c5fc62d16e4b952e6b11b707",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-02",
+      "path": "tasks/bugfix-02.json",
+      "sha256": "sha256:686fa1918005200df3bc962edc7b1faaf7396d56150fd013a2dea538338499f3",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-03",
+      "path": "tasks/bugfix-03.json",
+      "sha256": "sha256:7f9775ae261e619cc3a6e731dcb4596080e9ab2c9d30344497665d847a00d736",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-04",
+      "path": "tasks/bugfix-04.json",
+      "sha256": "sha256:4122d27d2c4539cb02dcadcbfa4edcca9389023099a52f8b94a8783525e91506",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-05",
+      "path": "tasks/bugfix-05.json",
+      "sha256": "sha256:b0b1e867b245b8916ba21d31d10c6465711633d53b90c94daa39d2f90580ca33",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-06",
+      "path": "tasks/bugfix-06.json",
+      "sha256": "sha256:b343514e51124becce732bd7ecb3df38096b5718f4e6f0eb8a13d3ee6dd26963",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-07",
+      "path": "tasks/bugfix-07.json",
+      "sha256": "sha256:5aa66cb288a4cccedfc48f362975636d9c88a738ad07aca0a0a45ca2615e2ce8",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-08",
+      "path": "tasks/bugfix-08.json",
+      "sha256": "sha256:7a510abdba2423badffd2cb35d961b25835312813902ac9c87085bb64ae83390",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-09",
+      "path": "tasks/bugfix-09.json",
+      "sha256": "sha256:9eba4755b634b594eef14ccf178dd52dc72d512e3c6d7724a1de4ce5b723ee9c",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-10",
+      "path": "tasks/bugfix-10.json",
+      "sha256": "sha256:be9adc4da3914bfe463379ef16d099a46e9bc8e9c17081cfc7980914993c9e33",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-11",
+      "path": "tasks/bugfix-11.json",
+      "sha256": "sha256:06e1ef47286704b4d21721a7fa60665504789416b20799b315a8695950370ce6",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-12",
+      "path": "tasks/bugfix-12.json",
+      "sha256": "sha256:508f1123d3b0b77880c1721ce299a61331e7de9a148c264b1e038eff63d9c3e4",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-13",
+      "path": "tasks/bugfix-13.json",
+      "sha256": "sha256:043be5a3243650938feb869ed21813140a880e5439ff3c468f47a77a646800a1",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-14",
+      "path": "tasks/bugfix-14.json",
+      "sha256": "sha256:6615cad33f908750ebbe5467bb563705285c3fc863e471182f989abb0be17301",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-15",
+      "path": "tasks/bugfix-15.json",
+      "sha256": "sha256:9465d9efb68cd1c7bf5db675e88e2067cfecae890aab0f0fddc5fe2eca6435b3",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-16",
+      "path": "tasks/bugfix-16.json",
+      "sha256": "sha256:0f25f6a18282cb9ea8d742741a0b8c82dca3c20fd77eaac28dd97252c73add1f",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-17",
+      "path": "tasks/bugfix-17.json",
+      "sha256": "sha256:8539bd82305da8e130e937829feb17afc07912ad1f22043815a265d2e0842f59",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-18",
+      "path": "tasks/bugfix-18.json",
+      "sha256": "sha256:71217327b81b9fa45bbf69691f477342b5fa4ef85879f6a6a0fd7f139d9f72f0",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-19",
+      "path": "tasks/bugfix-19.json",
+      "sha256": "sha256:2cf6acaff3ffdf8f92ffe1bcdcd0947468403a1dd6fed1e7827c1a71ad3250be",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-20",
+      "path": "tasks/bugfix-20.json",
+      "sha256": "sha256:fee6e85429ba875f5b4b289574d4c750440e3913bdd519e7c901ec0c33030562",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-21",
+      "path": "tasks/bugfix-21.json",
+      "sha256": "sha256:1f98fd1667f8008d084420923092b89f931142f305f3bdfb1c1fff721842e378",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-22",
+      "path": "tasks/bugfix-22.json",
+      "sha256": "sha256:6fce632c359c8b488f9943b8cd380bde912704372bf74b8f3ebbc73d1568fe44",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-23",
+      "path": "tasks/bugfix-23.json",
+      "sha256": "sha256:a2d77d76eadac6455c2953595c29a1ccdd29914b09112ec7b50c7046192c5dba",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-24",
+      "path": "tasks/bugfix-24.json",
+      "sha256": "sha256:e452a199a6eb385ade872d9f2a570a6137b1646fc02aadb9748298f9d373d15c",
+      "category": "bugfix"
+    },
+    {
+      "id": "bugfix-25",
+      "path": "tasks/bugfix-25.json",
+      "sha256": "sha256:b6bac320d4278040e43ef9acea5460bb920714afe8f491dc4644bc424d7d5064",
+      "category": "bugfix"
+    },
+    {
+      "id": "feature-01",
+      "path": "tasks/feature-01.json",
+      "sha256": "sha256:1c1dd6f67d62bb379ee0583e3dbffc0caaa932b5587e55015913a8425c4c3d2f",
+      "category": "feature"
+    },
+    {
+      "id": "feature-02",
+      "path": "tasks/feature-02.json",
+      "sha256": "sha256:f8b3f8efa19626381544595303f74fbe095401c890b322216acdce800f8abbf3",
+      "category": "feature"
+    },
+    {
+      "id": "feature-03",
+      "path": "tasks/feature-03.json",
+      "sha256": "sha256:62f6c83fbcda59909b8ba6e9d417f422e6c4bba7b64cbf1c47c9ec73dc9c792d",
+      "category": "feature"
+    },
+    {
+      "id": "feature-04",
+      "path": "tasks/feature-04.json",
+      "sha256": "sha256:67a543778781c977e864a8981856a56748b673dc6c46590d8db16150a512ab9c",
+      "category": "feature"
+    },
+    {
+      "id": "feature-05",
+      "path": "tasks/feature-05.json",
+      "sha256": "sha256:3c7d58ca6af49224c6f44b1a2ed7d0f410673f9874afd93978c7919aa35d7356",
+      "category": "feature"
+    },
+    {
+      "id": "feature-06",
+      "path": "tasks/feature-06.json",
+      "sha256": "sha256:b912f51c5a64f5b35dc15d93fd9aae2f245ed5db0f7da24ea8cfca3387b5393a",
+      "category": "feature"
+    },
+    {
+      "id": "feature-07",
+      "path": "tasks/feature-07.json",
+      "sha256": "sha256:f293444a83045aafeb18276f6115e70c33db39228be12cf117a7b19cd9b4f9a0",
+      "category": "feature"
+    },
+    {
+      "id": "feature-08",
+      "path": "tasks/feature-08.json",
+      "sha256": "sha256:f7191ce0d16b29b778c072f73c734aa19d2187d0b638b9b640ed7a45b56487be",
+      "category": "feature"
+    },
+    {
+      "id": "feature-09",
+      "path": "tasks/feature-09.json",
+      "sha256": "sha256:cb3d953bece4369d9afe62110356cfe0326c9dacc20acfb35ec8e8431ccd52e9",
+      "category": "feature"
+    },
+    {
+      "id": "feature-10",
+      "path": "tasks/feature-10.json",
+      "sha256": "sha256:168e404be8176bd5efd274b109fdf15a9231167e68398af3f035ac6ef3cbb737",
+      "category": "feature"
+    },
+    {
+      "id": "feature-11",
+      "path": "tasks/feature-11.json",
+      "sha256": "sha256:38c51c8e3d93be640fd61d0c98f1ef5393d3856e08bcb5cb03837211ce57ba2f",
+      "category": "feature"
+    },
+    {
+      "id": "feature-12",
+      "path": "tasks/feature-12.json",
+      "sha256": "sha256:04dc30cda1a858ed163fa25a4132c1a9bf3e4eda9310765ec8aa21eabf5444d9",
+      "category": "feature"
+    },
+    {
+      "id": "feature-13",
+      "path": "tasks/feature-13.json",
+      "sha256": "sha256:e2bd7d6057373dc070268995c8cf29a2192140b3068c4f2db1601b71be4fc7ed",
+      "category": "feature"
+    },
+    {
+      "id": "feature-14",
+      "path": "tasks/feature-14.json",
+      "sha256": "sha256:b867e47cf426ad4176c325347028be73401a5a0663b80e4272db5e0a116cfdad",
+      "category": "feature"
+    },
+    {
+      "id": "feature-15",
+      "path": "tasks/feature-15.json",
+      "sha256": "sha256:e7e73a77a9f56bd5b4b843cf1fea7c1385ce8c6c062a2a15e311ef58f6b040aa",
+      "category": "feature"
+    },
+    {
+      "id": "feature-16",
+      "path": "tasks/feature-16.json",
+      "sha256": "sha256:8ac403908b8ec9402cb7b8a51fa08d9558480e01608714735763f8dcc0efd71c",
+      "category": "feature"
+    },
+    {
+      "id": "feature-17",
+      "path": "tasks/feature-17.json",
+      "sha256": "sha256:190b0a8c902daa78c7d19a393a65dfcc360ece9ed938a07c8886b0bd30474955",
+      "category": "feature"
+    },
+    {
+      "id": "feature-18",
+      "path": "tasks/feature-18.json",
+      "sha256": "sha256:03b95f307f4b2de4cebc3993f1d92e0ba7e15d375dfc41577f1ac89328f106cf",
+      "category": "feature"
+    },
+    {
+      "id": "feature-19",
+      "path": "tasks/feature-19.json",
+      "sha256": "sha256:27e506e1fb7e5f4def86bb360b0f5e63e7fb4da0cc7d43840a0f1077f8763691",
+      "category": "feature"
+    },
+    {
+      "id": "feature-20",
+      "path": "tasks/feature-20.json",
+      "sha256": "sha256:8af671ad13e5bc7e87bad30be028024b82367385e1622601cdbcd71903d22686",
+      "category": "feature"
+    },
+    {
+      "id": "test-01",
+      "path": "tasks/test-01.json",
+      "sha256": "sha256:90ce6229e24bfb987d1ef2e17d030f3f3b1b9778c49f5cedf6ddedf524e37313",
+      "category": "test"
+    },
+    {
+      "id": "test-02",
+      "path": "tasks/test-02.json",
+      "sha256": "sha256:d666dad7d033a1ae3a0cd96dc460a7099cc7e7db2990870831cc22a19902541f",
+      "category": "test"
+    },
+    {
+      "id": "test-03",
+      "path": "tasks/test-03.json",
+      "sha256": "sha256:4aed8da7685143b1c5c7ffd08d95cb2f6a4b8a531881eb77cbcc34d641988461",
+      "category": "test"
+    },
+    {
+      "id": "test-04",
+      "path": "tasks/test-04.json",
+      "sha256": "sha256:aa1eb9b72a334315b941983c7132c16ea309b1a7450223ec757b9180b230a4c8",
+      "category": "test"
+    },
+    {
+      "id": "test-05",
+      "path": "tasks/test-05.json",
+      "sha256": "sha256:d2f386256ee098dc9e44b625cb48d35f25a422abfb169378c8afac831a551f99",
+      "category": "test"
+    },
+    {
+      "id": "test-06",
+      "path": "tasks/test-06.json",
+      "sha256": "sha256:57d0e8332f4eb933e9d985ca7dff87d1e0469273274e200f4f5ebf0d84f071e0",
+      "category": "test"
+    },
+    {
+      "id": "test-07",
+      "path": "tasks/test-07.json",
+      "sha256": "sha256:a0a87ad7a73d5853346644fa26a63d3b22cc0eebca7fd8806128b7affc005a9f",
+      "category": "test"
+    },
+    {
+      "id": "test-08",
+      "path": "tasks/test-08.json",
+      "sha256": "sha256:ffe5e73777889270aae6640d86e7a5100ec54a32405a9a66e72cc58ee83e6e56",
+      "category": "test"
+    },
+    {
+      "id": "test-09",
+      "path": "tasks/test-09.json",
+      "sha256": "sha256:4aa3cdadc400b26598b0b6b1f4a00626d8ba642e556bf1c40f60028054fcbcf5",
+      "category": "test"
+    },
+    {
+      "id": "test-10",
+      "path": "tasks/test-10.json",
+      "sha256": "sha256:2b94b2a40872296a4a6c77ce26777c88440c79324dd12e69d37539b4e4584285",
+      "category": "test"
+    },
+    {
+      "id": "test-11",
+      "path": "tasks/test-11.json",
+      "sha256": "sha256:ebe8aeab9137da69ceaa706c3884b239c4cd33702c28055376542fedece3de44",
+      "category": "test"
+    },
+    {
+      "id": "test-12",
+      "path": "tasks/test-12.json",
+      "sha256": "sha256:38ddb633eb506e71f1a188be1ec30400dfab9f1e5c6b87418537cf6b080879a4",
+      "category": "test"
+    },
+    {
+      "id": "test-13",
+      "path": "tasks/test-13.json",
+      "sha256": "sha256:f2420994d2fa31ddb61e7681075e59720dfcd338e87cfbc9fdc932a8f756048e",
+      "category": "test"
+    },
+    {
+      "id": "test-14",
+      "path": "tasks/test-14.json",
+      "sha256": "sha256:bcaa7648d33272ccdec77ecc0888cdf194a8d6a228c13236728da37aee0c82b1",
+      "category": "test"
+    },
+    {
+      "id": "test-15",
+      "path": "tasks/test-15.json",
+      "sha256": "sha256:8275b0a9023a4d344d8c4b9f9a8bdbbdfeb3804a0d16fd160bb6e774f0413593",
+      "category": "test"
+    },
+    {
+      "id": "refactor-01",
+      "path": "tasks/refactor-01.json",
+      "sha256": "sha256:60ff48594f78a72ce3c1703307ae47d93d5eb2b320ca9a66379c1f4ab70bf271",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-02",
+      "path": "tasks/refactor-02.json",
+      "sha256": "sha256:ec6a421ef54c2a747bfaebca2f3323a931dcbad2b8a571c51f5213f410a94678",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-03",
+      "path": "tasks/refactor-03.json",
+      "sha256": "sha256:1e0c03d236c3439d997e08b3ca7dd8214ea32bd95fdb03fc52de140c6c5d3224",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-04",
+      "path": "tasks/refactor-04.json",
+      "sha256": "sha256:c104e0a7cfad7e42673a2ff718def536dfd2055c7ad75468461d6c10761dead9",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-05",
+      "path": "tasks/refactor-05.json",
+      "sha256": "sha256:5cb18deabce69239988111497d939449334c373f3d5d54b35bcfd82fa6149c45",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-06",
+      "path": "tasks/refactor-06.json",
+      "sha256": "sha256:8cfdfc05a6292c8e908b30c4c0ddcd7c4e3a5b5a8ea6f3041dbed29fac337036",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-07",
+      "path": "tasks/refactor-07.json",
+      "sha256": "sha256:54a53bdc950ee55a480dca973bcc6615d6b7c1773c86a40a4dd3dc1615592292",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-08",
+      "path": "tasks/refactor-08.json",
+      "sha256": "sha256:58c72d4eb8f5bbda7b01acd9934b9b67075de3a994671024e4d8c95aff701593",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-09",
+      "path": "tasks/refactor-09.json",
+      "sha256": "sha256:ff5ed907b75a58ee8bff0d01f991d2213dbcb5b8937a09fd82bdc20294bd58e6",
+      "category": "refactor"
+    },
+    {
+      "id": "refactor-10",
+      "path": "tasks/refactor-10.json",
+      "sha256": "sha256:d3dac8a7e3de87ecf8cb1896c195f2cb8030d6ce69776eb8d851e7a64031764b",
+      "category": "refactor"
+    },
+    {
+      "id": "docs_config-01",
+      "path": "tasks/docs_config-01.json",
+      "sha256": "sha256:eeda8fb2344bd91f1b67f572dfc007dcc8d13fff2646e5096f3f1947909dd22a",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-02",
+      "path": "tasks/docs_config-02.json",
+      "sha256": "sha256:cb9c32e402fc6fd242393c34826cbf9455b2efcdde7fb5dec5efd7b9a9655eee",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-03",
+      "path": "tasks/docs_config-03.json",
+      "sha256": "sha256:e943fbbbe12bd8384caed3090bbd0b77745d75091286fa5eba509020fdf346ac",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-04",
+      "path": "tasks/docs_config-04.json",
+      "sha256": "sha256:0a6ca8465920fd52042a2c34da162b4a87ded235b109cfc83c8852f34b591e5f",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-05",
+      "path": "tasks/docs_config-05.json",
+      "sha256": "sha256:d8063d463bcbbfd55df629a3c028267c89244be6122c129dcb02b206f4c41fe0",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-06",
+      "path": "tasks/docs_config-06.json",
+      "sha256": "sha256:6417b2518070436125b2c0e6dc904e70ad678e78250fdee69b8c05ab1141245e",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-07",
+      "path": "tasks/docs_config-07.json",
+      "sha256": "sha256:b719b9d1251b7bc1a9e9ea03ec976a1bf37201029470ea0e719a28cf3e2c4237",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-08",
+      "path": "tasks/docs_config-08.json",
+      "sha256": "sha256:44f065cdf5b92a29d7426afaa96c66a23915726770149a80b7eeba0fb2340337",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-09",
+      "path": "tasks/docs_config-09.json",
+      "sha256": "sha256:e1795abf05296ccd863e6fbfc5b743e5ce4eb45479354585a6c237c23999bd66",
+      "category": "docs_config"
+    },
+    {
+      "id": "docs_config-10",
+      "path": "tasks/docs_config-10.json",
+      "sha256": "sha256:69b291364d8eb3f3e19ea04e914f5c2321b59bd556da8b6ff24b23707922ac53",
+      "category": "docs_config"
+    },
+    {
+      "id": "review_only-01",
+      "path": "tasks/review_only-01.json",
+      "sha256": "sha256:5300a4c704d09b723e2bc3ca4897ac0b299144cb4e57575471f870d362e96315",
+      "category": "review_only"
+    },
+    {
+      "id": "review_only-02",
+      "path": "tasks/review_only-02.json",
+      "sha256": "sha256:9c69a2d159537289b7d775d99b78b4cd6bc95e279c284c717d875a9ba9d10291",
+      "category": "review_only"
+    },
+    {
+      "id": "review_only-03",
+      "path": "tasks/review_only-03.json",
+      "sha256": "sha256:245fc035bc083e7082a6ad6788255f88144b469baa59f5092bc9720300f31f47",
+      "category": "review_only"
+    },
+    {
+      "id": "review_only-04",
+      "path": "tasks/review_only-04.json",
+      "sha256": "sha256:7e4ff6ecabe31bde6c9725050235d5d2c1e6558654bf7946e9fd78ab72303194",
+      "category": "review_only"
+    },
+    {
+      "id": "review_only-05",
+      "path": "tasks/review_only-05.json",
+      "sha256": "sha256:033a95d06e3515d98fca42e29535775000ff793b1f3a4bcadbe25a686a92afa2",
+      "category": "review_only"
+    },
+    {
+      "id": "recovery-01",
+      "path": "tasks/recovery-01.json",
+      "sha256": "sha256:51b00e7e4d545b4a33a014c677663709189e94f60372d99fb6b958f21307fa6d",
+      "category": "recovery"
+    },
+    {
+      "id": "recovery-02",
+      "path": "tasks/recovery-02.json",
+      "sha256": "sha256:0c3b38701dea34f86799f1f80db9b2b33d6951897f1db098f8c18937fb1613c3",
+      "category": "recovery"
+    },
+    {
+      "id": "recovery-03",
+      "path": "tasks/recovery-03.json",
+      "sha256": "sha256:86ddf8f6759ab41ed94dc25c9f71ae0a37325614b6fe176caa712cd0f82a5255",
+      "category": "recovery"
+    },
+    {
+      "id": "recovery-04",
+      "path": "tasks/recovery-04.json",
+      "sha256": "sha256:ef6638242f3856d7346b10c7ff200cfefa7a2ff2f7e184aba7be5f43395c231b",
+      "category": "recovery"
+    },
+    {
+      "id": "recovery-05",
+      "path": "tasks/recovery-05.json",
+      "sha256": "sha256:26673ac03cac422d04999543de7c3774b528bafdefc26dd790081cceee0a5ec9",
+      "category": "recovery"
+    },
+    {
+      "id": "permission_security-01",
+      "path": "tasks/permission_security-01.json",
+      "sha256": "sha256:733b15506948442039272852037dceb4015af970d194ad5d796315de5564d44d",
+      "category": "permission_security"
+    },
+    {
+      "id": "permission_security-02",
+      "path": "tasks/permission_security-02.json",
+      "sha256": "sha256:cb171cd8b726cd9377da937fb062615cda4387ec7cf61b3163948d54a3ec7561",
+      "category": "permission_security"
+    },
+    {
+      "id": "permission_security-03",
+      "path": "tasks/permission_security-03.json",
+      "sha256": "sha256:de619b63dab44ade812762fe53ec0553fef5aa9ff37adf296e344d51d49b02bc",
+      "category": "permission_security"
+    },
+    {
+      "id": "permission_security-04",
+      "path": "tasks/permission_security-04.json",
+      "sha256": "sha256:1695e95797a79d345ff5ed51df65646073b80af6d563dab9c1dbb35d4a72fdba",
+      "category": "permission_security"
+    },
+    {
+      "id": "permission_security-05",
+      "path": "tasks/permission_security-05.json",
+      "sha256": "sha256:53883eb96070ed5c7292782d4d60617b89b38b847d63f2d315b0b291c919f3b1",
+      "category": "permission_security"
+    },
+    {
+      "id": "background_memory-01",
+      "path": "tasks/background_memory-01.json",
+      "sha256": "sha256:f9886aed96c34f885cdca632fd4e677f17338e681537726f77173ed3a67c3340",
+      "category": "background_memory"
+    },
+    {
+      "id": "background_memory-02",
+      "path": "tasks/background_memory-02.json",
+      "sha256": "sha256:6ccdf40d9ca92d976438a6af8aac36f41b192123033689beb09593076017fef7",
+      "category": "background_memory"
+    },
+    {
+      "id": "background_memory-03",
+      "path": "tasks/background_memory-03.json",
+      "sha256": "sha256:610cc6a9dc8ced03e86d10b90daf1de3b5f0b41f53403634e8e13fbeac06ce4a",
+      "category": "background_memory"
+    },
+    {
+      "id": "background_memory-04",
+      "path": "tasks/background_memory-04.json",
+      "sha256": "sha256:13c2c1f75263c7f2c8671e02fbed092607d070ffea4dc11c514404d04653205f",
+      "category": "background_memory"
+    },
+    {
+      "id": "background_memory-05",
+      "path": "tasks/background_memory-05.json",
+      "sha256": "sha256:eac213a1c9ae5daf5059279a1b1d98c7e1738479ae6e636918cad73fe2e0917c",
+      "category": "background_memory"
+    }
+  ],
+  "distribution": {
+    "bugfix": 25,
+    "feature": 20,
+    "test": 15,
+    "refactor": 10,
+    "docs_config": 10,
+    "review_only": 5,
+    "recovery": 5,
+    "permission_security": 5,
+    "background_memory": 5
+  }
+}

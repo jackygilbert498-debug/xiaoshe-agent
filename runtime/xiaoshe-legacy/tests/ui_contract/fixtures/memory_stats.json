@@ -1,0 +1,67 @@
+{
+  "$doc": "GET /api/memory/stats 响应样例（SPEC §10 memory_stats / D2 / D3；R3 §1-E6）。数据源 ROOT/memory.json（非 .state，D2）；字段名 zone（D3 钉名，PLAN 的 section/偏好/事实标签作废），枚举=源码六中文值 目标|决策|现状|待解|已完成|其它（memory.py:_ZONES）；items 契约形状 {id,zone,text,created_at,superseded_by}（SPEC §10），至少一条 superseded_by 非空（前端灰显+删除线+revive 入口）；injectable=可注入计数，superseded=被取代计数。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "total": 7,
+  "injectable": 5,
+  "superseded": 1,
+  "by_zone": {
+    "目标": 1,
+    "决策": 2,
+    "现状": 2,
+    "待解": 1,
+    "已完成": 1,
+    "其它": 0
+  },
+  "items": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "zone": "目标",
+      "text": "本季度把回归测试推进到全绿并保持。",
+      "created_at": "2026-07-20T09:00:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "b2c3d4e5f6a1",
+      "zone": "决策",
+      "text": "UI 前端采用无构建 vanilla ESM，双主题。",
+      "created_at": "2026-07-22T14:30:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "c3d4e5f6a1b2",
+      "zone": "决策",
+      "text": "审批指纹沿用 _approval_key 原文直拼，不改哈希。",
+      "created_at": "2026-07-23T10:12:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "d4e5f6a1b2c3",
+      "zone": "现状",
+      "text": "ui_server 施工到 REST 路由阶段，WS 未联调。",
+      "created_at": "2026-07-25T18:40:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "e5f6a1b2c3d4",
+      "zone": "现状",
+      "text": "旧口径：memory 在 .state/ 下。",
+      "created_at": "2026-07-18T08:00:00+08:00",
+      "superseded_by": "d4e5f6a1b2c3"
+    },
+    {
+      "id": "f6a1b2c3d4e5",
+      "zone": "待解",
+      "text": "steering 队列与多客户端同步待实现。",
+      "created_at": "2026-07-24T11:05:00+08:00",
+      "superseded_by": null
+    },
+    {
+      "id": "0718293a4b5c",
+      "zone": "已完成",
+      "text": "R1-R4 侦察与 SPEC 定稿已完成。",
+      "created_at": "2026-07-21T16:00:00+08:00",
+      "superseded_by": null
+    }
+  ]
+}

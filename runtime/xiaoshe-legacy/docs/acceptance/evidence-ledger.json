@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {"id": "plan11_handbook", "path": "小蛇完善方案/11-测试、评测与验收手册.md", "sha256": "sha256:22b6b94c67ef4383d06dbb29d3f1e9af37cc79372fc0e7fd99b30cf4d4525118", "id_pattern": "(?m)^## \\d+\\.", "expected_count": 18},
+    {"id": "real_tasks", "path": "小蛇完善方案/acceptance/真实编码任务集.md", "sha256": "sha256:5e9f3f23b1f82780e30bbe643d8ab28d028d76b5cf376a58e69f0e2672080286", "id_pattern": "\\bRT-[A-Z]+-\\d{2}\\b", "expected_count": 40},
+    {"id": "failure_injection", "path": "小蛇完善方案/acceptance/失败注入矩阵.md", "sha256": "sha256:a13be884e2adfa17083d795184178cbbf1bdc54f78f7d6f8ed4871e183c2672e", "id_pattern": "\\bFI-[A-Z]+-\\d{2}\\b", "expected_count": 50},
+    {"id": "gherkin", "path": "小蛇完善方案/acceptance/中文Gherkin验收矩阵.md", "sha256": "sha256:dc86b2330483f387c7f75d2aaf2bcd5175936c8888085f9bcd3c03d427a2db6f", "id_pattern": "@AC-[A-Z]+-\\d{2}\\b", "expected_count": 38}
+  ],
+  "automated_evidence": [
+    {"id": "g6-memory-frozen", "level": "E2", "path": "docs/evidence/g6-memory/report.json", "sha256": "sha256:8a0aed228b3e9fabb07eb16b7cbfb743783ac1211de08ddf5fbe17c47ca0c5b5", "conditions": [{"field": "case_count", "at_least": 40}, {"field": "project_leakage", "equals": 0}, {"field": "unapproved_injection", "equals": 0}, {"field": "expired_injection", "equals": 0}, {"field": "forgotten_recovery", "equals": 0}, {"field": "receipt_precision", "at_least": 1.0}]},
+    {"id": "g7-resource-hygiene", "level": "E2", "path": "docs/evidence/g7-resources/report.json", "sha256": "sha256:b124041429c6716b77a13bc42f680ebc9dea9a1f98826e05c4f9f0189f418d42", "conditions": [{"field": "pass", "equals": true}, {"field": "iterations", "at_least": 100}, {"field": "delta.non_daemon_threads", "equals": 0}, {"field": "delta.children", "equals": 0}, {"field": "delta.open_handles", "equals": 0}]},
+    {"id": "g8-tasking-suite-structure", "level": "E2", "path": "docs/evidence/g8-eval/report.json", "sha256": "sha256:3c263437afa82dbb3fbd7cfedcf7adbc31f1b46745e83e02341be6bf1ccb10ff", "conditions": [{"field": "case_count", "at_least": 100}, {"field": "acceptance_pass", "at_least": 0.87}, {"field": "unsafe_action", "equals": 0}, {"field": "user_work_loss", "equals": 0}, {"field": "false_success", "equals": 0}]}
+  ],
+  "phase_gates": [
+    {"phase": "G0", "minimum_level": "E3", "status": "unverified", "evidence_ids": []},
+    {"phase": "G1", "minimum_level": "E2", "status": "unverified", "evidence_ids": []},
+    {"phase": "G2", "minimum_level": "E3", "status": "unverified", "evidence_ids": []},
+    {"phase": "G3", "minimum_level": "E4", "status": "unverified", "evidence_ids": []},
+    {"phase": "G4", "minimum_level": "E5", "status": "unverified", "evidence_ids": []},
+    {"phase": "G5", "minimum_level": "E4", "status": "unverified", "evidence_ids": []},
+    {"phase": "G6", "minimum_level": "E2", "status": "local_passed", "evidence_ids": ["g6-memory-frozen"]},
+    {"phase": "G7", "minimum_level": "E3", "status": "partial", "evidence_ids": ["g7-resource-hygiene"]},
+    {"phase": "G8", "minimum_level": "E5", "status": "partial", "evidence_ids": ["g8-tasking-suite-structure"]}
+  ]
+}

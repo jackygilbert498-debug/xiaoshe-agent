@@ -1,0 +1,109 @@
+{
+  "$doc": "GET /api/state 响应样例。model 为旧页面兼容的上游模型名；model_id/provider 是会话级选中档案的稳定标识和展示服务商。三者均不携带密钥、接口地址或代理信息。",
+  "v": 1,
+  "server_time": "2026-07-26T10:42:03+08:00",
+  "autonomy": false,
+  "model": "kimi-for-coding",
+  "model_id": "builtin-kimi:kimi-for-coding",
+  "provider": "Kimi",
+  "todos": [
+    {
+      "content": "跑通契约三道校验",
+      "status": "in_progress"
+    },
+    {
+      "content": "补齐 WS 事件样例",
+      "status": "completed"
+    },
+    {
+      "content": "联调审批三变体渲染",
+      "status": "pending"
+    }
+  ],
+  "notes": [
+    "用户偏好暖纸主题为默认",
+    "构建纪要每周五汇总一次"
+  ],
+  "jobs": [
+    {
+      "id": "job-20260726-103000-4231-1",
+      "command": "python scripts/build.py",
+      "pid": 5821,
+      "log_path": ".state/jobs/job-20260726-103000-4231-1.log",
+      "status": "running",
+      "started_at": "2026-07-26T10:30:00+08:00",
+      "returncode": null,
+      "ended_at": null,
+      "tail": [
+        "[10:41] 编译第 37 个目标…",
+        "[10:42] 链接中"
+      ]
+    }
+  ],
+  "subagents": [
+    {
+      "ref_id": "sa_1",
+      "objective": "并行核对 R3 端点映射与源码实况",
+      "status": "done",
+      "summary": "13 条路由映射核对完毕，4 条需新仪表化。",
+      "text_ref": "txt-3",
+      "batch_id": "b-1"
+    },
+    {
+      "ref_id": "sa_2",
+      "objective": "扫描前端原型可复用资产",
+      "status": "running",
+      "summary": "",
+      "text_ref": null,
+      "batch_id": "b-1"
+    }
+  ],
+  "vision_pending": [
+    {
+      "ref": "img-12",
+      "target": "look 编号截图(SoM)"
+    },
+    {
+      "ref": "img-14",
+      "target": null
+    }
+  ],
+  "approved_tools": [
+    {
+      "key": "run_command:git status",
+      "scope": "session"
+    },
+    {
+      "key": "write_file:纪要.md",
+      "scope": "persist"
+    }
+  ],
+  "denied_calls": 2,
+  "stall": {
+    "count": 1,
+    "limit": 3,
+    "at": "2026-07-26T10:40:31+08:00"
+  },
+  "usage": {
+    "input_tokens": 48210,
+    "output_tokens": 3560,
+    "cache_read": 39100,
+    "window": 131072,
+    "turn": 17
+  },
+  "compaction_recent": {
+    "ts": "2026-07-26T10:39:02+08:00",
+    "kind": "auto_compact",
+    "reason": "上下文接近窗口上限",
+    "before": {
+      "msgs": 50,
+      "chars": 150000
+    },
+    "after": {
+      "msgs": 10,
+      "chars": 30000
+    },
+    "cleared": null,
+    "depth": 0
+  }
+}

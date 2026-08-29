@@ -1,0 +1,16 @@
+{
+  "name": "Python 单元测试",
+  "risk_scope": "medium",
+  "checks": [
+    {
+      "id": "unit",
+      "name": "单元测试",
+      "argv": ["python", "-m", "unittest"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "env_allowlist": ["LANG", "PATH"],
+      "network": "deny",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "pass": true,
+  "source": "小蛇完善方案/10-完整工程Backlog与依赖图.md",
+  "source_sha256": "sha256:9141c804257ae59e20852601891e29497c3f015348225d33c54b8cbd5ad6fb74",
+  "item_count": 126,
+  "dependency_edge_count": 162,
+  "status_counts": {
+    "planned": 126
+  },
+  "completed_items": [],
+  "errors": []
+}
