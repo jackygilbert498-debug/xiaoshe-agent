@@ -5,8 +5,9 @@ $ErrorActionPreference = 'Stop'
 $XsRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)).Path
 $Node = (Get-Command node -ErrorAction Stop).Source
 $OwnerHelper = Join-Path $XsRoot 'scripts\windows-process-owner.mjs'
-$StatePath = Join-Path $env:LOCALAPPDATA 'Xiaoshe\dsh-web-state.json'
 $DefaultPort = if ($env:XIAOSHE_DSH_PORT) { [int]$env:XIAOSHE_DSH_PORT } else { 3080 }
+$StateFileName = if ($DefaultPort -eq 3080) { 'dsh-web-state.json' } else { "dsh-web-state-$DefaultPort.json" }
+$StatePath = Join-Path $env:LOCALAPPDATA "Xiaoshe\$StateFileName"
 
 if (-not (Test-Path -LiteralPath $StatePath)) {
   $Connections = @(Get-NetTCPConnection -LocalPort $DefaultPort -State Listen -ErrorAction SilentlyContinue)

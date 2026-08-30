@@ -58,6 +58,9 @@ require_file "$XS_ROOT/package.json"
 require_file "$DSH_ROOT/package.json"
 require_file "$XS_ROOT/runtime/xiaoshe-legacy/run.py"
 require_file "$XS_ROOT/packages/product-bundle/package.json"
+require_file "$XS_ROOT/packages/provider-readiness/package.json"
+require_file "$XS_ROOT/packages/migration-recovery/package.json"
+require_file "$XS_ROOT/packages/coding-workbench/package.json"
 require_file "$TOOL_DIR/profile/cordis.patch.yml"
 printf '  Node %s\n' "$("$NODE" --version)"
 if [ -n "$PNPM" ]; then printf '  pnpm %s\n' "$($PNPM --version)"; else printf '  pnpm 将由安装器配置为 11.7.0\n'; fi
@@ -110,6 +113,9 @@ say '构建' '安装 XS 锁定依赖并构建产品插件…'
   "$PNPM" -r --filter './packages/**' run typecheck
   "$PNPM" run typecheck
   "$PNPM" run build
+  if [ -f "$XS_ROOT/apps/desktop-shell/package.json" ]; then
+    "$PNPM" --filter '@xiaoshe/desktop-shell' test
+  fi
 )
 
 say '配置' '将 ModLens、XS 桌面能力和完整 Product Bundle 接入 DSH web Profile…'
@@ -126,6 +132,9 @@ say '配置' '将 ModLens、XS 桌面能力和完整 Product Bundle 接入 DSH w
     "$XS_ROOT/packages/heartbeat" \
     "$XS_ROOT/packages/memory" \
     "$XS_ROOT/packages/plugin-governance" \
+    "$XS_ROOT/packages/provider-readiness" \
+    "$XS_ROOT/packages/migration-recovery" \
+    "$XS_ROOT/packages/coding-workbench" \
     "$XS_ROOT/packages/task-timeline" \
     "$DSH_ROOT/packages/session-query/tool-session-query" \
     "$XS_ROOT/packages/product-bundle"
@@ -157,7 +166,7 @@ mv "$TMP_ZSHRC" "$ZSHRC"
 say '终验' '解析最终 DSH web Profile…'
 "$PNPM" --dir "$DSH_ROOT" dsh web --dump-config >/dev/null
 
-say '完成' '开发者发行版、依赖、Profile 与 s / ss 双入口已安装。'
+say '完成' '开发者发行版、依赖、Profile、独立桌面壳与 s / ss 双入口已安装。'
 printf '%s\n' \
   '  1. 本包故意不包含 API Key；首次打开后在设置里配置 DEEPSEEK_API_KEY。' \
   '  2. macOS 需为真实宿主授予“屏幕与系统录音”及“辅助功能”权限。' \

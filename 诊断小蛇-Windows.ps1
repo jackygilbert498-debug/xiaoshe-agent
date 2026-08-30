@@ -6,8 +6,9 @@ $XsDoctorRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $MyInvocation.MyC
 $DshDoctorRoot = Join-Path $XsDoctorRoot 'runtime\DSH'
 $LegacyDoctorRoot = Join-Path $XsDoctorRoot 'runtime\xiaoshe-legacy'
 $ProfileDoctorRoot = Join-Path $env:USERPROFILE '.dsh\profiles\web'
-$StateDoctorPath = Join-Path $env:LOCALAPPDATA 'Xiaoshe\dsh-web-state.json'
 $DoctorPort = if ($env:XIAOSHE_DSH_PORT) { [int]$env:XIAOSHE_DSH_PORT } else { 3080 }
+$StateDoctorFileName = if ($DoctorPort -eq 3080) { 'dsh-web-state.json' } else { "dsh-web-state-$DoctorPort.json" }
+$StateDoctorPath = Join-Path $env:LOCALAPPDATA "Xiaoshe\$StateDoctorFileName"
 $DoctorChecks = [System.Collections.Generic.List[object]]::new()
 
 function Add-DoctorCheck([string]$Id, [string]$Status, [string]$Detail) {
@@ -36,7 +37,7 @@ if ($PythonDoctor) {
 } else { Add-DoctorCheck 'runtime.python' 'fail' 'python not found' }
 
 $PwshDoctor = Find-DoctorCommand 'pwsh.exe'
-Add-DoctorCheck 'runtime.pwsh-uia' $(if ($PwshDoctor) { 'pass' } else { 'fail' }) $(if ($PwshDoctor) { $PwshDoctor.Source } else { 'pwsh.exe not found; Windows PowerShell 5 UIA is insufficient for the verified provider path' })
+Add-DoctorCheck 'runtime.pwsh-uia' $(if ($PwshDoctor) { 'pass' } else { 'warn' }) $(if ($PwshDoctor) { $PwshDoctor.Source } else { 'pwsh.exe not found; Windows PowerShell 5.1 remains available, but PowerShell 7 is recommended for richer UIA results' })
 
 $PinnedDoctorPnpm = Join-Path $env:USERPROFILE '.xiaoshe\pnpm-11.7.0\node_modules\.bin\pnpm.cmd'
 if (Test-Path -LiteralPath $PinnedDoctorPnpm) {

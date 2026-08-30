@@ -160,6 +160,34 @@ interface ModelCatalogSnapshot {
   readonly error?: string
 }
 
+interface RunCenterSnapshot {
+  readonly sessionId?: string
+  readonly status: 'idle' | 'loading' | 'ready' | 'error'
+  readonly jobs: readonly { readonly id: string; readonly label: string; readonly status: string; readonly detail?: string; readonly cancellable: false }[]
+  readonly subagents: readonly ({ readonly kind: 'child'; readonly id: string; readonly label?: string; readonly activity: string; readonly canOpen: true; readonly canInterrupt: boolean } | { readonly kind: 'diagnostic'; readonly id: string; readonly reason: string; readonly canOpen: false; readonly canInterrupt: false })[]
+  readonly queue: readonly { readonly id: string; readonly placement: string; readonly preview: string; readonly editable: boolean; readonly removable: boolean; readonly steerable: boolean }[]
+  readonly goal?: { readonly objective: string; readonly phase: string; readonly roundsStarted: number; readonly maxGoalRounds: number; readonly blockedReason?: string }
+  readonly plan?: { readonly active: boolean; readonly pending: boolean }
+  readonly todos: readonly { readonly id: string; readonly text: string; readonly status: string }[]
+  readonly skills: readonly { readonly name: string; readonly description: string; readonly modelInvocable: boolean }[]
+  readonly deliverables: readonly { readonly id: string; readonly title: string; readonly kind: string; readonly status: string }[]
+  readonly error?: string
+}
+
+interface ProviderReadinessSnapshot {
+  readonly status: 'idle' | 'loading' | 'ready' | 'probing' | 'error'
+  readonly providers: readonly {
+    readonly id: string; readonly displayName: string; readonly active: boolean; readonly declared: boolean
+    readonly routes: readonly {
+      readonly provider: string; readonly model: string; readonly name: string
+      readonly facts: { readonly catalogued: boolean; readonly supported: boolean; readonly configured: boolean; readonly available: boolean; readonly verified: boolean }
+      readonly reasons: readonly string[]
+      readonly probe?: { readonly status: string; readonly latencyMs?: number; readonly contextWindow?: number; readonly completedAt?: number; readonly error?: { readonly message: string } }
+    }[]
+  }[]
+  readonly error?: string
+}
+
 interface WorkspaceCatalogSnapshot {
   readonly state: 'idle' | 'loading' | 'ready' | 'error'
   readonly items: readonly {
@@ -298,6 +326,7 @@ interface PublicCandidate {
   readonly identity: CandidateIdentity
   readonly provenance: CandidateProvenance
   readonly audit: Readonly<Record<string, unknown>>
+  readonly signature: { readonly status: 'unsigned' | 'invalid' | 'valid-untrusted' | 'trusted'; readonly fingerprint?: string; readonly publisher?: string; readonly reason: string }
   readonly healthPath?: string
   readonly osSandboxEnforced: false
 }
@@ -315,7 +344,7 @@ interface CandidateProvenance {
   readonly kind: 'local-directory' | 'local-tarball' | 'registry'
   readonly selection: 'local-bytes' | 'exact-version' | 'floating-reference' | 'external-reference'
   readonly label: string
-  readonly assurance: 'unverified'
+  readonly assurance: 'unverified' | 'signed-untrusted' | 'verified-publisher' | 'invalid-signature'
 }
 
 export interface PluginConfirmationChallenge {
@@ -329,6 +358,7 @@ export interface PluginConfirmationChallenge {
   readonly identity?: CandidateIdentity
   readonly provenance?: CandidateProvenance
   readonly disclosures: readonly string[]
+  readonly compatibility?: { readonly status: 'compatible' | 'warning' | 'blocked'; readonly blockers: readonly string[]; readonly warnings: readonly string[]; readonly facts: readonly string[] }
   readonly osSandboxEnforced: false
 }
 
@@ -344,8 +374,8 @@ interface PublicPluginTransaction {
 }
 
 type CandidateSource =
-  | { readonly kind: 'directory' | 'tarball'; readonly path: string }
-  | { readonly kind: 'registry'; readonly spec: string }
+  | { readonly kind: 'directory' | 'tarball'; readonly path: string; readonly signaturePath?: string }
+  | { readonly kind: 'registry'; readonly spec: string; readonly signaturePath?: string }
 
 export type PluginUiIntent =
   | { readonly action: 'add' | 'update'; readonly profile: string; readonly source: CandidateSource }
@@ -427,6 +457,21 @@ export interface LegacyAdaptedClientContext {
     refresh(sessionId?: string): Promise<Result<ModelCatalogSnapshot>>
     select(input: { readonly sessionId?: string; readonly provider: string; readonly model: string; readonly reasoningEffort?: string }): Promise<Result<{ selected: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string } }>>
   }
+  runCenter: {
+    getSnapshot(): RunCenterSnapshot
+    subscribe(listener: () => void): () => void
+    refresh(): Promise<Result<RunCenterSnapshot>>
+    updateQueue(input: { readonly sessionId: string; readonly itemId: string; readonly action: { readonly kind: 'remove' | 'steer' } }): Promise<Result<{ accepted: true }>>
+    openSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Result<{ opened: true }>
+    interruptSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Promise<Result<{ accepted: true }>>
+  }
+  providerReadiness: {
+    getSnapshot(): ProviderReadinessSnapshot
+    subscribe(listener: () => void): () => void
+    refresh(sessionId?: string): Promise<Result<ProviderReadinessSnapshot>>
+    probe(input: { readonly provider: string; readonly model: string; readonly timeoutMs?: number }): Promise<Result<{ readonly probe: unknown; readonly snapshot: ProviderReadinessSnapshot }>>
+    cancelProbe(): Result<{ readonly cancelled: true }>
+  }
   workspaceCatalog: {
     getSnapshot(): WorkspaceCatalogSnapshot
     subscribe(listener: () => void): () => void
@@ -496,12 +541,15 @@ export function validatePluginIntent(input: {
   readonly profile: string
   readonly sourceKind: string
   readonly source: string
+  readonly signaturePath?: string
 }): PluginUiIntent {
   const profile = input.profile.trim()
   if (!/^xiaoshe-managed-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(profile)) {
     throw new TypeError('目标必须是受管扩展环境')
   }
   const source = boundedText(input.source, '候选来源或包名', 2_000)
+  const signaturePath = input.signaturePath?.trim() ?? ''
+  if (signaturePath.length > 2_000 || /[\r\n\0]/u.test(signaturePath)) throw new TypeError('签名旁路文件路径无效')
   if (input.action === 'remove') {
     if (source.length > 214) throw new TypeError('包名过长')
     return { action: 'remove', profile, packageName: source }
@@ -511,12 +559,12 @@ export function validatePluginIntent(input: {
   }
   if (input.sourceKind === 'registry') {
     if (source.length > 500) throw new TypeError('软件源版本说明过长')
-    return { action: input.action, profile, source: { kind: 'registry', spec: source } }
+    return { action: input.action, profile, source: { kind: 'registry', spec: source, ...(signaturePath === '' ? {} : { signaturePath }) } }
   }
   if (input.sourceKind !== 'directory' && input.sourceKind !== 'tarball') {
     throw new TypeError('候选来源类型无效')
   }
-  return { action: input.action, profile, source: { kind: input.sourceKind, path: source } }
+  return { action: input.action, profile, source: { kind: input.sourceKind, path: source, ...(signaturePath === '' ? {} : { signaturePath }) } }
 }
 
 export const inject = [
@@ -529,6 +577,8 @@ export const inject = [
   'workSurfaceRegistry',
   'contextGovernance',
   'modelCatalog',
+  'runCenter',
+  'providerReadiness',
   'workspaceCatalog',
   'pluginGovernance',
   'userApproval',
@@ -1064,8 +1114,11 @@ export function pluginCandidatePresentation(candidate: PublicCandidate): {
       ...(developerLicense === '' ? [] : [developerLicense]),
       `来源：${candidate.provenance.label}`,
       `来源核验：${pluginSourceAssuranceLabel(candidate.provenance.assurance)} · ${pluginSourceSelectionLabel(candidate.provenance.selection)}`,
+      `签名状态：${pluginSignatureStatusLabel(candidate.signature.status)}${candidate.signature.publisher === undefined ? '' : ` · ${candidate.signature.publisher}`}`,
+      ...(candidate.signature.fingerprint === undefined ? [] : [`公钥指纹：${abbreviateHash(candidate.signature.fingerprint)}`]),
       '运行边界：本机进程内 · 系统沙箱未启用',
       `风险：${pluginRiskLabel(candidate.audit.risk)}`,
+      ...pluginPolicyFacts(candidate.audit),
       `安装包摘要 ${abbreviateHash(candidate.sha256)} · 清单摘要 ${abbreviateHash(candidate.manifestSha256)}`,
     ]),
   }
@@ -1646,6 +1699,8 @@ export function apply(
     const workSurfaces = react.useSyncExternalStore(listener => ctx.workSurfaceRegistry.subscribe(listener), () => ctx.workSurfaceRegistry.getSnapshot())
     const context = react.useSyncExternalStore(listener => ctx.contextGovernance.subscribe(listener), () => ctx.contextGovernance.getSnapshot())
     const models = react.useSyncExternalStore(listener => ctx.modelCatalog.subscribe(listener), () => ctx.modelCatalog.getSnapshot())
+    const runCenter = react.useSyncExternalStore(listener => ctx.runCenter.subscribe(listener), () => ctx.runCenter.getSnapshot())
+    const providerReadiness = react.useSyncExternalStore(listener => ctx.providerReadiness.subscribe(listener), () => ctx.providerReadiness.getSnapshot())
     const workspaces = react.useSyncExternalStore(listener => ctx.workspaceCatalog.subscribe(listener), () => ctx.workspaceCatalog.getSnapshot())
     const approvals = react.useSyncExternalStore(listener => ctx.userApproval.subscribe(listener), () => ctx.userApproval.getSnapshot())
     const questionInteractions = react.useSyncExternalStore(listener => ctx.userQuestionInteraction.subscribe(listener), () => ctx.userQuestionInteraction.getSnapshot())
@@ -1857,7 +1912,11 @@ export function apply(
     }, [currentCatalog?.cwd])
 
     react.useEffect(() => {
-      if (currentId !== undefined) void ctx.modelCatalog.refresh(currentId).catch(() => {})
+      if (currentId !== undefined) {
+        void ctx.modelCatalog.refresh(currentId).catch(() => {})
+        void ctx.runCenter.refresh().catch(() => {})
+        void ctx.providerReadiness.refresh(currentId).catch(() => {})
+      }
     }, [currentId])
 
     react.useEffect(() => {
@@ -2165,6 +2224,32 @@ export function apply(
       if (!result.ok) setError(result.error?.message ?? '模型切换失败')
     }
 
+    const updateRunQueue = async (itemId: string, kind: 'remove' | 'steer'): Promise<void> => {
+      if (currentId === undefined) return
+      setError('')
+      const result = await ctx.runCenter.updateQueue({ sessionId: currentId, itemId, action: { kind } })
+      if (!result.ok) setError(result.error?.message ?? '队列操作失败')
+    }
+
+    const openRunSubagent = (childSessionId: string): void => {
+      if (currentId === undefined) return
+      const result = ctx.runCenter.openSubagent({ parentSessionId: currentId, childSessionId })
+      if (!result.ok) setError(result.error?.message ?? '无法打开子任务')
+    }
+
+    const interruptRunSubagent = async (childSessionId: string): Promise<void> => {
+      if (currentId === undefined) return
+      setError('')
+      const result = await ctx.runCenter.interruptSubagent({ parentSessionId: currentId, childSessionId })
+      if (!result.ok) setError(result.error?.message ?? '无法停止子任务')
+    }
+
+    const probeProviderRoute = async (provider: string, model: string): Promise<void> => {
+      setError('')
+      const result = await ctx.providerReadiness.probe({ provider, model })
+      if (!result.ok) setError(result.error?.message ?? '模型服务探测失败')
+    }
+
     const selectPermission = async (value: string): Promise<void> => {
       setError('')
       const result = await ctx.permissionPresets.select(value)
@@ -2365,7 +2450,11 @@ export function apply(
       const form = new FormData(event.currentTarget)
       let intent: PluginUiIntent
       try {
-        intent = validatePluginIntent({ action: String(form.get('action') ?? ''), profile: MANAGED_PLUGIN_PROFILE, sourceKind: String(form.get('sourceKind') ?? ''), source: String(form.get('source') ?? '') })
+        intent = validatePluginIntent({
+          action: String(form.get('action') ?? ''), profile: MANAGED_PLUGIN_PROFILE,
+          sourceKind: String(form.get('sourceKind') ?? ''), source: String(form.get('source') ?? ''),
+          signaturePath: String(form.get('signaturePath') ?? ''),
+        })
       } catch (validationError) {
         setPluginWorkflow({ step: 'error', message: validationError instanceof Error ? validationError.message : String(validationError) })
         return
@@ -3068,6 +3157,12 @@ export function apply(
           onMemoryState: (entry, state) => { void changeMemoryState(entry, state) },
           transactions: transactionView, plugins,
           model: modelView,
+          runCenter, providerReadiness,
+          onQueueAction: (itemId, kind) => { void updateRunQueue(itemId, kind) },
+          onOpenSubagent: openRunSubagent,
+          onInterruptSubagent: childSessionId => { void interruptRunSubagent(childSessionId) },
+          onProbeRoute: (provider, model) => { void probeProviderRoute(provider, model) },
+          onCancelProbe: () => { ctx.providerReadiness.cancelProbe() },
           pendingRequests: pluginState.pendingRequests, onTab: setRightTab,
           onCollapse: () => {
             if (inspOverlayOpen) {
@@ -3321,6 +3416,13 @@ function renderInspector(e: ReactLike['createElement'], options: {
   readonly onMemoryState: (entry: MemoryEntry, state: 'active' | 'forgotten') => void
   readonly transactions: { readonly total: number; readonly detail: string }
   readonly model: ReturnType<typeof modelPresentation>
+  readonly runCenter: RunCenterSnapshot
+  readonly providerReadiness: ProviderReadinessSnapshot
+  readonly onQueueAction: (itemId: string, kind: 'remove' | 'steer') => void
+  readonly onOpenSubagent: (childSessionId: string) => void
+  readonly onInterruptSubagent: (childSessionId: string) => void
+  readonly onProbeRoute: (provider: string, model: string) => void
+  readonly onCancelProbe: () => void
   readonly plugins: readonly { readonly moduleName: string; readonly fiberPhase: string | null }[]; readonly pendingRequests: number
   readonly onTab: (tab: 'status' | 'memory' | 'system') => void; readonly onCollapse: () => void; readonly onManage: () => void
 }): unknown {
@@ -3330,11 +3432,46 @@ function renderInspector(e: ReactLike['createElement'], options: {
     e('div', { className: 'insp-body' },
       e('section', { id: 'xsla-panel-status', 'aria-labelledby': 'xsla-tab-status', className: `panel${options.tab === 'status' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'status' },
         panelSection(e, '任务清单', '当前任务', options.receipt === undefined ? '运行事实尚未形成终态凭证' : `${receiptLabel(options.receipt)} · 来源 ${options.receiptSeq ?? '—'}`, options.receipt === 'verified' ? 'ok' : undefined, { 'data-receipt-outcome': options.receipt ?? 'none' }),
+        renderRunCenterPanel(e, options),
         panelSection(e, '上下文', options.contextView.value, options.contextView.detail, options.contextView.level === 'critical' ? 'warn' : undefined),
-        panelSection(e, '后台任务', options.heartbeat.status, options.heartbeat.detail, options.heartbeat.tone),
+        panelSection(e, '运行巡检', options.heartbeat.status, options.heartbeat.detail, options.heartbeat.tone),
         panelSection(e, '行动与审批', options.approval === undefined ? '当前无待审批行动' : `${options.approvalCount} 项等待确认 · ${options.approval.toolName}`, options.approval?.reason ?? '权限策略由运行时强制', options.approval === undefined ? undefined : 'warn')),
       e('section', { id: 'xsla-panel-memory', 'aria-labelledby': 'xsla-tab-memory', className: `panel memory-panel${options.tab === 'memory' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'memory' }, renderMemoryPanel(e, options)),
-      e('section', { id: 'xsla-panel-system', 'aria-labelledby': 'xsla-tab-system', className: `panel${options.tab === 'system' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'system' }, panelSection(e, '模型路由', options.model.value, options.model.detail, options.model.routable === false ? 'warn' : undefined), panelSection(e, '能力中心', '核心能力可用', '会话 · 工作区 · 模型 · 时间线 · 审批 · 凭证 · 后台检查 · 记忆 · 插件治理'), panelSection(e, '插件事务', `${options.transactions.total} 笔受控变更`, `${options.transactions.detail}\n${options.plugins.length} 个运行组件实例`, options.pendingRequests > 0 ? 'warn' : undefined), e('button', { className: 'manager-toggle', type: 'button', onClick: options.onManage }, '管理插件'), e('div', { className: 'reality-note' }, e('b', null, '安全边界：'), '本机扩展与小蛇共同运行在 Host 进程中，没有独立的系统沙箱。'))))
+      e('section', { id: 'xsla-panel-system', 'aria-labelledby': 'xsla-tab-system', className: `panel${options.tab === 'system' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'system' }, panelSection(e, '模型路由', options.model.value, options.model.detail, options.model.routable === false ? 'warn' : undefined), renderProviderReadinessPanel(e, options), panelSection(e, '能力中心', '运行能力已连接', `${options.runCenter.skills.length} 项技能 · ${options.runCenter.deliverables.length} 项产物 · ${options.runCenter.subagents.length} 个子任务`), panelSection(e, '插件事务', `${options.transactions.total} 笔受控变更`, `${options.transactions.detail}\n${options.plugins.length} 个运行组件实例`, options.pendingRequests > 0 ? 'warn' : undefined), e('button', { className: 'manager-toggle', type: 'button', onClick: options.onManage }, '管理插件'), e('div', { className: 'reality-note' }, e('b', null, '安全边界：'), '本机扩展与小蛇共同运行在 Host 进程中，没有独立的系统沙箱。'))))
+}
+
+function renderRunCenterPanel(e: ReactLike['createElement'], options: {
+  readonly runCenter: RunCenterSnapshot
+  readonly onQueueAction: (itemId: string, kind: 'remove' | 'steer') => void
+  readonly onOpenSubagent: (childSessionId: string) => void
+  readonly onInterruptSubagent: (childSessionId: string) => void
+}): unknown {
+  const run = options.runCenter
+  const rows: unknown[] = []
+  if (run.goal !== undefined) rows.push(e('div', { className: 'run-center-row', key: 'goal' }, e('b', null, '目标'), e('span', null, run.goal.objective), e('small', null, `${run.goal.phase} · ${run.goal.roundsStarted}/${run.goal.maxGoalRounds}`)))
+  for (const job of run.jobs) rows.push(e('div', { className: 'run-center-row', key: `job:${job.id}` }, e('b', null, job.label), e('span', { 'data-run-status': job.status }, runStatusLabel(job.status)), job.detail === undefined ? null : e('small', null, job.detail)))
+  for (const item of run.queue) rows.push(e('div', { className: 'run-center-row', key: `queue:${item.id}` }, e('b', null, item.placement === 'steering' ? '调整方向' : '等待队列'), e('span', null, item.preview), e('div', { className: 'run-center-actions' }, item.steerable ? e('button', { type: 'button', onClick: () => options.onQueueAction(item.id, 'steer') }, '立即调整') : null, item.removable ? e('button', { type: 'button', onClick: () => options.onQueueAction(item.id, 'remove') }, '移除') : null)))
+  for (const child of run.subagents) rows.push(e('div', { className: 'run-center-row', key: `subagent:${child.id}` }, e('b', null, child.kind === 'child' ? child.label ?? '子任务' : '子任务诊断'), e('span', null, child.kind === 'child' ? child.activity === 'running' ? '正在运行' : '已停歇' : `不可用 · ${child.reason}`), child.kind === 'child' ? e('div', { className: 'run-center-actions' }, e('button', { type: 'button', onClick: () => options.onOpenSubagent(child.id) }, '打开'), child.canInterrupt ? e('button', { type: 'button', onClick: () => options.onInterruptSubagent(child.id) }, '停止') : null) : null))
+  if (rows.length === 0) rows.push(e('p', { className: 'run-center-empty', key: 'empty' }, run.status === 'loading' ? '正在读取运行事实…' : run.error ?? '当前没有后台任务、队列或子任务。'))
+  return e('section', { className: 'psec run-center' }, e('h4', null, '运行中心'), e('div', { className: 'run-center-list' }, ...rows), e('p', { className: 'run-center-foot' }, `${run.todos.length} 项待办 · ${run.deliverables.length} 项产物 · ${run.skills.length} 项技能`))
+}
+
+function renderProviderReadinessPanel(e: ReactLike['createElement'], options: {
+  readonly providerReadiness: ProviderReadinessSnapshot
+  readonly onProbeRoute: (provider: string, model: string) => void
+  readonly onCancelProbe: () => void
+}): unknown {
+  const readiness = options.providerReadiness
+  const routes = readiness.providers.flatMap(provider => provider.routes.map(route => ({ provider, route })))
+  return e('section', { className: 'psec provider-readiness', 'data-state': readiness.status },
+    e('h4', null, '服务商就绪度'),
+    routes.length === 0
+      ? e('div', { className: 'panel-fact' }, e('b', null, readiness.status === 'loading' ? '正在读取服务商事实' : '暂无可探测模型'), e('span', null, readiness.error ?? '建立会话后显示精确模型路由。'))
+      : e('div', { className: 'provider-route-list' }, ...routes.map(({ provider, route }) => e('article', { className: 'provider-route', key: `${route.provider}:${route.model}` },
+        e('div', { className: 'provider-route-head' }, e('b', null, route.name), e('small', null, provider.displayName)),
+        e('div', { className: 'provider-facts', 'aria-label': '服务商五态事实' }, ...(['catalogued', 'supported', 'configured', 'available', 'verified'] as const).map(fact => e('span', { key: fact, 'data-ready': route.facts[fact] }, providerFactLabel(fact)))),
+        e('div', { className: 'provider-route-meta' }, e('span', null, route.probe === undefined ? providerReasonLabel(route.reasons[0]) : probeSummary(route.probe)), e('button', { type: 'button', disabled: readiness.status === 'probing', onClick: () => options.onProbeRoute(route.provider, route.model) }, route.facts.verified ? '重新验证' : '验证'))))),
+    readiness.status === 'probing' ? e('button', { className: 'manager-toggle provider-cancel', type: 'button', onClick: options.onCancelProbe }, '停止当前验证') : null)
 }
 
 interface MemoryPanelOptions {
@@ -4077,7 +4214,8 @@ function pluginManagerPanel(e: ReactLike['createElement'], options: {
     showForm ? e('form', { id: 'xsla-plugin-form', className: 'manager-form', onSubmit: (event: unknown) => { void options.onSubmit(event as { preventDefault(): void; currentTarget: HTMLFormElement }) } },
       e('label', { className: 'confirm-field' }, '动作', e('select', { name: 'action', defaultValue: 'add', disabled: options.busy }, e('option', { value: 'add' }, '安装'), e('option', { value: 'update' }, '更新'), e('option', { value: 'remove' }, '卸载'))),
       e('label', { className: 'confirm-field' }, '候选来源', e('select', { name: 'sourceKind', defaultValue: 'registry', disabled: options.busy }, e('option', { value: 'registry' }, '软件源版本'), e('option', { value: 'tarball' }, '本地安装包'), e('option', { value: 'directory' }, '本地文件夹'))),
-      e('label', { className: 'confirm-field' }, '来源或卸载包名', e('input', { name: 'source', required: true, maxLength: 2_000, placeholder: '@scope/plugin@1.0.0', disabled: options.busy }))) : null,
+      e('label', { className: 'confirm-field' }, '来源或卸载包名', e('input', { name: 'source', required: true, maxLength: 2_000, placeholder: '@scope/plugin@1.0.0', disabled: options.busy })),
+      e('label', { className: 'confirm-field' }, 'Ed25519 签名旁路文件（可选）', e('input', { name: 'signaturePath', maxLength: 2_000, placeholder: '本机 .signature.json 绝对路径', disabled: options.busy }))) : null,
     candidateView !== undefined && workflow.intent !== undefined ? e('div', { className: 'candidate-facts' }, e('b', null, candidateView.heading), ...candidateView.facts.map((fact, index) => e('span', { key: `candidate-fact:${index}` }, fact))) : null,
     workflow.step === 'prepared' && workflow.challenge !== undefined
       ? renderPluginChallenge(e, pluginChallengePresentation(workflow.challenge))
@@ -4340,6 +4478,32 @@ export function modelPresentation(value: ModelCatalogSnapshot): { readonly value
   }
 }
 
+function runStatusLabel(value: string): string {
+  return ({ running: '正在运行', stopping: '正在停止', completed: '已完成', killed: '已终止', failed: '失败' } as Record<string, string>)[value] ?? value
+}
+
+function providerFactLabel(value: 'catalogued' | 'supported' | 'configured' | 'available' | 'verified'): string {
+  return ({ catalogued: '已收录', supported: '受支持', configured: '已配置', available: '可用', verified: '已验证' } as const)[value]
+}
+
+function providerReasonLabel(value: string | undefined): string {
+  return ({
+    provider_not_catalogued: '服务商尚未收录', route_unsupported: '当前路由不受支持', settings_missing: '缺少服务商设置',
+    credential_missing: '缺少凭据', route_unavailable: '路由当前不可用', probe_missing: '尚未执行真实验证',
+    probe_running: '正在验证', probe_failed: '上次验证失败', probe_cancelled: '上次验证已取消',
+    probe_expired: '验证结果已过期', probe_route_mismatch: '验证结果不属于当前路由',
+  } as Record<string, string>)[value ?? ''] ?? '等待运行事实'
+}
+
+function probeSummary(value: { readonly status: string; readonly latencyMs?: number; readonly contextWindow?: number; readonly error?: { readonly message: string } }): string {
+  if (value.status === 'running') return '正在验证'
+  if (value.status === 'failed') return value.error?.message ?? '验证失败'
+  if (value.status === 'cancelled') return '验证已取消'
+  const latency = value.latencyMs === undefined ? '' : `${Math.round(value.latencyMs)} ms`
+  const context = value.contextWindow === undefined ? '' : `上下文 ${formatTokens(value.contextWindow)}`
+  return [latency, context].filter(Boolean).join(' · ') || '验证通过'
+}
+
 /** Opaque select value; model/provider ids may themselves contain slashes. */
 export function modelRouteKey(provider: string, model: string): string {
   return JSON.stringify([provider, model])
@@ -4386,7 +4550,23 @@ function pluginRiskLabel(value: unknown): string {
 }
 
 function pluginSourceAssuranceLabel(value: CandidateProvenance['assurance']): string {
-  return value === 'unverified' ? '未签名' : '未知'
+  return ({ unverified: '未签名', 'signed-untrusted': '签名有效但未信任', 'verified-publisher': '发布者已验证', 'invalid-signature': '签名无效' } as const)[value]
+}
+
+function pluginSignatureStatusLabel(value: PublicCandidate['signature']['status']): string {
+  return ({ unsigned: '未签名', invalid: '无效', 'valid-untrusted': '有效但未信任', trusted: '有效且受信' } as const)[value]
+}
+
+function pluginPolicyFacts(audit: Readonly<Record<string, unknown>>): readonly string[] {
+  const policy = typeof audit.policy === 'object' && audit.policy !== null ? audit.policy as Readonly<Record<string, unknown>> : undefined
+  if (policy === undefined) return []
+  const permissions = Array.isArray(policy.permissions) ? policy.permissions.filter((row): row is string => typeof row === 'string') : []
+  const capabilities = Array.isArray(policy.capabilities) ? policy.capabilities.filter((row): row is string => typeof row === 'string') : []
+  return Object.freeze([
+    `权限清单：${permissions.length === 0 ? '未声明' : permissions.join(', ')}`,
+    `能力声明：${capabilities.length === 0 ? '未声明' : capabilities.join(', ')}`,
+    `隔离声明：${typeof policy.isolation === 'string' ? policy.isolation : '未声明'}（实际为共享本机进程）`,
+  ])
 }
 
 function pluginSourceSelectionLabel(value: CandidateProvenance['selection']): string {

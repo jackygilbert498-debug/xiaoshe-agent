@@ -29,6 +29,21 @@ const CLIENT_COMMIT_HASH_VARIABLE = 'DSH_CLIENT_COMMIT_HASH'
 export const CLIENT_BUILD_RECORD_PATH = '.dsh-build/client-build-environment.json'
 
 const CLIENT_BUILD_RECORD_FORMAT = 1
+const DISTRIBUTED_SOURCE_PATTERNS = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'tsconfig*.json',
+  'apps/**/*',
+  'examples/**/*',
+  'native/**/*',
+  'packages/**/*',
+  'patches/**/*',
+  'python/**/*',
+  'scripts/**/*',
+  'vendor/**/*',
+] as const
+const GENERATED_SOURCE_SEGMENTS = new Set(['.dsh-build', '.git', '.venv', 'dist', 'lib', 'node_modules', 'target'])
 const CLIENT_ARTIFACT_PATTERNS = [
   'apps/web/dist/**/*',
   'packages/*/*/lib/client.js',
@@ -39,22 +54,53 @@ const CLIENT_ARTIFACT_PATTERNS = [
 export type ClientBuildEnvironment = Readonly<Record<string, string>>
 
 /**
- * Resolve the short source commit used by browser build metadata.
+ * Resolve the short source revision used by browser build metadata. A Git
+ * checkout uses HEAD; a source-only distribution uses a deterministic digest
+ * of its build inputs so first-device installation never requires `.git`.
  * @param root - repository root used when no explicit value is supplied.
  * @param environment - environment that may already carry a commit value.
- * @returns lowercase 7-character Git commit prefix.
+ * @returns lowercase 7-character source revision prefix.
  */
 export function repositoryCommitHash(root: string, environment: NodeJS.ProcessEnv = process.env): string {
   const explicit = environment[CLIENT_COMMIT_HASH_VARIABLE]
-  const value = explicit ?? execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: root,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim()
+  let value = explicit
+  if (value === undefined) {
+    try {
+      value = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+    } catch {
+      // Keep the established 40-hex revision contract while sourcing it from
+      // SHA-256 content when the distribution has no repository metadata.
+      value = distributedSourceRevision(root).slice(0, 40)
+    }
+  }
   if (!/^[0-9a-f]{7,40}$/iu.test(value)) {
-    throw new Error(`${CLIENT_COMMIT_HASH_VARIABLE} must be a Git commit hash; got ${JSON.stringify(value)}`)
+    throw new Error(`${CLIENT_COMMIT_HASH_VARIABLE} must be a hexadecimal source revision; got ${JSON.stringify(value)}`)
   }
   return value.slice(0, 7).toLowerCase()
+}
+
+/** Hash source inputs while excluding install/build outputs that vary per device. */
+function distributedSourceRevision(root: string): string {
+  const paths = [...new Set(globSync([...DISTRIBUTED_SOURCE_PATTERNS], { cwd: root })
+    .map(path => path.replaceAll('\\', '/'))
+    .filter(path => !path.split('/').some(segment => GENERATED_SOURCE_SEGMENTS.has(segment)))
+    .filter(path => !path.endsWith('.tsbuildinfo'))
+    .filter(path => statSync(resolve(root, path)).isFile()))].sort()
+  if (paths.length === 0) throw new Error('distributed DSH source contains no revision inputs')
+
+  const digest = createHash('sha256')
+  for (const path of paths) {
+    const content = readFileSync(resolve(root, path))
+    digest.update(`${Buffer.byteLength(path)}:`)
+    digest.update(path)
+    digest.update(`${content.byteLength}:`)
+    digest.update(content)
+  }
+  return digest.digest('hex')
 }
 
 /**

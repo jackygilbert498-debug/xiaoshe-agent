@@ -22,6 +22,7 @@ export type {
 export type {
   WorkSurface,
   WorkSurfaceCapabilities,
+  WorkSurfaceContributionRegistry,
   WorkSurfaceDiff,
   WorkSurfaceKind,
   WorkSurfaceRegistry,
@@ -39,6 +40,19 @@ export type {
   ModelReasoningEffort,
   ModelSelection,
 } from './model.js'
+export { deriveProviderReadinessFacts } from './provider-readiness.js'
+export type {
+  DeriveProviderReadinessInput,
+  ProviderProbeCost,
+  ProviderProbeRecord,
+  ProviderProbeUsage,
+  ProviderReadiness,
+  ProviderReadinessFacts,
+  ProviderReadinessProvider,
+  ProviderReadinessReason,
+  ProviderReadinessRoute,
+  ProviderReadinessSnapshot,
+} from './provider-readiness.js'
 export type {
   WorkspaceCatalog,
   WorkspaceCatalogEntry,
@@ -57,6 +71,21 @@ export type {
   StopRunInput,
 } from './commands.js'
 export type { AgentRuntimeSession } from './service.js'
+export { parseRunCenterSnapshot } from './run-center.js'
+export type {
+  RunCenter,
+  RunCenterDeliverable,
+  RunCenterGoal,
+  RunCenterJob,
+  RunCenterPlan,
+  RunCenterQueueAction,
+  RunCenterQueueItem,
+  RunCenterSkill,
+  RunCenterSnapshot,
+  RunCenterSubagent,
+  RunCenterTodo,
+  RunJobStatus,
+} from './run-center.js'
 export type { SessionCommand, SessionCommandInput } from './session-command.js'
 export type {
   UserQuestionAnswer,

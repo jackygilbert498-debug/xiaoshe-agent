@@ -119,6 +119,9 @@ profile_has_current_product_packages() {
 @xiaoshe/heartbeat|$PLUGIN_ROOT/packages/heartbeat
 @xiaoshe/memory|$PLUGIN_ROOT/packages/memory
 @xiaoshe/plugin-governance|$PLUGIN_ROOT/packages/plugin-governance
+@xiaoshe/provider-readiness|$PLUGIN_ROOT/packages/provider-readiness
+@xiaoshe/migration-recovery|$PLUGIN_ROOT/packages/migration-recovery
+@xiaoshe/coding-workbench|$PLUGIN_ROOT/packages/coding-workbench
 @xiaoshe/task-timeline|$PLUGIN_ROOT/packages/task-timeline
 @deepseek-ai/dsh-tool-session-query|$DSH_ROOT/packages/session-query/tool-session-query
 @xiaoshe/product-bundle|$PLUGIN_ROOT/packages/product-bundle
@@ -139,6 +142,9 @@ sync_current_product_packages() {
       "$PLUGIN_ROOT/packages/heartbeat" \
       "$PLUGIN_ROOT/packages/memory" \
       "$PLUGIN_ROOT/packages/plugin-governance" \
+      "$PLUGIN_ROOT/packages/provider-readiness" \
+      "$PLUGIN_ROOT/packages/migration-recovery" \
+      "$PLUGIN_ROOT/packages/coding-workbench" \
       "$PLUGIN_ROOT/packages/task-timeline" \
       "$DSH_ROOT/packages/session-query/tool-session-query" \
       "$PLUGIN_ROOT/packages/product-bundle"

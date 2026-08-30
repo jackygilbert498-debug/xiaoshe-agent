@@ -1,6 +1,7 @@
 import type {
   WorkSurface,
   WorkSurfaceCapabilities,
+  WorkSurfaceContributionRegistry,
   WorkSurfaceDiff,
   WorkSurfaceRegistry,
   WorkSurfaceRegistrySnapshot,
@@ -83,11 +84,12 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /** Public current-session SurfaceRegistry backed only by DSH's replayable Client snapshot. */
-export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
+export class DshWorkSurfaceRegistry implements WorkSurfaceContributionRegistry {
   private readonly listeners = new Set<() => void>()
   private readonly unsubscribeList: () => void
   private unsubscribeSession: (() => void) | undefined
   private snapshot: WorkSurfaceRegistrySnapshot = { items: [] }
+  private readonly contributions = new Map<string, { readonly sessionId: string; readonly items: readonly WorkSurface[] }>()
   private disposed = false
 
   constructor(private readonly sessions: SurfaceSessionsPort) {
@@ -103,11 +105,28 @@ export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
     return () => { this.listeners.delete(listener) }
   }
 
+  publishContribution(namespace: string, sessionId: string, items: readonly WorkSurface[]): () => void {
+    if (this.disposed) throw new Error('WorkSurfaceRegistry provider is disposed')
+    if (!/^[a-z][a-z0-9._-]{0,79}$/u.test(namespace)) throw new TypeError('surface contribution namespace is invalid')
+    if (sessionId === '' || sessionId.length > 512 || /[\r\n\0]/u.test(sessionId)) throw new TypeError('surface contribution session is invalid')
+    const bounded = Object.freeze(items.slice(-MAX_SURFACES).filter(item => item.sessionId === sessionId))
+    this.contributions.set(namespace, { sessionId, items: bounded })
+    this.publish()
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this.contributions.delete(namespace)
+      this.publish()
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.unsubscribeSession?.()
     this.unsubscribeList()
+    this.contributions.clear()
     this.listeners.clear()
   }
 
@@ -131,7 +150,14 @@ export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
   private project(sessionId: string | undefined, face: SurfaceSessionFacePort | undefined): WorkSurfaceRegistrySnapshot {
     if (sessionId === undefined || face === undefined) return { items: [] }
     const cwd = this.sessions.list.getSnapshot().byId[sessionId]?.cwd
-    return { sessionId, items: projectDshWorkSurfaces(sessionId, cwd, face.getSnapshot?.()) }
+    const durable = projectDshWorkSurfaces(sessionId, cwd, face.getSnapshot?.())
+    const contributed = [...this.contributions.values()].flatMap(row => row.sessionId === sessionId ? row.items : [])
+    const merged = new Map<string, WorkSurface>()
+    for (const item of [...durable, ...contributed]) {
+      const previous = merged.get(item.id)
+      if (previous === undefined || previous.updatedAt <= item.updatedAt) merged.set(item.id, item)
+    }
+    return { sessionId, items: [...merged.values()].sort((left, right) => left.updatedAt - right.updatedAt || left.seq - right.seq).slice(-MAX_SURFACES) }
   }
 }
 

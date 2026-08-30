@@ -18,9 +18,11 @@
   ],
   "scripts": {
     "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
+    "test": "tsc -p tsconfig.build.json && node --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@types/node": "22.19.7",
     "typescript": "5.9.3"
   },
   "dsh": {
