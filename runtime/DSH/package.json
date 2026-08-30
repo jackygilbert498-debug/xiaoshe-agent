@@ -1,0 +1,63 @@
+{
+  "name": "@deepseek-ai/dsh-root",
+  "version": "0.1.0-rc.8",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "workspaces": [
+    "vendor/*",
+    "packages/*/*",
+    "native/landlock-run",
+    "native/landlock-run/packages/*",
+    "apps/*",
+    "examples"
+  ],
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "build:official": "tsx scripts/build.ts --profile official",
+    "build:lib": "npm run build:lib:host && npm run build:lib:client",
+    "build:lib:host": "tsc -b tsconfig.host.json && tsdown --env.DSH_BUILD_FACE host",
+    "build:lib:client": "tsc -b tsconfig.client.json && tsdown --env.DSH_BUILD_FACE client",
+    "build:web": "pnpm --filter @deepseek-ai/dsh-web-frontend run build",
+    "clean": "tsx scripts/clean.ts",
+    "change-scope": "tsx scripts/change-scope.ts",
+    "typecheck": "npm run build:lib:host && npm run typecheck:contracts-ready",
+    "typecheck:contracts-ready": "tsc -b tsconfig.client.json",
+    "dsh": "node --import tsx/esm apps/cli/src/bin.ts",
+    "dev:web": "tsx scripts/dev-web.ts --poll"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "0.25.1",
+    "@deepseek-ai/dsh-tool-session-query": "workspace:^",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^28.0.3",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^22.20.0",
+    "@types/spdx-expression-parse": "^4.0.0",
+    "@yarnpkg/cli-dist": "4.17.1",
+    "eslint-plugin-sonarjs": "^4.1.0",
+    "execa": "^10.0.0",
+    "js-yaml": "^4.2.0",
+    "jscpd": "^5.0.12",
+    "knip": "^6.16.1",
+    "lightningcss": "^1.32.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "mermaid": "11.16.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "oxlint": "1.76.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "publint": "^0.3.21",
+    "smol-toml": "^1.7.1",
+    "spdx-expression-parse": "^5.0.0",
+    "tsdown": "^0.22.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite-tsconfig-paths": "^6.1.1"
+  }
+}

@@ -1,0 +1,4 @@
+# 小蛇开发者发行版只提供公开配置，不包含任何密钥。
+- id: modlens
+  config:
+    upstream: deepseek-official

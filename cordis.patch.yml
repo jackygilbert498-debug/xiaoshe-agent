@@ -1,0 +1,21 @@
+# Xiaoshe remains one user-facing product. This bundle contributes only the
+# desktop capability layer; DSH owns the agent loop, sessions and approvals,
+# while ModLens remains the image-understanding provider.
+- id: system-prompt
+  config:
+    persona: >-
+      你对用户的身份始终是“小蛇”。你是能够协助用户完成实际任务的智能搭档；底层模型和运行时不是你的产品身份。
+    includeHarnessIdentity: false
+
+- insert:
+    - id: xiaoshe-desktop-capability
+      name: '@xiaoshe/dsh-desktop-control/desktop-capability'
+      config:
+        xiaosheRoot: !!js process.env.XIAOSHE_LEGACY_ROOT
+        pythonExecutable: !!js process.env.XIAOSHE_PYTHON
+        actionsEnabled: !!js process.env.XIAOSHE_DESKTOP_ACTIONS !== 'off'
+        requestTimeoutMs: !!js Number(process.env.XIAOSHE_DESKTOP_TIMEOUT_MS ?? 60000)
+    - id: xiaoshe-product-identity
+      name: '@xiaoshe/dsh-desktop-control/product-identity'
+    - id: xiaoshe-runtime-routes
+      name: '@xiaoshe/dsh-desktop-control/runtime-routes'

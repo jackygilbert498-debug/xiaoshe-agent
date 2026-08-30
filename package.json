@@ -1,0 +1,65 @@
+{
+  "name": "@xiaoshe/dsh-desktop-control",
+  "version": "0.2.0",
+  "description": "DSH desktop-observation and control bundle backed by the existing Xiaoshe Python runtime",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./desktop-capability": "./dist/plugins/desktop-capability.js",
+    "./memory": "./dist/plugins/memory.js",
+    "./product-identity": "./dist/plugins/product-identity.js",
+    "./runtime-routes": "./dist/plugins/runtime-routes.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "python/xiaoshe_desktop_bridge.py",
+    "setup/install-windows.ps1",
+    "setup/install-macos.sh",
+    "setup/profile/cordis.patch.yml",
+    "scripts/start-xiaoshe-web.sh",
+    "scripts/start-xiaoshe-terminal.sh",
+    "scripts/stop-xiaoshe-web.sh",
+    "scripts/check-private-path-windows.ps1",
+    "scripts/windows-process-owner.mjs",
+    "scripts/windows-start-entry.ps1",
+    "scripts/windows-stop-entry.ps1",
+    "scripts/windows-doctor-entry.ps1",
+    "启动小蛇.ps1",
+    "停止小蛇.ps1",
+    "诊断小蛇-Windows.ps1",
+    "启动小蛇-Windows.cmd",
+    "停止小蛇-Windows.cmd",
+    "诊断小蛇-Windows.cmd",
+    "启动小蛇.command",
+    "启动小蛇终端.command",
+    "停止小蛇.command",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "setup:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./setup/install-windows.ps1",
+    "setup:macos": "bash ./setup/install-macos.sh"
+  },
+  "dependencies": {
+    "@xiaoshe/memory": "workspace:*"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.7",
+    "typescript": "5.9.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "packageManager": "pnpm@11.7.0"
+}

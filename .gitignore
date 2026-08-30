@@ -1,0 +1,47 @@
+# Dependencies and generated output
+node_modules/
+dist/
+packages/*/lib/
+packages/*/dist/
+runtime/DSH/packages/*/lib/
+runtime/DSH/packages/*/dist/
+coverage/
+.vitest/
+.cache/
+.turbo/
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+**/.credentials/
+**/credentials.local.json
+**/secrets.local.*
+
+# Runtime state and diagnostics
+*.log
+*.status
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+/.xiaoshe/
+/.dsh/
+/runtime-state/
+/var/
+
+# Local archives and build products are not source inputs.
+*.tgz
+*.tar.gz
+*.zip
+*.7z

@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "rootDir": "src", "outDir": "lib", "declaration": true, "declarationDir": "lib/types", "sourceMap": true },
+  "include": ["src/index.ts"],
+  "exclude": ["src/client"]
+}

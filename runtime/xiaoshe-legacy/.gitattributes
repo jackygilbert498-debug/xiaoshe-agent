@@ -1,0 +1,2 @@
+# Keep Python source stable across Windows and macOS checkouts.
+*.py text eol=lf

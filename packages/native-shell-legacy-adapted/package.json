@@ -1,0 +1,42 @@
+{
+  "name": "@xiaoshe/native-shell-legacy-adapted",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/index.d.ts",
+    "lib/client.js",
+    "ui/assets/snake.svg",
+    "ui/assets/icon-256.png"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
+    "build:client": "node ./scripts/build-client.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@xiaoshe/runtime-dsh-provider",
+        "@xiaoshe/plugin-governance",
+        "@xiaoshe/memory",
+        "@xiaoshe/heartbeat"
+      ],
+      "platform": "web"
+    }
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

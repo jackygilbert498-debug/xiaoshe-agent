@@ -1,0 +1,29 @@
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime state and generated output
+logs/
+*.log
+state.json
+memory.json
+memory.json.*
+.session/
+.state/
+.worktrees/
+mcp.json
+.d3/
+
+# Local screenshots and operating-system files
+screenshot-*.png
+.DS_Store
+Thumbs.db
