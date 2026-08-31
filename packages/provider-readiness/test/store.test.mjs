@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 
 import { ProviderProbeStore } from '../lib/store.js'
@@ -46,5 +46,7 @@ test('ProviderProbeStore fails closed on an unreadable ledger', async () => {
 
 test('ProviderProbeStore rejects relative paths and invalid limits', () => {
   assert.throws(() => new ProviderProbeStore('relative.json'), /absolute/u)
-  assert.throws(() => new ProviderProbeStore('C:/absolute/probes.json', { maxRecords: 0 }), /between 1 and 1000/u)
+  // Keep the invalid-limit case independent from the host path syntax. `C:/...`
+  // is absolute on Windows but relative on POSIX, which masked this assertion on macOS.
+  assert.throws(() => new ProviderProbeStore(resolve('probes.json'), { maxRecords: 0 }), /between 1 and 1000/u)
 })
