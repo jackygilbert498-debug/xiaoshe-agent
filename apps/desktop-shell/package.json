@@ -10,6 +10,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.mjs",
+    "brand:icons": "node ./scripts/build-brand-icons.mjs --rasterize",
     "pack:dir": "electron-builder --dir --config electron-builder.yml",
     "pack": "electron-builder --config electron-builder.yml",
     "verify:artifact": "node ./scripts/verify-artifact.mjs"

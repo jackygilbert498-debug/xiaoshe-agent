@@ -156,8 +156,9 @@ function loadTrayImage() {
   // 只使用正式 UI 目录中的 16/32px 标识原件；32px 原件作为 2x Retina
   // 表示加入，避免 Electron 自行放大或把正式几何重绘成近似字母。
   image.addRepresentation({ scaleFactor: 2, buffer: retinaImage.toPNG() })
-  // 不启用 macOS Template 着色：Template 会抹掉正式标识的四色渐变，
-  // 在菜单栏中重新退化成用户已否决的纯白近似“S”。
+  // 菜单栏按用户要求使用纯白；Template 只取正式小尺寸原件的 alpha
+  // 形状交给 macOS 着色，不引入另一套自绘几何。
+  image.setTemplateImage(process.platform === 'darwin')
   return image
 }
 function createTray() {

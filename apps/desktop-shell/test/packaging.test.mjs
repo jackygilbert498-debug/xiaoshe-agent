@@ -69,7 +69,7 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.match(main, /'icon-32\.png'/u)
   assert.match(main, /addRepresentation\(\{ scaleFactor: 2, buffer: retinaImage\.toPNG\(\) \}\)/u)
   assert.doesNotMatch(main, /trayTemplate/u)
-  assert.doesNotMatch(main, /setTemplateImage/u)
+  assert.match(main, /setTemplateImage\(process\.platform === 'darwin'\)/u)
   assert.match(preload, /require\('electron'\)/u)
   assert.match(preload, /ipcRenderer\.send\('xiaoshe:renderer-heartbeat'/u)
   assert.match(preload, /pointerdown/u)
@@ -86,14 +86,27 @@ test('desktop navigation retries transient refusal and all native icons use the 
 test('native icons keep the formal mark, official menu sizes, and white app tile', async () => {
   const assets = resolve(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
   const source = await readFile(resolve(assets, 'app-icon.svg'), 'utf8')
-  const formalMark = await readFile(resolve(assets, 'icon-256.png'))
-  const embeddedMark = source.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/u)?.[1]
+  const formalMark = await readFile(resolve(assets, 'snake.svg'))
+  const legacyUi = await readFile(resolve(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'index.html'), 'utf8')
+  const tokens = await readFile(resolve(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'styles', 'tokens.css'), 'utf8')
+  const generator = await readFile(resolve(appRoot, 'scripts', 'build-brand-icons.mjs'), 'utf8')
+  const embeddedMark = source.match(/data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/u)?.[1]
   assert.match(source, /<rect x="48" y="48" width="416" height="416" rx="94" fill="#ffffff"\/>/u)
-  assert.match(source, /transform="translate\(51\.2 51\.2\) scale\(\.8\)"/u)
-  assert.match(source, /data:image\/png;base64,/u)
-  assert.doesNotMatch(source, /<path\b/u, 'application wrapper must not redraw the formal mark')
-  assert.ok(embeddedMark, 'application wrapper must embed the formal raster mark')
-  assert.deepEqual(Buffer.from(embeddedMark, 'base64'), formalMark, 'embedded application mark must be byte-identical to the formal source')
+  assert.match(source, /mask-type="alpha"/u)
+  assert.match(source, /data:image\/svg\+xml;base64,/u)
+  assert.doesNotMatch(source, /<path\b/u, 'application wrapper must not copy or redraw the formal mark geometry')
+  assert.ok(embeddedMark, 'application wrapper must embed the formal SVG source')
+  assert.deepEqual(Buffer.from(embeddedMark, 'base64'), formalMark, 'embedded application mark must be byte-identical to ui/assets/snake.svg')
+  for (const match of formalMark.toString('utf8').matchAll(/\bd="([^"]+)"/gu)) {
+    assert.ok(legacyUi.includes(match[1]), 'formal snake.svg geometry must be the same geometry used by the interface top-left mark')
+  }
+  assert.match(generator, /readFile\(formalMarkPath\)/u)
+  assert.match(generator, /'rsvg-convert'/u)
+  assert.doesNotMatch(generator, /M16\.8 6\.8/u, 'icon generator must never carry a second copy of the mark geometry')
+  for (const [index, offset, color] of [[1, '0', '#23362d'], [2, '.42', '#4f8069'], [3, '.72', '#9cc2b1'], [4, '1', '#d7c27f']]) {
+    assert.match(tokens, new RegExp(`--sheen-${index}: ${color}`, 'u'), `${color} must remain the formal light-theme sheen token`)
+    assert.match(source, new RegExp(`<stop offset="${offset.replace('.', '\\.')}" stop-color="${color}"\\/>`, 'u'), `${color} must appear at the interface offset`)
+  }
 
   for (const [name, width, height] of [
     ['app-icon-256.png', 256, 256],
