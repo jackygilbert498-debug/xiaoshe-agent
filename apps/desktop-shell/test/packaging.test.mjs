@@ -27,6 +27,19 @@ test('packaged desktop materializes a writable per-user runtime instead of mutat
   assert.match(lifecycle, /stdout=.*slice\(-4000\).*stderr=.*slice\(-4000\)/su)
 })
 
+test('desktop navigation retries transient refusal and all native icons use the formal legacy source', async () => {
+  const main = await readFile(resolve(appRoot, 'src', 'main.mjs'), 'utf8')
+  const configuration = await readFile(resolve(appRoot, 'electron-builder.yml'), 'utf8')
+  assert.match(main, /await loadProductPage\(target, PRODUCT_URL/u)
+  assert.match(main, /did-fail-load/u)
+  assert.doesNotMatch(main, /void window\.loadURL/u)
+  assert.match(main, /join\(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets'/u)
+  assert.match(main, /app\.dock\.setIcon\(brandIcon\)/u)
+  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/icon-256\.png/u)
+  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/icon-512\.png/u)
+  assert.doesNotMatch(configuration, /packages\/native-shell-legacy-adapted\/ui\/assets/u)
+})
+
 test('Windows acceptance launches the packaged product rather than the development Electron runtime', async () => {
   const script = await readFile(resolve(appRoot, '..', '..', 'scripts', 'acceptance', 'windows-desktop.ps1'), 'utf8')
   assert.match(script, /dist-desktop\\win-unpacked/u)
@@ -68,6 +81,7 @@ test('macOS acceptance uses the packaged app and a real isolated lifecycle', asy
   assert.match(lifecycle, /second packaged instance/u)
   assert.match(lifecycle, /brandedWindowFact/u)
   assert.match(lifecycle, /DSH Local Build\|DeepSeek Harness/u)
+  assert.match(lifecycle, /'service-ready', 'ui-ready'/u)
   assert.match(lifecycle, /inspectMaterializedRuntime/u)
   assert.match(lifecycle, /materializedUnderUserData/u)
   assert.match(lifecycle, /failureDiagnostics/u)

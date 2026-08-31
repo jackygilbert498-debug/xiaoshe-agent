@@ -108,6 +108,38 @@ export async function waitForReady(url, options = {}) {
   throw new Error(`小蛇本地服务未在 ${timeoutMs}ms 内就绪：${last}`)
 }
 
+/**
+ * BrowserWindow.loadURL does not retry a transient connection refusal.  The
+ * product health endpoint can become ready just before launchd replaces or
+ * rebinds the supervised listener, so one failed navigation must not leave a
+ * permanently blank desktop window.
+ */
+export async function loadProductPage(target, url, options = {}) {
+  if (target === null || typeof target?.loadURL !== 'function') throw new TypeError('desktop window must provide loadURL')
+  const productUrl = new URL(url).href
+  const maxAttempts = options.maxAttempts ?? 40
+  const intervalMs = options.intervalMs ?? 250
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 120) throw new RangeError('desktop page load attempts are invalid')
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 0 || intervalMs > 5_000) throw new RangeError('desktop page load interval is invalid')
+  const wait = options.wait ?? (delay => new Promise(resolveWait => setTimeout(resolveWait, delay)))
+  let last = 'no response'
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (target.isDestroyed?.()) throw new Error('小蛇窗口已关闭，停止加载界面')
+    try {
+      await target.loadURL(productUrl)
+      return Object.freeze({ attempts: attempt, url: productUrl })
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error)
+      if (attempt === maxAttempts) break
+      if (typeof options.onRetry === 'function') {
+        try { await options.onRetry(Object.freeze({ attempt, message: last })) } catch { /* telemetry cannot break recovery */ }
+      }
+      await wait(intervalMs)
+    }
+  }
+  throw new Error(`小蛇界面连续 ${maxAttempts} 次加载失败：${last}`)
+}
+
 export class ProductServiceController {
   #started = false; #launch
   constructor(privateOptions) { this.options = privateOptions }

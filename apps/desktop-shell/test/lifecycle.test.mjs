@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { acceptanceQuitDelay, defaultProductRoot, launchCommand, prepareProductRoot, productRootOverride, resolvePowerShell, waitForReady } from '../src/lifecycle.mjs'
+import { acceptanceQuitDelay, defaultProductRoot, launchCommand, loadProductPage, prepareProductRoot, productRootOverride, resolvePowerShell, waitForReady } from '../src/lifecycle.mjs'
 
 test('empty packaged product-root overrides do not bypass per-user materialization', () => {
   assert.equal(productRootOverride({}), undefined)
@@ -47,6 +47,36 @@ test('readiness requires the Xiaoshe product and ready bridge facts', async () =
     return { ok: true, status: 200, async json() { return calls < 2 ? { product: '小蛇', bridge: { state: 'starting' } } : { product: '小蛇', bridge: { state: 'ready' } } } }
   } })
   assert.equal(value.bridge.state, 'ready')
+})
+
+test('desktop page loading recovers from a transient connection refusal', async () => {
+  let calls = 0
+  const retries = []
+  const target = {
+    isDestroyed: () => false,
+    async loadURL(url) {
+      calls += 1
+      assert.equal(url, 'http://127.0.0.1:3080/')
+      if (calls < 3) throw new Error('ERR_CONNECTION_REFUSED')
+    },
+  }
+  const result = await loadProductPage(target, 'http://127.0.0.1:3080', {
+    intervalMs: 0,
+    wait: async () => {},
+    onRetry: event => { retries.push(event) },
+  })
+  assert.equal(result.attempts, 3)
+  assert.equal(retries.length, 2)
+  assert.match(retries[0].message, /ERR_CONNECTION_REFUSED/u)
+})
+
+test('desktop page loading is bounded and reports the final navigation error', async () => {
+  let calls = 0
+  await assert.rejects(() => loadProductPage({
+    isDestroyed: () => false,
+    async loadURL() { calls += 1; throw new Error(`refused-${calls}`) },
+  }, 'http://127.0.0.1:3080/', { maxAttempts: 3, intervalMs: 0, wait: async () => {} }), /连续 3 次加载失败：refused-3/u)
+  assert.equal(calls, 3)
 })
 
 test('platform launch commands are argv-only and unsupported systems block', async () => {

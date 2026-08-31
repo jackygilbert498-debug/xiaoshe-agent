@@ -262,7 +262,11 @@ export async function runMacosAppLifecycle({ root, appPath, keepUserData = false
     const portReleased = await waitUntil(async () => !(await portIsOpen(port)), 15_000, 'owned product port release')
     const serviceReleased = await waitUntil(() => !serviceIsRegistered(), 15_000, 'owned launchd service release')
     const log = await startupEvents(userData)
-    const requiredEvents = ['boot-started', 'runtime-ready', 'service-ready']
+    // A healthy listener is not sufficient: Electron can still be showing a
+    // blank page after a one-shot ERR_CONNECTION_REFUSED.  Keep the renderer
+    // navigation completion in the release gate so that failure cannot drift
+    // back into a false-positive desktop acceptance.
+    const requiredEvents = ['boot-started', 'runtime-ready', 'service-ready', 'ui-ready']
     for (const event of requiredEvents) {
       if (!log.events.includes(event)) throw new Error(`desktop lifecycle log is missing ${event}`)
     }
