@@ -236,7 +236,7 @@ export async function runMacosAppLifecycle({ root, appPath, keepUserData = false
   let serviceStarted = false
   let succeeded = false
   try {
-    primary = launch(binary, [...commonArgs, '--acceptance-quit-after=15000'], environment)
+    primary = launch(binary, [...commonArgs, '--acceptance-hide-show', '--acceptance-quit-after=15000'], environment)
     const health = await waitUntil(
       () => {
         if (primary.child.exitCode !== null) throw new Error(`primary desktop exited early (${primary.child.exitCode}): ${primary.capture.stderr.slice(-2000)}`)
@@ -266,10 +266,12 @@ export async function runMacosAppLifecycle({ root, appPath, keepUserData = false
     // blank page after a one-shot ERR_CONNECTION_REFUSED.  Keep the renderer
     // navigation completion in the release gate so that failure cannot drift
     // back into a false-positive desktop acceptance.
-    const requiredEvents = ['boot-started', 'runtime-ready', 'service-ready', 'ui-ready']
+    const requiredEvents = ['boot-started', 'runtime-ready', 'service-ready', 'ui-renderer-ready', 'ui-ready', 'ui-recovery-deferred', 'ui-recovered', 'ui-visual-proof']
     for (const event of requiredEvents) {
       if (!log.events.includes(event)) throw new Error(`desktop lifecycle log is missing ${event}`)
     }
+    const visualProof = log.rows.find(row => row.event === 'ui-visual-proof')
+    if (visualProof?.nonBlank !== true) throw new Error('desktop lifecycle visual proof is blank')
     const runtimeReady = log.rows.find(row => row.event === 'runtime-ready')
     if (runtimeReady?.source !== runtime.source) throw new Error(`desktop reported unexpected runtime source: ${String(runtimeReady?.source)}`)
 

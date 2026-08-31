@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, Tray, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, session, shell } from 'electron'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,7 +7,8 @@ import { allowPermission, browserPreferences, navigationDecision, productOrigin,
 
 const PRODUCT_URL = resolveProductUrl(process.env)
 const ORIGIN = productOrigin(PRODUCT_URL)
-let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let quitting = false
+const RENDERER_HEARTBEAT = 'xiaoshe:renderer-heartbeat'
+let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let rendererReadySequence = 0; let rendererRecoveryPending = false; let quitting = false
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
@@ -45,20 +46,47 @@ async function boot() {
   await controller.start()
   await recordStartup('service-ready', { origin: ORIGIN })
   const target = createWindow()
+  installRendererHeartbeat(target)
   const loaded = await loadProductPage(target, PRODUCT_URL, { onRetry: event => recordStartup('ui-load-retry', event) })
   await recordStartup('ui-ready', loaded)
   installPageRecovery(target); createTray(); showWindow()
   if (Notification.isSupported()) new Notification({ title: '小蛇已就绪', body: '本地桌面服务已通过健康检查。', silent: true }).show()
   const quitAfter = acceptanceQuitDelay(process.argv, process.env)
+  if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1' && process.argv.includes('--acceptance-hide-show')) {
+    setTimeout(() => target.hide(), 1_000).unref()
+    setTimeout(() => {
+      if (quitting || target.isDestroyed()) return
+      void recordStartup('ui-acceptance-renderer-termination', { hidden: !target.isVisible() }).finally(() => {
+        if (!quitting && !target.isDestroyed()) target.webContents.forcefullyCrashRenderer()
+      })
+    }, 2_500).unref()
+    setTimeout(() => showWindow(), 5_000).unref()
+    setTimeout(() => { void recordVisualProof(target) }, 8_000).unref()
+  }
   if (quitAfter !== undefined) setTimeout(() => app.quit(), quitAfter).unref()
 }
 
 function createWindow() {
   if (window !== undefined && !window.isDestroyed()) return window
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 960, minHeight: 680, show: false, backgroundColor: '#f7f9f7', title: '小蛇', icon: brandIcon, autoHideMenuBar: true, webPreferences: browserPreferences(join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs')) })
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 960, minHeight: 680, show: false, backgroundColor: '#f7f9f7', title: '小蛇', icon: brandIcon, autoHideMenuBar: true, webPreferences: browserPreferences(join(dirname(fileURLToPath(import.meta.url)), 'preload.cjs')) })
   window.webContents.setWindowOpenHandler(({ url }) => { const decision = navigationDecision(url, ORIGIN); if (decision === 'external-https') void shell.openExternal(url); return { action: 'deny' } })
-  window.webContents.on('will-navigate', (event, url) => { if (navigationDecision(url, ORIGIN) !== 'allow-product') event.preventDefault() })
-  window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide() } })
+  window.webContents.on('will-navigate', (event, url) => {
+    const decision = navigationDecision(url, ORIGIN)
+    void recordStartup('ui-will-navigate', { url, decision }).catch(() => {})
+    if (decision !== 'allow-product') event.preventDefault()
+  })
+  window.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (isMainFrame) void recordStartup('ui-navigation-started', { url, isInPlace }).catch(() => {})
+  })
+  window.webContents.on('did-navigate', (_event, url, httpResponseCode, httpStatusText) => {
+    void recordStartup('ui-navigation-finished', { url, httpResponseCode, httpStatusText }).catch(() => {})
+  })
+  window.on('close', event => {
+    void recordStartup('window-close-requested', { quitting, visible: window.isVisible() }).catch(() => {})
+    if (!quitting) { event.preventDefault(); window.hide() }
+  })
+  window.on('hide', () => { void recordStartup('window-hidden').catch(() => {}) })
+  window.on('show', () => { void recordStartup('window-shown').catch(() => {}) })
   return window
 }
 function applyBranding() {
@@ -81,16 +109,111 @@ function createTray() {
 function installPageRecovery(target) {
   target.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 || quitting || target.isDestroyed()) return
-    if (pageRecovery !== undefined) return
-    pageRecovery = loadProductPage(target, PRODUCT_URL, {
-      onRetry: event => recordStartup('ui-reload-retry', { errorCode, errorDescription, ...event }),
-    }).then(result => recordStartup('ui-recovered', result)).catch(async error => {
-      await recordStartup('ui-recovery-failed', { errorCode, errorDescription, message: safeMessage(error, 4_000) }).catch(() => {})
-      showFailure(error)
-    }).finally(() => { pageRecovery = undefined })
+    recoverProductPage(target, { trigger: 'did-fail-load', errorCode, errorDescription })
+  })
+  target.webContents.on('render-process-gone', (_event, details) => {
+    void handleRendererGone(target, details)
+  })
+  target.webContents.on('unresponsive', () => { void recordStartup('ui-unresponsive', { url: target.webContents.getURL() }).catch(() => {}) })
+  target.webContents.on('responsive', () => { void recordStartup('ui-responsive', { url: target.webContents.getURL() }).catch(() => {}) })
+  target.webContents.on('preload-error', (_event, preloadPath, error) => {
+    void recordStartup('ui-preload-error', { preloadPath, message: safeMessage(error, 4_000) }).catch(() => {})
   })
 }
-function showWindow() { const target = createWindow(); if (target.isMinimized()) target.restore(); target.show(); target.focus() }
+
+async function handleRendererGone(target, details) {
+  const detail = { trigger: 'render-process-gone', reason: details.reason, exitCode: details.exitCode }
+  const sequenceBeforeExit = rendererReadySequence
+  rendererRecoveryPending = true
+  await recordStartup('ui-renderer-gone', detail).catch(() => {})
+  if (!target.isVisible()) {
+    await recordStartup('ui-recovery-deferred', { ...detail, until: 'window-shown' }).catch(() => {})
+    return
+  }
+  // A renderer can exit cleanly during Chromium's own process swap while its
+  // replacement is already painting. The sandbox preload sends a content-free
+  // heartbeat; waiting for it avoids injecting script into a busy conversation
+  // and prevents recovery itself from creating a reload loop.
+  await new Promise(resolveWait => setTimeout(resolveWait, 1_500))
+  if (quitting || target.isDestroyed()) return
+  if (rendererReadySequence > sequenceBeforeExit) {
+    rendererRecoveryPending = false
+    await recordStartup('ui-renderer-replaced', { ...detail, rendererReadySequence })
+    return
+  }
+  recoverProductPage(target, detail)
+}
+
+function installRendererHeartbeat(target) {
+  const handler = (event, detail) => {
+    if (quitting || target.isDestroyed() || event.sender !== target.webContents) return
+    rendererReadySequence += 1
+    rendererRecoveryPending = false
+    const readyState = ['loading', 'interactive', 'complete'].includes(detail?.readyState) ? detail.readyState : 'unknown'
+    // Record first paint and then one compact minute-level proof. No page text,
+    // message metadata or user content crosses this channel.
+    if (rendererReadySequence === 1 || rendererReadySequence % 6 === 0) {
+      void recordStartup('ui-renderer-ready', { rendererReadySequence, readyState }).catch(() => {})
+    }
+  }
+  ipcMain.on(RENDERER_HEARTBEAT, handler)
+  target.once('closed', () => { ipcMain.off(RENDERER_HEARTBEAT, handler) })
+}
+
+function recoverProductPage(target, detail) {
+  if (quitting || target.isDestroyed()) return Promise.resolve(false)
+  if (pageRecovery !== undefined) {
+    void recordStartup('ui-recovery-coalesced', detail).catch(() => {})
+    return pageRecovery
+  }
+  pageRecovery = (async () => {
+    await recordStartup('ui-recovery-started', detail)
+    const result = await loadProductPage(target, PRODUCT_URL, {
+      onRetry: event => recordStartup('ui-reload-retry', { ...detail, ...event }),
+    })
+    await recordStartup('ui-recovered', { ...detail, ...result })
+    return true
+  })().catch(async error => {
+    await recordStartup('ui-recovery-failed', { ...detail, message: safeMessage(error, 4_000) }).catch(() => {})
+    showFailure(error)
+    return false
+  }).finally(() => { pageRecovery = undefined })
+  return pageRecovery
+}
+function showWindow() {
+  const target = createWindow()
+  const reveal = () => {
+    if (quitting || target.isDestroyed()) return
+    if (target.isMinimized()) target.restore()
+    if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1') target.showInactive()
+    else { target.show(); target.focus() }
+  }
+  if (!rendererRecoveryPending) { reveal(); return }
+  // Chromium may reclaim the hidden renderer. Reload while the window remains
+  // hidden so users never see the empty native background during recovery.
+  void recoverProductPage(target, { trigger: 'window-shown-after-renderer-exit' }).then(recovered => {
+    if (recovered) reveal()
+  })
+}
+
+async function recordVisualProof(target) {
+  if (quitting || target.isDestroyed() || !target.isVisible()) return
+  try {
+    const image = await target.webContents.capturePage()
+    const { width, height } = image.getSize()
+    const bitmap = image.toBitmap()
+    const colors = new Set()
+    const pixelCount = Math.floor(bitmap.length / 4)
+    const stride = Math.max(1, Math.floor(pixelCount / 10_000))
+    for (let pixel = 0; pixel < pixelCount && colors.size <= 64; pixel += stride) {
+      const offset = pixel * 4
+      colors.add(`${bitmap[offset]},${bitmap[offset + 1]},${bitmap[offset + 2]}`)
+    }
+    await recordStartup('ui-visual-proof', { width, height, sampledColors: colors.size, nonBlank: width > 0 && height > 0 && colors.size > 8 })
+  } catch (error) {
+    await recordStartup('ui-visual-proof-failed', { message: safeMessage(error, 4_000) }).catch(() => {})
+  }
+}
 function showFailure(error) { if (Notification.isSupported()) new Notification({ title: '小蛇启动失败', body: safeMessage(error, 240) }).show() }
 async function recordStartup(event, detail = {}) {
   const directory = join(app.getPath('userData'), 'logs')
