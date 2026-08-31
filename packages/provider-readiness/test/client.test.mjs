@@ -65,6 +65,70 @@ test('ProviderReadinessClient probes the exact route and refreshes truth', async
   client.dispose()
 })
 
+test('ProviderReadinessClient does not auto-retry transient settings failures', async () => {
+  let settingsSnapshot = { status: 'idle', view: undefined, error: null }
+  const settingsListeners = new Set()
+  let ensureCalls = 0
+  const client = new ProviderReadinessClient({
+    connection: {
+      api: {
+        llm: { async providers() { return { result: { ok: true, value: { providers: directory } } } } },
+        credentials: { async describe() { return { result: { ok: true, value: { credentials: {} } } } } },
+      },
+    },
+    settings: {
+      async ensure() {
+        ensureCalls += 1
+        settingsSnapshot = { status: 'loading', view: undefined, error: null }
+        for (const listener of settingsListeners) listener()
+        await Promise.resolve()
+        settingsSnapshot = { status: 'idle', view: undefined, error: 'offline' }
+        for (const listener of settingsListeners) listener()
+      },
+      getSnapshot() { return settingsSnapshot },
+      subscribe(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener) },
+    },
+    modelCatalog: { getSnapshot() { return modelSnapshot }, subscribe() { return () => {} }, async refresh() { return { ok: true, value: modelSnapshot } } },
+    fetcher: async () => response({ probes: [] }),
+  })
+
+  const result = await client.refresh('s1')
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(result.ok, false)
+  assert.equal(ensureCalls, 1)
+  client.dispose()
+})
+
+test('ProviderReadinessClient coalesces a newly ready settings view', async () => {
+  let settingsSnapshot = { status: 'idle', view: undefined, error: null }
+  const settingsListeners = new Set()
+  let providerCalls = 0
+  const client = new ProviderReadinessClient({
+    connection: {
+      api: {
+        llm: { async providers() { providerCalls += 1; return { result: { ok: true, value: { providers: directory } } } } },
+        credentials: { async describe() { return { result: { ok: true, value: { credentials: {} } } } } },
+      },
+    },
+    settings: {
+      async ensure() {},
+      getSnapshot() { return settingsSnapshot },
+      subscribe(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener) },
+    },
+    modelCatalog: { getSnapshot() { return modelSnapshot }, subscribe() { return () => {} }, async refresh() { return { ok: true, value: modelSnapshot } } },
+    fetcher: async () => response({ probes: [] }),
+  })
+
+  settingsSnapshot = { status: 'ready', view: { namespaces: settings }, error: null }
+  for (const listener of settingsListeners) listener()
+  for (const listener of settingsListeners) listener()
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(providerCalls, 1)
+  client.dispose()
+})
+
 function response(value, status = 200) {
   return { ok: status >= 200 && status < 300, status, async json() { return value } }
 }

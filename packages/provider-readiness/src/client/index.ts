@@ -16,9 +16,14 @@ interface DirectoryEntry {
 }
 interface NamespaceView { readonly ns: string; readonly value: unknown }
 interface CredentialView { readonly configured: boolean }
+interface SettingsSnapshot {
+  readonly status: string
+  readonly view?: { readonly namespaces: readonly NamespaceView[] }
+  readonly error?: string | null
+}
 interface SettingsFace {
   ensure(): Promise<void>
-  getSnapshot(): { readonly status: string; readonly view?: { readonly namespaces: readonly NamespaceView[] }; readonly error?: string | null }
+  getSnapshot(): SettingsSnapshot
   subscribe(listener: () => void): () => void
 }
 interface ConnectionPort {
@@ -102,6 +107,9 @@ export class ProviderReadinessClient implements ProviderReadiness {
   readonly #verificationTtlMs: number
   readonly #releases: readonly (() => void)[]
   #snapshot: ProviderReadinessSnapshot
+  #lastReadySettingsView: SettingsSnapshot['view']
+  #lastReadyModelSnapshot: ModelCatalogSnapshot | undefined
+  #autoRefreshScheduled = false
   #generation = 0
   #disposed = false
 
@@ -117,7 +125,36 @@ export class ProviderReadinessClient implements ProviderReadiness {
     this.#verificationTtlMs = input.verificationTtlMs ?? 24 * 60 * 60 * 1_000
     if (!Number.isSafeInteger(this.#verificationTtlMs) || this.#verificationTtlMs <= 0) throw new TypeError('verificationTtlMs must be a positive integer')
     this.#snapshot = freezeSnapshot({ status: 'idle', providers: [], verificationTtlMs: this.#verificationTtlMs })
-    const schedule = (): void => { queueMicrotask(() => { if (!this.#disposed) void this.refresh() }) }
+    const initialSettings = this.#settings.getSnapshot()
+    const initialModels = this.#modelCatalog.getSnapshot()
+    this.#lastReadySettingsView = initialSettings.status === 'ready' ? initialSettings.view : undefined
+    this.#lastReadyModelSnapshot = initialModels.status === 'ready' ? initialModels : undefined
+    const schedule = (): void => {
+      const settings = this.#settings.getSnapshot()
+      const models = this.#modelCatalog.getSnapshot()
+      let changed = false
+
+      // `refresh()` may itself make settings/model stores publish transient
+      // loading or idle snapshots. Retrying those publications immediately
+      // forms an unbounded microtask + RPC loop when settings are unavailable,
+      // starving the browser's input queue. Only a newly usable fact source is
+      // an automatic refresh signal; failures remain available for explicit
+      // retry through `refresh()` and the provider controls.
+      if (settings.status === 'ready' && settings.view !== undefined && settings.view !== this.#lastReadySettingsView) {
+        this.#lastReadySettingsView = settings.view
+        changed = true
+      }
+      if (models.status === 'ready' && models !== this.#lastReadyModelSnapshot) {
+        this.#lastReadyModelSnapshot = models
+        changed = true
+      }
+      if (!changed || this.#autoRefreshScheduled) return
+      this.#autoRefreshScheduled = true
+      queueMicrotask(() => {
+        this.#autoRefreshScheduled = false
+        if (!this.#disposed) void this.refresh()
+      })
+    }
     this.#releases = [this.#settings.subscribe(schedule), this.#modelCatalog.subscribe(schedule)]
   }
 

@@ -14,6 +14,40 @@ const REQUIRED_PRODUCT_FILES = Object.freeze([
   'scripts/start-xiaoshe-web.sh',
 ])
 
+// Chromium reports `clean-exit` both when the current renderer disappears and
+// when an obsolete renderer is retired after a process swap. The event can
+// arrive while WebContents still points at the just-disposed frame, so a single
+// immediate probe is not evidence of failure. Retry a bounded, content-free
+// probe after the process swap has had time to settle.
+export const CURRENT_RENDERER_PROBE_SETTLE_MS = 500
+export const CURRENT_RENDERER_PROBE_TIMEOUT_MS = 750
+export const CURRENT_RENDERER_PROBE_ATTEMPTS = 4
+
+export function rendererExitAction({ reason, visible }) {
+  if (visible !== true) return 'defer'
+  return reason === 'clean-exit' ? 'probe-current' : 'recover'
+}
+
+export async function rendererProbePassed({
+  probe,
+  wait,
+  attempts = CURRENT_RENDERER_PROBE_ATTEMPTS,
+  settleMs = CURRENT_RENDERER_PROBE_SETTLE_MS,
+  timeoutMs = CURRENT_RENDERER_PROBE_TIMEOUT_MS,
+}) {
+  if (typeof probe !== 'function' || typeof wait !== 'function') throw new TypeError('renderer probe and timer are required')
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 8) throw new RangeError('renderer probe attempts are invalid')
+  if (!Number.isSafeInteger(settleMs) || settleMs < 100 || settleMs > 2_000) throw new RangeError('renderer probe settle delay is invalid')
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 2_000) throw new RangeError('renderer probe timeout is invalid')
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await wait(settleMs)
+    const probeOutcome = Promise.resolve().then(probe).then(value => value === true, () => false)
+    const timeoutOutcome = Promise.resolve().then(() => wait(timeoutMs)).then(() => false)
+    if (await Promise.race([probeOutcome, timeoutOutcome])) return true
+  }
+  return false
+}
+
 export function defaultProductRoot({ packaged, resourcesPath, moduleUrl = import.meta.url }) {
   return packaged ? resolve(resourcesPath, 'product') : resolve(dirname(fileURLToPath(moduleUrl)), '../../..')
 }

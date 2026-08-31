@@ -661,12 +661,13 @@ export function mountBrowserBrand(doc: Document, createObserver?: BrowserBrandOb
 
   applyBrand()
   const observer = createObserver?.(applyBrand)
+  // Observe structural favicon replacement only. Watching the attributes we
+  // write can race a host/theme favicon owner into an endless MutationObserver
+  // ping-pong; in Electron that starves the renderer and leaves a painted but
+  // non-interactive window. A newly inserted icon still triggers re-ownership.
   observer?.observe(doc.head, {
     childList: true,
     subtree: true,
-    characterData: true,
-    attributes: true,
-    attributeFilter: ['href', 'rel', 'type'],
   })
 
   return () => {

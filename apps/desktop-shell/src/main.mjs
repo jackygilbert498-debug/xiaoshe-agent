@@ -2,13 +2,14 @@ import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, ses
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride } from './lifecycle.mjs'
+import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed } from './lifecycle.mjs'
+import { interactionAcceptanceRequested, runInteractionAcceptance } from './interaction-acceptance.mjs'
 import { allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from './security-policy.mjs'
 
 const PRODUCT_URL = resolveProductUrl(process.env)
 const ORIGIN = productOrigin(PRODUCT_URL)
 const RENDERER_HEARTBEAT = 'xiaoshe:renderer-heartbeat'
-let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let rendererReadySequence = 0; let rendererRecoveryPending = false; let quitting = false
+let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let rendererReadySequence = 0; let rendererRecoveryPending = false; let rendererUnresponsiveSequence = 0; let quitting = false
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
@@ -38,7 +39,7 @@ async function boot() {
     userDataPath: app.getPath('userData'),
     version: app.getVersion(),
   })
-  await recordStartup('runtime-ready', { source: configuredRoot === undefined ? 'per-user-copy' : 'explicit-override' })
+  await recordStartup('runtime-ready', { source: configuredRoot !== undefined ? 'explicit-override' : app.isPackaged ? 'per-user-copy' : 'development-source' })
   applyBranding()
   controller = new ProductServiceController({ productRoot, platform: process.platform, url: PRODUCT_URL })
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowPermission(permission, details.requestingOrigin ?? contents.getURL(), ORIGIN)))
@@ -49,7 +50,35 @@ async function boot() {
   installRendererHeartbeat(target)
   const loaded = await loadProductPage(target, PRODUCT_URL, { onRetry: event => recordStartup('ui-load-retry', event) })
   await recordStartup('ui-ready', loaded)
-  installPageRecovery(target); createTray(); showWindow()
+  installPageRecovery(target)
+  const interactionAcceptance = interactionAcceptanceRequested(process.argv, process.env)
+  if (interactionAcceptance) {
+    const reportPath = process.env.XIAOSHE_DESKTOP_ACCEPTANCE_REPORT?.trim()
+    if (!reportPath) throw new Error('interaction acceptance report path is required')
+    // macOS/Chromium may discard a fully transparent renderer. One-percent
+    // opacity keeps the real compositor/event path alive while showInactive()
+    // prevents the acceptance window from taking keyboard focus.
+    target.setOpacity(0.01)
+    target.showInactive()
+    const guard = setTimeout(() => {
+      void recordStartup('ui-interaction-failed', { message: 'interaction acceptance exceeded 30000ms' }).finally(() => app.exit(2))
+    }, 30_000)
+    try {
+      const report = await runInteractionAcceptance({
+        target,
+        productUrl: PRODUCT_URL,
+        reportPath,
+        simulateCleanExit: () => handleRendererGone(target, { reason: 'clean-exit', exitCode: 0 }),
+        onStep: step => recordStartup('ui-interaction-step', { step }),
+      })
+      await recordStartup('ui-interaction-accepted', report)
+      app.quit()
+      return
+    } finally {
+      clearTimeout(guard)
+    }
+  }
+  createTray(); showWindow()
   if (Notification.isSupported()) new Notification({ title: '小蛇已就绪', body: '本地桌面服务已通过健康检查。', silent: true }).show()
   const quitAfter = acceptanceQuitDelay(process.argv, process.env)
   if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1' && process.argv.includes('--acceptance-hide-show')) {
@@ -69,6 +98,21 @@ async function boot() {
 function createWindow() {
   if (window !== undefined && !window.isDestroyed()) return window
   window = new BrowserWindow({ width: 1440, height: 940, minWidth: 960, minHeight: 680, show: false, backgroundColor: '#f7f9f7', title: '小蛇', icon: brandIcon, autoHideMenuBar: true, webPreferences: browserPreferences(join(dirname(fileURLToPath(import.meta.url)), 'preload.cjs')) })
+  if (interactionAcceptanceRequested(process.argv, process.env)) {
+    window.webContents.on('console-message', event => {
+      const message = event?.message
+      // Acceptance diagnostics deliberately whitelist framework failures. This
+      // prevents conversation text or ordinary application logs from crossing
+      // into the native startup log.
+      if (!/(?:maximum update depth|too many re-renders|getSnapshot should be cached|out of memory|heap limit)/iu.test(message ?? '')) return
+      void recordStartup('ui-framework-error', {
+        level: event?.level,
+        message: safeMessage(message, 1_000),
+        line: Number(event?.lineNumber ?? 0),
+        sourceId: String(event?.sourceId ?? '').slice(-240),
+      }).catch(() => {})
+    })
+  }
   window.webContents.setWindowOpenHandler(({ url }) => { const decision = navigationDecision(url, ORIGIN); if (decision === 'external-https') void shell.openExternal(url); return { action: 'deny' } })
   window.webContents.on('will-navigate', (event, url) => {
     const decision = navigationDecision(url, ORIGIN)
@@ -114,34 +158,66 @@ function installPageRecovery(target) {
   target.webContents.on('render-process-gone', (_event, details) => {
     void handleRendererGone(target, details)
   })
-  target.webContents.on('unresponsive', () => { void recordStartup('ui-unresponsive', { url: target.webContents.getURL() }).catch(() => {}) })
-  target.webContents.on('responsive', () => { void recordStartup('ui-responsive', { url: target.webContents.getURL() }).catch(() => {}) })
+  target.webContents.on('unresponsive', () => { void handleRendererUnresponsive(target) })
+  target.webContents.on('responsive', () => {
+    rendererUnresponsiveSequence += 1
+    void recordStartup('ui-responsive', { url: target.webContents.getURL() }).catch(() => {})
+  })
   target.webContents.on('preload-error', (_event, preloadPath, error) => {
     void recordStartup('ui-preload-error', { preloadPath, message: safeMessage(error, 4_000) }).catch(() => {})
   })
 }
 
 async function handleRendererGone(target, details) {
-  const detail = { trigger: 'render-process-gone', reason: details.reason, exitCode: details.exitCode }
-  const sequenceBeforeExit = rendererReadySequence
-  rendererRecoveryPending = true
+  const visible = target.isVisible()
+  const detail = { trigger: 'render-process-gone', reason: details.reason, exitCode: details.exitCode, visible }
   await recordStartup('ui-renderer-gone', detail).catch(() => {})
+  const action = rendererExitAction({ reason: details.reason, visible })
+  if (action === 'defer') {
+    rendererRecoveryPending = true
+    await recordStartup('ui-recovery-deferred', { ...detail, until: 'window-shown' }).catch(() => {})
+    return
+  }
+  if (action === 'probe-current') {
+    const alive = await probeCurrentRenderer(target)
+    if (quitting || target.isDestroyed()) return
+    if (alive) {
+      rendererRecoveryPending = false
+      await recordStartup('ui-renderer-retained', { ...detail, rendererReadySequence })
+      return
+    }
+  }
+  rendererRecoveryPending = true
+  recoverProductPage(target, detail)
+}
+
+async function probeCurrentRenderer(target) {
+  return await rendererProbePassed({
+    probe: async () => {
+      if (quitting || target.isDestroyed()) return false
+      const state = await target.webContents.executeJavaScript(`(() => ({ readyState: document.readyState, origin: location.origin }))()`, true)
+      return (state?.readyState === 'interactive' || state?.readyState === 'complete') && state?.origin === ORIGIN
+    },
+    wait: delay => new Promise(resolveWait => setTimeout(resolveWait, delay)),
+  })
+}
+
+async function handleRendererUnresponsive(target) {
+  const sequence = ++rendererUnresponsiveSequence
+  const detail = { trigger: 'unresponsive', url: target.webContents.getURL(), visible: target.isVisible() }
+  await recordStartup('ui-unresponsive', detail).catch(() => {})
+  const alive = await probeCurrentRenderer(target)
+  if (quitting || target.isDestroyed() || sequence !== rendererUnresponsiveSequence) return
+  if (alive) {
+    await recordStartup('ui-responsive-probe', detail).catch(() => {})
+    return
+  }
+  rendererRecoveryPending = true
   if (!target.isVisible()) {
     await recordStartup('ui-recovery-deferred', { ...detail, until: 'window-shown' }).catch(() => {})
     return
   }
-  // A renderer can exit cleanly during Chromium's own process swap while its
-  // replacement is already painting. The sandbox preload sends a content-free
-  // heartbeat; waiting for it avoids injecting script into a busy conversation
-  // and prevents recovery itself from creating a reload loop.
-  await new Promise(resolveWait => setTimeout(resolveWait, 1_500))
-  if (quitting || target.isDestroyed()) return
-  if (rendererReadySequence > sequenceBeforeExit) {
-    rendererRecoveryPending = false
-    await recordStartup('ui-renderer-replaced', { ...detail, rendererReadySequence })
-    return
-  }
-  recoverProductPage(target, detail)
+  await recoverProductPage(target, detail)
 }
 
 function installRendererHeartbeat(target) {
@@ -152,7 +228,7 @@ function installRendererHeartbeat(target) {
     const readyState = ['loading', 'interactive', 'complete'].includes(detail?.readyState) ? detail.readyState : 'unknown'
     // Record first paint and then one compact minute-level proof. No page text,
     // message metadata or user content crosses this channel.
-    if (rendererReadySequence === 1 || rendererReadySequence % 6 === 0) {
+    if (rendererReadySequence === 1 || rendererReadySequence % 20 === 0) {
       void recordStartup('ui-renderer-ready', { rendererReadySequence, readyState }).catch(() => {})
     }
   }

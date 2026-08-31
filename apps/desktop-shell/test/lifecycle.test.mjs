@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { acceptanceQuitDelay, defaultProductRoot, launchCommand, loadProductPage, prepareProductRoot, productRootOverride, resolvePowerShell, waitForReady } from '../src/lifecycle.mjs'
+import { CURRENT_RENDERER_PROBE_ATTEMPTS, CURRENT_RENDERER_PROBE_SETTLE_MS, CURRENT_RENDERER_PROBE_TIMEOUT_MS, acceptanceQuitDelay, defaultProductRoot, launchCommand, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed, resolvePowerShell, waitForReady } from '../src/lifecycle.mjs'
 
 test('empty packaged product-root overrides do not bypass per-user materialization', () => {
   assert.equal(productRootOverride({}), undefined)
@@ -96,4 +96,33 @@ test('acceptance auto-quit is gated and bounded', () => {
   assert.equal(acceptanceQuitDelay(['app', '--acceptance-quit-after=1500'], {}), undefined)
   assert.equal(acceptanceQuitDelay(['app', '--acceptance-quit-after=1500'], { XIAOSHE_DESKTOP_ACCEPTANCE: '1' }), 1500)
   assert.equal(acceptanceQuitDelay(['app', '--acceptance-quit-after=1'], { XIAOSHE_DESKTOP_ACCEPTANCE: '1' }), undefined)
+})
+
+test('clean renderer retirement retries the current page instead of reloading user state', async () => {
+  assert.equal(CURRENT_RENDERER_PROBE_ATTEMPTS, 4)
+  assert.equal(CURRENT_RENDERER_PROBE_SETTLE_MS, 500)
+  assert.equal(CURRENT_RENDERER_PROBE_TIMEOUT_MS, 750)
+  assert.equal(rendererExitAction({ reason: 'clean-exit', visible: true }), 'probe-current')
+  assert.equal(rendererExitAction({ reason: 'crashed', visible: true }), 'recover')
+  assert.equal(rendererExitAction({ reason: 'clean-exit', visible: false }), 'defer')
+  let probes = 0
+  const waits = []
+  const alive = await rendererProbePassed({
+    probe: async () => { probes += 1; return probes === 2 },
+    wait: async delay => { waits.push(delay) },
+  })
+  assert.equal(alive, true)
+  assert.equal(probes, 2)
+  assert.deepEqual(waits, [500, 750, 500, 750])
+})
+
+test('clean renderer retirement recovers after bounded probe failures', async () => {
+  let probes = 0
+  const unavailable = await rendererProbePassed({
+    probe: async () => { probes += 1; throw new Error('disposed frame') },
+    wait: async () => {},
+    attempts: 3,
+  })
+  assert.equal(unavailable, false)
+  assert.equal(probes, 3)
 })
