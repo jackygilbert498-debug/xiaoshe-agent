@@ -145,11 +145,19 @@ function loadAppIcon(size) {
   return image
 }
 function loadTrayImage() {
-  const iconPath = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', 'trayTemplate.png')
+  const assets = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
+  const iconPath = join(assets, 'icon-16.png')
+  const retinaPath = join(assets, 'icon-32.png')
   const image = nativeImage.createFromPath(iconPath)
-  if (image.isEmpty()) throw new Error(`小蛇正式菜单栏图标不可用：${iconPath}`)
-  // macOS Template 图像由系统按菜单栏主题着色；深色菜单栏中呈白色线稿。
-  image.setTemplateImage(process.platform === 'darwin')
+  const retinaImage = nativeImage.createFromPath(retinaPath)
+  if (image.isEmpty() || retinaImage.isEmpty()) {
+    throw new Error(`小蛇正式菜单栏图标不可用：${image.isEmpty() ? iconPath : retinaPath}`)
+  }
+  // 只使用正式 UI 目录中的 16/32px 标识原件；32px 原件作为 2x Retina
+  // 表示加入，避免 Electron 自行放大或把正式几何重绘成近似字母。
+  image.addRepresentation({ scaleFactor: 2, buffer: retinaImage.toPNG() })
+  // 不启用 macOS Template 着色：Template 会抹掉正式标识的四色渐变，
+  // 在菜单栏中重新退化成用户已否决的纯白近似“S”。
   return image
 }
 function createTray() {

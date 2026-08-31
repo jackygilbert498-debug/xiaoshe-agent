@@ -65,8 +65,11 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.doesNotMatch(main, /void window\.loadURL/u)
   assert.match(main, /join\(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets'/u)
   assert.match(main, /app\.dock\.setIcon\(loadAppIcon\(512\)\)/u)
-  assert.match(main, /'trayTemplate\.png'/u)
-  assert.match(main, /setTemplateImage\(process\.platform === 'darwin'\)/u)
+  assert.match(main, /'icon-16\.png'/u)
+  assert.match(main, /'icon-32\.png'/u)
+  assert.match(main, /addRepresentation\(\{ scaleFactor: 2, buffer: retinaImage\.toPNG\(\) \}\)/u)
+  assert.doesNotMatch(main, /trayTemplate/u)
+  assert.doesNotMatch(main, /setTemplateImage/u)
   assert.match(preload, /require\('electron'\)/u)
   assert.match(preload, /ipcRenderer\.send\('xiaoshe:renderer-heartbeat'/u)
   assert.match(preload, /pointerdown/u)
@@ -80,7 +83,7 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.doesNotMatch(configuration, /packages\/native-shell-legacy-adapted\/ui\/assets/u)
 })
 
-test('native icon derivatives keep the formal mark, platform dimensions, and white app tile', async () => {
+test('native icons keep the formal mark, official menu sizes, and white app tile', async () => {
   const assets = resolve(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
   const source = await readFile(resolve(assets, 'app-icon.svg'), 'utf8')
   const formalMark = await readFile(resolve(assets, 'icon-256.png'))
@@ -95,8 +98,8 @@ test('native icon derivatives keep the formal mark, platform dimensions, and whi
   for (const [name, width, height] of [
     ['app-icon-256.png', 256, 256],
     ['app-icon-512.png', 512, 512],
-    ['trayTemplate.png', 18, 18],
-    ['trayTemplate@2x.png', 36, 36],
+    ['icon-16.png', 16, 16],
+    ['icon-32.png', 32, 32],
   ]) {
     assert.deepEqual(pngDimensions(await readFile(resolve(assets, name))), { width, height }, name)
   }
