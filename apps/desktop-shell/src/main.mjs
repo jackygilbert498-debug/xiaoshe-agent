@@ -13,7 +13,7 @@ if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('second-instance', () => { if (controller !== undefined) showWindow() })
   app.whenReady().then(boot).catch(async error => {
-    await recordStartup('boot-failed', { message: safeMessage(error) }).catch(() => {})
+    await recordStartup('boot-failed', { message: safeMessage(error, 4_000) }).catch(() => {})
     showFailure(error); app.exit(1)
   })
   app.on('activate', () => { if (controller !== undefined) showWindow() })
@@ -65,10 +65,13 @@ function createTray() {
   tray.on('double-click', showWindow); return tray
 }
 function showWindow() { const target = createWindow(); if (target.isMinimized()) target.restore(); target.show(); target.focus() }
-function showFailure(error) { if (Notification.isSupported()) new Notification({ title: '小蛇启动失败', body: (error instanceof Error ? error.message : String(error)).slice(0, 240) }).show() }
+function showFailure(error) { if (Notification.isSupported()) new Notification({ title: '小蛇启动失败', body: safeMessage(error, 240) }).show() }
 async function recordStartup(event, detail = {}) {
   const directory = join(app.getPath('userData'), 'logs')
   await mkdir(directory, { recursive: true })
   await appendFile(join(directory, 'desktop-shell.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), event, ...detail })}\n`, 'utf8')
 }
-function safeMessage(error) { return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/gu, ' ').slice(0, 500) }
+function safeMessage(error, limit = 500) {
+  const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/gu, ' ')
+  return message.length <= limit ? message : `…${message.slice(-(limit - 1))}`
+}

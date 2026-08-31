@@ -77,6 +77,8 @@ bash ./setup/install-macos.sh
 
 安装后双击 `启动小蛇.command`，或重开终端输入 `ss`。终端版使用 `s`，停止可双击 `停止小蛇.command`。
 
+通过 DMG 安装的 `小蛇.app` 会在首次启动时把只读应用资源原子化物化到版本隔离的用户数据目录，再在那里安装锁定依赖并装配 Profile。该嵌入式安装路径不会要求开发版 `.command` 文件，也不会修改用户的 `.zshrc`；后续仍从已安装的 `小蛇.app` 启动。
+
 首次使用时请在小蛇设置中配置模型服务商与 API Key。桌面观察和操作还需要在系统设置中向实际运行小蛇的宿主授予屏幕录制和辅助功能权限；安装器不会绕过系统授权。
 
 ## 手动构建
@@ -152,7 +154,21 @@ scripts/                  启动、停止、诊断和 Profile 辅助脚本
 
 ## 验收边界
 
-Windows 可运行 `scripts/acceptance/windows-desktop.ps1` 生成机器可读报告。macOS 在目标设备运行 `scripts/acceptance/macos-desktop.sh`；屏幕录制、辅助功能、Developer ID 签名、公证以及 DMG 安装/卸载必须由真实 Mac 完成，其他平台生成的报告会明确保留为 `pending_external`，不会写成已通过。
+Windows 可运行 `scripts/acceptance/windows-desktop.ps1` 生成机器可读报告。macOS 在目标设备执行下列总门；它会从当前源码构建 arm64 DMG，再验证屏幕录制、辅助功能、真实点击与键盘输入、打包应用生命周期、单实例、安装、卸载和用户数据保留策略：
+
+```bash
+bash scripts/acceptance/macos-desktop.sh
+node scripts/acceptance/verify-report.mjs artifacts/acceptance/macos-desktop.json
+```
+
+没有 Developer ID 或 Apple 公证凭据时，其他真机检查仍会继续，签名公证项只会登记为 `pending_external`，不会伪报通过。发布者准备好证书后，先把有效的 `Developer ID Application` 证书及私钥导入钥匙串，再用下列命令交互式保存公证凭据；不要把 app-specific password 写进命令或仓库：
+
+```bash
+xcrun notarytool store-credentials xiaoshe-notary --apple-id "<Apple ID>" --team-id "<Team ID>"
+XIAOSHE_NOTARY_PROFILE=xiaoshe-notary bash scripts/release/sign-notarize-macos.sh
+```
+
+发布门会重新构建应用、Developer ID 签名、提交 Apple 公证、装订票据、生成并签名 DMG，然后用 `codesign`、`stapler`、`spctl` 和只读挂载后的内置应用复核结果。其他平台生成的 macOS 报告会保留真实外部待验状态。
 
 ## 许可
 

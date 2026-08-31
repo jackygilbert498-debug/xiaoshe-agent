@@ -115,7 +115,9 @@ export class ProductServiceController {
     try { await waitForReady(this.options.url, { timeoutMs: 1_000 }); return { reused: true } } catch { /* launch below */ }
     this.#launch = await launchCommand(this.options.productRoot, this.options.platform)
     const result = await runProcess(this.#launch, this.options.startTimeoutMs ?? 15 * 60_000)
-    if (result.exitCode !== 0) throw new Error(`小蛇服务启动器失败：${result.stderr.slice(-2000)}`)
+    if (result.exitCode !== 0) {
+      throw new Error(`小蛇服务启动器失败（exit ${result.exitCode}）：stdout=${result.stdout.slice(-4000)} stderr=${result.stderr.slice(-4000)}`)
+    }
     await waitForReady(this.options.url, { timeoutMs: this.options.readyTimeoutMs ?? 30_000 })
     this.#started = true; return { reused: false }
   }
