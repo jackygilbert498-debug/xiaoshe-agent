@@ -52,7 +52,7 @@ win:
   target:
     - target: nsis
       arch: [x64, arm64]
-  icon: ../../runtime/xiaoshe-legacy/ui/assets/icon-256.png
+  icon: ../../runtime/xiaoshe-legacy/ui/assets/app-icon-256.png
   artifactName: Xiaoshe-${version}-${arch}-setup.${ext}
 nsis:
   oneClick: false
@@ -67,7 +67,7 @@ mac:
       arch: [arm64, x64]
     - target: zip
       arch: [arm64, x64]
-  icon: ../../runtime/xiaoshe-legacy/ui/assets/icon-512.png
+  icon: ../../runtime/xiaoshe-legacy/ui/assets/app-icon-512.png
   hardenedRuntime: true
   gatekeeperAssess: true
   category: public.app-category.developer-tools

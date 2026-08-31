@@ -135,18 +135,26 @@ function createWindow() {
 }
 function applyBranding() {
   app.setName('小蛇')
-  brandIcon = loadBrandImage(256)
-  if (process.platform === 'darwin' && app.dock !== undefined) app.dock.setIcon(brandIcon)
+  brandIcon = loadAppIcon(256)
+  if (process.platform === 'darwin' && app.dock !== undefined) app.dock.setIcon(loadAppIcon(512))
 }
-function loadBrandImage(size) {
-  const iconPath = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', `icon-${size}.png`)
+function loadAppIcon(size) {
+  const iconPath = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', `app-icon-${size}.png`)
   const image = nativeImage.createFromPath(iconPath)
-  if (image.isEmpty()) throw new Error(`小蛇正式品牌图标不可用：${iconPath}`)
+  if (image.isEmpty()) throw new Error(`小蛇正式应用图标不可用：${iconPath}`)
+  return image
+}
+function loadTrayImage() {
+  const iconPath = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', 'trayTemplate.png')
+  const image = nativeImage.createFromPath(iconPath)
+  if (image.isEmpty()) throw new Error(`小蛇正式菜单栏图标不可用：${iconPath}`)
+  // macOS Template 图像由系统按菜单栏主题着色；深色菜单栏中呈白色线稿。
+  image.setTemplateImage(process.platform === 'darwin')
   return image
 }
 function createTray() {
   if (tray !== undefined) return tray
-  tray = new Tray(loadBrandImage(32)); tray.setToolTip('小蛇')
+  tray = new Tray(loadTrayImage()); tray.setToolTip('小蛇')
   tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开小蛇', click: showWindow }, { type: 'separator' }, { label: '退出', click: () => { quitting = true; void controller.stopOwned().finally(() => app.quit()) } }]))
   tray.on('double-click', showWindow); return tray
 }

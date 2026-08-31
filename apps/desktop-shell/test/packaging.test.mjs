@@ -5,6 +5,13 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const productRoot = resolve(appRoot, '..', '..')
+
+function pngDimensions(bytes) {
+  assert.equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'asset must be a PNG')
+  assert.equal(bytes.subarray(12, 16).toString('ascii'), 'IHDR', 'PNG must contain IHDR first')
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
+}
 
 test('packaged product contains every root source input required by first-device build', async () => {
   const configuration = await readFile(resolve(appRoot, 'electron-builder.yml'), 'utf8')
@@ -57,7 +64,9 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.doesNotMatch(main, /'preload\.mjs'/u)
   assert.doesNotMatch(main, /void window\.loadURL/u)
   assert.match(main, /join\(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets'/u)
-  assert.match(main, /app\.dock\.setIcon\(brandIcon\)/u)
+  assert.match(main, /app\.dock\.setIcon\(loadAppIcon\(512\)\)/u)
+  assert.match(main, /'trayTemplate\.png'/u)
+  assert.match(main, /setTemplateImage\(process\.platform === 'darwin'\)/u)
   assert.match(preload, /require\('electron'\)/u)
   assert.match(preload, /ipcRenderer\.send\('xiaoshe:renderer-heartbeat'/u)
   assert.match(preload, /pointerdown/u)
@@ -66,9 +75,37 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.doesNotMatch(preload, /import\s/u)
   assert.match(interactionAcceptance, /XIAOSHE_DESKTOP_ACCEPTANCE/u)
   assert.match(interactionAcceptance, /paidModelRequestSent:\s*false/u)
-  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/icon-256\.png/u)
-  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/icon-512\.png/u)
+  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/app-icon-256\.png/u)
+  assert.match(configuration, /icon:\s+\.\.\/\.\.\/runtime\/xiaoshe-legacy\/ui\/assets\/app-icon-512\.png/u)
   assert.doesNotMatch(configuration, /packages\/native-shell-legacy-adapted\/ui\/assets/u)
+})
+
+test('native icon derivatives keep the formal mark, platform dimensions, and white app tile', async () => {
+  const assets = resolve(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
+  const source = await readFile(resolve(assets, 'app-icon.svg'), 'utf8')
+  const formalMark = await readFile(resolve(assets, 'icon-256.png'))
+  const embeddedMark = source.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/u)?.[1]
+  assert.match(source, /<rect x="48" y="48" width="416" height="416" rx="94" fill="#ffffff"\/>/u)
+  assert.match(source, /transform="translate\(51\.2 51\.2\) scale\(\.8\)"/u)
+  assert.match(source, /data:image\/png;base64,/u)
+  assert.doesNotMatch(source, /<path\b/u, 'application wrapper must not redraw the formal mark')
+  assert.ok(embeddedMark, 'application wrapper must embed the formal raster mark')
+  assert.deepEqual(Buffer.from(embeddedMark, 'base64'), formalMark, 'embedded application mark must be byte-identical to the formal source')
+
+  for (const [name, width, height] of [
+    ['app-icon-256.png', 256, 256],
+    ['app-icon-512.png', 512, 512],
+    ['trayTemplate.png', 18, 18],
+    ['trayTemplate@2x.png', 36, 36],
+  ]) {
+    assert.deepEqual(pngDimensions(await readFile(resolve(assets, name))), { width, height }, name)
+  }
+})
+
+test('adapted empty-stage outline remains legible in both product themes', async () => {
+  const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
+  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.16\}/u)
+  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.12\}/u)
 })
 
 test('Windows acceptance launches the packaged product rather than the development Electron runtime', async () => {
