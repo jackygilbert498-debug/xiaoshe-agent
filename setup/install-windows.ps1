@@ -128,8 +128,8 @@ if ($LASTEXITCODE -ne 0) { throw 'ModLens Profile 配置合并失败。' }
 Step '终验' '解析最终 DSH web Profile…'
 & $Pnpm --dir $DshRoot dsh web --dump-config | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'DSH Profile 解析失败。' }
-Step '命令' '安装 Windows 短入口 s 与 xiaoshe-doctor…'
+Step '命令' '安装 Windows 双入口 s（终端版）、ss（桌面版）与 xiaoshe-doctor…'
 & (Join-Path $XsRoot 'scripts\install-windows-cli.ps1') -XsRoot $XsRoot | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Windows 命令入口安装失败。' }
-Step '完成' '已安装开发者发行版与独立桌面壳。双击启动器进入桌面窗口；重开终端输入 s；输入 xiaoshe-doctor 可运行只读诊断。'
+Step '完成' '已安装开发者发行版与独立桌面壳。重开终端输入 s 启动终端版，输入 ss 启动桌面版；xiaoshe-doctor 用于只读诊断。'
 Write-Host '桌面操作仍受系统权限和当前设备显示配置约束，请先在小蛇中检查权限状态。' -ForegroundColor Yellow

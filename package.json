@@ -24,6 +24,7 @@
     "scripts/check-private-path-windows.ps1",
     "scripts/windows-process-owner.mjs",
     "scripts/windows-start-entry.ps1",
+    "scripts/windows-terminal-entry.ps1",
     "scripts/windows-stop-entry.ps1",
     "scripts/windows-doctor-entry.ps1",
     "启动小蛇.ps1",

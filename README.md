@@ -59,7 +59,7 @@ cd xiaoshe-agent
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup\install-windows.ps1
 ```
 
-安装后双击 `启动小蛇-Windows.cmd`，或重开终端输入 `s`。只读诊断可运行 `xiaoshe-doctor`；停止可双击 `停止小蛇-Windows.cmd`。
+安装后重开终端：输入 `s` 启动终端版，输入 `ss` 启动原生桌面版。也可以双击 `启动小蛇-Windows.cmd` 进入桌面窗口；只读诊断使用 `xiaoshe-doctor`，停止可双击 `停止小蛇-Windows.cmd`。两个入口共享同一套 DSH 会话、记忆、模型与插件状态。
 
 源码环境也可以运行 `pnpm --filter '@xiaoshe/desktop-shell' start`。构建 Windows 安装包：
 

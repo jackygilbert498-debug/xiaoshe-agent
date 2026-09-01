@@ -2,27 +2,56 @@
 param(
   [switch]$NoOpen,
   [switch]$ServerOnly,
-  [switch]$BrowserFallback
+  [switch]$BrowserFallback,
+  [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $XsRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)).Path
+$InstalledDesktopCandidates = @(
+  (Join-Path $env:LOCALAPPDATA 'Programs\小蛇\小蛇.exe'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\Xiaoshe\小蛇.exe')
+)
+$InstalledDesktop = $InstalledDesktopCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+$DeveloperDesktop = Join-Path $XsRoot 'apps\desktop-shell\dist-desktop\win-unpacked\小蛇.exe'
+$DeveloperElectron = Join-Path $XsRoot 'apps\desktop-shell\node_modules\electron\dist\electron.exe'
+$DesktopExecutable = if ($InstalledDesktop) {
+  $InstalledDesktop
+} elseif (Test-Path -LiteralPath $DeveloperDesktop -PathType Leaf) {
+  $DeveloperDesktop
+} elseif (Test-Path -LiteralPath $DeveloperElectron -PathType Leaf) {
+  $DeveloperElectron
+} else {
+  $null
+}
+$DesktopKind = if ($InstalledDesktop) {
+  'installed'
+} elseif ($DesktopExecutable -eq $DeveloperDesktop) {
+  'packaged-development'
+} elseif ($DesktopExecutable -eq $DeveloperElectron) {
+  'electron-development'
+} else {
+  'unavailable'
+}
+
+if ($CheckOnly) {
+  # Windows PowerShell 5.1 writes redirected native output with the active OEM
+  # code page. Force UTF-8 so JSON paths containing the localized product name
+  # remain machine-readable when consumed by Node or another automation host.
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  [pscustomobject]@{
+    schema = 'xiaoshe-windows-desktop/v1'
+    kind = $DesktopKind
+    selectedDesktop = $DesktopExecutable
+    installedCandidates = $InstalledDesktopCandidates
+    launched = $false
+  } | ConvertTo-Json -Depth 3
+  exit 0
+}
 
 # 正常入口优先独立桌面壳。BrowserFallback 只用于诊断；ServerOnly 仅由
 # 桌面壳的服务控制器调用，防止启动器递归。
 if (-not $ServerOnly -and -not $BrowserFallback) {
-  $InstalledDesktop = Join-Path $env:LOCALAPPDATA 'Programs\Xiaoshe\小蛇.exe'
-  $DeveloperDesktop = Join-Path $XsRoot 'apps\desktop-shell\dist-desktop\win-unpacked\小蛇.exe'
-  $DeveloperElectron = Join-Path $XsRoot 'apps\desktop-shell\node_modules\electron\dist\electron.exe'
-  $DesktopExecutable = if (Test-Path -LiteralPath $InstalledDesktop) {
-    $InstalledDesktop
-  } elseif (Test-Path -LiteralPath $DeveloperDesktop) {
-    $DeveloperDesktop
-  } elseif (Test-Path -LiteralPath $DeveloperElectron) {
-    $DeveloperElectron
-  } else {
-    $null
-  }
   if ($DesktopExecutable) {
     $DesktopArguments = if ($DesktopExecutable -eq $DeveloperElectron) { @((Join-Path $XsRoot 'apps\desktop-shell')) } else { @() }
     Start-Process -FilePath $DesktopExecutable -ArgumentList $DesktopArguments -WorkingDirectory $XsRoot -WindowStyle Hidden
