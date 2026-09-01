@@ -3595,8 +3595,8 @@ function renderStatusbar(e: ReactLike['createElement'], options: { readonly sess
     e('div', { className: 'r' }, e('span', null, '小蛇桌面端')))
 }
 
-/** Render the official raster asset as a gradient outline without redrawing it. */
-function renderBrandOutline(e: ReactLike['createElement'], className: string, idPrefix: string, edgeRadius = .4): unknown {
+/** Render the official raster asset as a thin gradient outline. */
+function renderBrandOutline(e: ReactLike['createElement'], className: string, idPrefix: string): unknown {
   const sheenId = `${idPrefix}-sheen`
   const edgeId = `${idPrefix}-edge`
   const outlineId = `${idPrefix}-outline`
@@ -3608,8 +3608,8 @@ function renderBrandOutline(e: ReactLike['createElement'], className: string, id
         e('stop', { offset: '.72', stopColor: 'var(--sheen-3)' }),
         e('stop', { offset: '1', stopColor: 'var(--sheen-4)' })),
       e('filter', { id: edgeId, filterUnits: 'userSpaceOnUse', x: '-6', y: '-6', width: '268', height: '268' },
-        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: edgeRadius, result: 'outer' }),
-        e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: edgeRadius, result: 'inner' }),
+        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: '.4', result: 'outer' }),
+        e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: '.4', result: 'inner' }),
         e('feComposite', { in: 'outer', in2: 'inner', operator: 'out', result: 'outline' }),
         e('feFlood', { floodColor: '#fff', result: 'white' }),
         e('feComposite', { in: 'white', in2: 'outline', operator: 'in' })),
@@ -3619,9 +3619,7 @@ function renderBrandOutline(e: ReactLike['createElement'], className: string, id
 }
 
 function renderStageGhost(e: ReactLike['createElement']): unknown {
-  // The large empty-stage mark needs a slightly stronger edge than compact
-  // signatures so it remains legible on bright and low-contrast displays.
-  return renderBrandOutline(e, 'stage-ghost', 'xsla-stage-icon', .7)
+  return renderBrandOutline(e, 'stage-ghost', 'xsla-stage-icon')
 }
 
 function renderConversationGhost(e: ReactLike['createElement']): unknown {

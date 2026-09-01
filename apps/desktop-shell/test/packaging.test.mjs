@@ -123,8 +123,9 @@ test('adapted empty-stage outline remains legible in both product themes', async
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
   assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56\}/u)
   assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.40\}/u)
-  assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon', \.7\)/u)
+  assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
+  assert.equal((client.match(/radius: '\.4'/gu) ?? []).length, 2, 'both outline edges must retain the original thin radius')
 })
 
 test('Windows acceptance launches the packaged product rather than the development Electron runtime', async () => {
