@@ -118,13 +118,13 @@ test('native icons keep the formal mark, official menu sizes, and white app tile
   }
 })
 
-test('adapted empty-stage outline remains legible in both product themes', async () => {
+test('adapted stage and conversation outlines share the requested theme treatment', async () => {
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
-  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.35\}/u)
-  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.75\}/u)
+  assert.match(styles, /\[data-theme="light"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.35\}/u)
+  assert.match(styles, /\[data-theme="dark"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.75\}/u)
   for (const [stop, color] of [['1', '#f0f4f1'], ['2', '#a7d6bf'], ['3', '#5fa17f'], ['4', '#dbc788']]) {
-    assert.match(styles, new RegExp(`\\[data-theme="dark"\\] \\.stage-ghost \\.brand-outline-stop-${stop}\\{stop-color:${color}\\}`, 'u'), `dark stage stop ${stop} must retain the formal legacy color`)
+    assert.match(styles, new RegExp(`\\[data-theme="dark"\\] :is\\(\\.stage-ghost,\\.conversation-ghost\\) \\.brand-outline-stop-${stop}\\{stop-color:${color}\\}`, 'u'), `dark outline stop ${stop} must retain the formal legacy color`)
   }
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)

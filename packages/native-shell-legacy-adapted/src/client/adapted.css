@@ -171,17 +171,17 @@
 .xsla-shell .stage-empty{--xsla-stage-offset-y:clamp(16px,2.4vh,22px);position:relative;min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 18px 54px;text-align:center;isolation:isolate}
 .xsla-shell .stage-cluster{position:relative;z-index:1;display:flex;width:100%;flex-direction:column;align-items:center;transform:translateY(var(--xsla-stage-offset-y))}
 .xsla-shell .stage-ghost{position:absolute;left:calc(50% + clamp(0px,calc(16% - 106px),112px) + clamp(32px,5vw,56px));top:50%;z-index:0;width:min(280px,42%);height:auto;transform:translateY(calc(-54% + var(--xsla-stage-offset-y) + clamp(10px,1.8vh,18px)));opacity:var(--ghost-op);pointer-events:none}
-/* Keep the official outline subordinate to the wordmark while tuning its
- * theme contrast independently from the immutable source asset. */
-.xsla-shell[data-theme="light"] .stage-ghost{opacity:.35}
-.xsla-shell[data-theme="dark"] .stage-ghost{opacity:.75}
+/* Keep both official outlines subordinate to content while giving the empty
+ * stage and formal conversation the same theme-specific treatment. */
+.xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost){opacity:.35}
+.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost){opacity:.75}
 /* Electron can fall back to black when custom properties are supplied only
  * through SVG presentation attributes. Bind the formal dark-theme sheen
  * directly to the central outline so it cannot disappear into the ink canvas. */
-.xsla-shell[data-theme="dark"] .stage-ghost .brand-outline-stop-1{stop-color:#f0f4f1}
-.xsla-shell[data-theme="dark"] .stage-ghost .brand-outline-stop-2{stop-color:#a7d6bf}
-.xsla-shell[data-theme="dark"] .stage-ghost .brand-outline-stop-3{stop-color:#5fa17f}
-.xsla-shell[data-theme="dark"] .stage-ghost .brand-outline-stop-4{stop-color:#dbc788}
+.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-1{stop-color:#f0f4f1}
+.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-2{stop-color:#a7d6bf}
+.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-3{stop-color:#5fa17f}
+.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-4{stop-color:#dbc788}
 .xsla-shell .stage-badge{display:flex;align-items:center;gap:9px;margin-bottom:26px;color:var(--accent);font:10px/1.4 var(--mono);letter-spacing:.16em;text-transform:uppercase}
 .xsla-shell .stage-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent)}
 .xsla-shell .stage-word{font-family:var(--xsla-display-serif);font-size:clamp(72px,9.8vw,102px);font-weight:650;line-height:.94;letter-spacing:-.025em;font-kerning:normal;background:linear-gradient(115deg,var(--sheen-1) 0%,var(--sheen-2) 28%,var(--sheen-3) 48%,var(--sheen-4) 62%,var(--sheen-2) 78%,var(--sheen-1) 100%);background-size:280% 100%;background-clip:text;-webkit-background-clip:text;color:transparent;animation:xsla-sheen 9s ease-in-out infinite}
