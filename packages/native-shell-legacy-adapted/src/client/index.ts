@@ -3595,7 +3595,7 @@ function renderStatusbar(e: ReactLike['createElement'], options: { readonly sess
     e('div', { className: 'r' }, e('span', null, '小蛇桌面端')))
 }
 
-/** Render the official raster asset as a thin gradient outline. */
+/** Render the official raster asset as a theme-visible gradient outline. */
 function renderBrandOutline(e: ReactLike['createElement'], className: string, idPrefix: string): unknown {
   const sheenId = `${idPrefix}-sheen`
   const edgeId = `${idPrefix}-edge`
@@ -3608,8 +3608,8 @@ function renderBrandOutline(e: ReactLike['createElement'], className: string, id
         e('stop', { className: 'brand-outline-stop-3', offset: '.72', stopColor: 'var(--sheen-3)' }),
         e('stop', { className: 'brand-outline-stop-4', offset: '1', stopColor: 'var(--sheen-4)' })),
       e('filter', { id: edgeId, filterUnits: 'userSpaceOnUse', x: '-6', y: '-6', width: '268', height: '268' },
-        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: '.4', result: 'outer' }),
-        e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: '.4', result: 'inner' }),
+        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: '.5', result: 'outer' }),
+        e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: '.5', result: 'inner' }),
         e('feComposite', { in: 'outer', in2: 'inner', operator: 'out', result: 'outline' }),
         e('feFlood', { floodColor: '#fff', result: 'white' }),
         e('feComposite', { in: 'white', in2: 'outline', operator: 'in' })),
