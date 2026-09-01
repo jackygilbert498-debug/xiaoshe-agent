@@ -122,9 +122,15 @@ test('adapted stage and conversation outlines share the requested theme treatmen
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
   assert.match(styles, /\[data-theme="light"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.35\}/u)
-  assert.match(styles, /\[data-theme="dark"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.75\}/u)
-  for (const [stop, color] of [['1', '#f0f4f1'], ['2', '#a7d6bf'], ['3', '#5fa17f'], ['4', '#dbc788']]) {
-    assert.match(styles, new RegExp(`\\[data-theme="dark"\\] :is\\(\\.stage-ghost,\\.conversation-ghost\\) \\.brand-outline-stop-${stop}\\{stop-color:${color}\\}`, 'u'), `dark outline stop ${stop} must retain the formal legacy color`)
+  assert.match(styles, /\[data-theme="ink-jade"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.75\}/u)
+  assert.match(client, /const theme = themeSnapshot\.active\.colorScheme === 'dark' \? 'ink-jade' : 'light'/u)
+  for (const [theme, palette] of [
+    ['light', [['1', '#23362d'], ['2', '#4f8069'], ['3', '#9cc2b1'], ['4', '#d7c27f']]],
+    ['ink-jade', [['1', '#f0f4f1'], ['2', '#a7d6bf'], ['3', '#5fa17f'], ['4', '#dbc788']]],
+  ]) {
+    for (const [stop, color] of palette) {
+      assert.match(styles, new RegExp(`\\[data-theme="${theme}"\\] :is\\(\\.stage-ghost,\\.conversation-ghost\\) \\.brand-outline-stop-${stop}\\{stop-color:${color}\\}`, 'u'), `${theme} outline stop ${stop} must retain the formal legacy color`)
+    }
   }
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)

@@ -174,14 +174,18 @@
 /* Keep both official outlines subordinate to content while giving the empty
  * stage and formal conversation the same theme-specific treatment. */
 .xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost){opacity:.35}
-.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost){opacity:.75}
-/* Electron can fall back to black when custom properties are supplied only
- * through SVG presentation attributes. Bind the formal dark-theme sheen
- * directly to the central outline so it cannot disappear into the ink canvas. */
-.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-1{stop-color:#f0f4f1}
-.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-2{stop-color:#a7d6bf}
-.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-3{stop-color:#5fa17f}
-.xsla-shell[data-theme="dark"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-4{stop-color:#dbc788}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost){opacity:.75}
+/* Electron can lose custom properties supplied only through SVG presentation
+ * attributes. Bind both formal palettes directly so the stage and conversation
+ * outlines render identically in their corresponding product themes. */
+.xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-1{stop-color:#23362d}
+.xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-2{stop-color:#4f8069}
+.xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-3{stop-color:#9cc2b1}
+.xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-4{stop-color:#d7c27f}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-1{stop-color:#f0f4f1}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-2{stop-color:#a7d6bf}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-3{stop-color:#5fa17f}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost) .brand-outline-stop-4{stop-color:#dbc788}
 .xsla-shell .stage-badge{display:flex;align-items:center;gap:9px;margin-bottom:26px;color:var(--accent);font:10px/1.4 var(--mono);letter-spacing:.16em;text-transform:uppercase}
 .xsla-shell .stage-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent)}
 .xsla-shell .stage-word{font-family:var(--xsla-display-serif);font-size:clamp(72px,9.8vw,102px);font-weight:650;line-height:.94;letter-spacing:-.025em;font-kerning:normal;background:linear-gradient(115deg,var(--sheen-1) 0%,var(--sheen-2) 28%,var(--sheen-3) 48%,var(--sheen-4) 62%,var(--sheen-2) 78%,var(--sheen-1) 100%);background-size:280% 100%;background-clip:text;-webkit-background-clip:text;color:transparent;animation:xsla-sheen 9s ease-in-out infinite}
