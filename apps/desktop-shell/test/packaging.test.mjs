@@ -121,8 +121,8 @@ test('native icons keep the formal mark, official menu sizes, and white app tile
 test('adapted empty-stage outline remains legible in both product themes', async () => {
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
-  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56;filter:brightness\(\.62\) saturate\(1\.06\)\}/u)
-  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.40\}/u)
+  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56\}/u)
+  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.62;filter:brightness\(1\.38\) saturate\(1\.08\)\}/u)
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
   assert.equal((client.match(/radius: '\.4'/gu) ?? []).length, 2, 'both outline edges must retain the original thin radius')
