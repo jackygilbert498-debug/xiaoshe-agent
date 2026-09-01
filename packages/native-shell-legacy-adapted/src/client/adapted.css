@@ -174,7 +174,7 @@
 /* Keep both official outlines subordinate to content while giving the empty
  * stage and formal conversation the same theme-specific treatment. */
 .xsla-shell[data-theme="light"] :is(.stage-ghost,.conversation-ghost){opacity:.35}
-.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost){opacity:.45}
+.xsla-shell[data-theme="ink-jade"] :is(.stage-ghost,.conversation-ghost){opacity:.35}
 /* Electron can lose custom properties supplied only through SVG presentation
  * attributes. Bind both formal palettes directly so the stage and conversation
  * outlines render identically in their corresponding product themes. */

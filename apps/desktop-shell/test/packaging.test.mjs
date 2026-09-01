@@ -92,6 +92,9 @@ test('native icons keep the formal mark, official menu sizes, and white app tile
   const generator = await readFile(resolve(appRoot, 'scripts', 'build-brand-icons.mjs'), 'utf8')
   const embeddedMark = source.match(/data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/u)?.[1]
   assert.match(source, /<rect x="48" y="48" width="416" height="416" rx="94" fill="#ffffff"\/>/u)
+  assert.match(source, /<image [^>]*x="40" y="40" width="432" height="432" [^>]*preserveAspectRatio="xMidYMid meet"\/>/u)
+  assert.match(generator, /const appMarkInset = 40/u)
+  assert.match(generator, /const appMarkSize = 432/u)
   assert.match(source, /mask-type="alpha"/u)
   assert.match(source, /data:image\/svg\+xml;base64,/u)
   assert.doesNotMatch(source, /<path\b/u, 'application wrapper must not copy or redraw the formal mark geometry')
@@ -122,7 +125,7 @@ test('adapted stage and conversation outlines share the requested theme treatmen
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
   assert.match(styles, /\[data-theme="light"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.35\}/u)
-  assert.match(styles, /\[data-theme="ink-jade"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.45\}/u)
+  assert.match(styles, /\[data-theme="ink-jade"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.35\}/u)
   assert.match(client, /const theme = themeSnapshot\.active\.colorScheme === 'dark' \? 'ink-jade' : 'light'/u)
   for (const [theme, palette] of [
     ['light', [['1', '#23362d'], ['2', '#4f8069'], ['3', '#9cc2b1'], ['4', '#d7c27f']]],
