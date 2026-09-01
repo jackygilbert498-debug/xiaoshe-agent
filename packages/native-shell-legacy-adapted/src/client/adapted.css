@@ -174,7 +174,7 @@
 /* Keep the official thin outline subordinate to the wordmark, but visibly
  * present on both paper and ink canvases without increasing line weight. */
 .xsla-shell[data-theme="light"] .stage-ghost{opacity:.56}
-.xsla-shell[data-theme="dark"] .stage-ghost{opacity:.84;mix-blend-mode:screen}
+.xsla-shell[data-theme="dark"] .stage-ghost{opacity:.96;filter:brightness(1.75) saturate(.92) contrast(1.06);mix-blend-mode:screen}
 /* Electron can fall back to black when custom properties are supplied only
  * through SVG presentation attributes. Bind the formal dark-theme sheen
  * directly to the central outline so it cannot disappear into the ink canvas. */

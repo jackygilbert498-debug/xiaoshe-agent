@@ -122,7 +122,7 @@ test('adapted empty-stage outline remains legible in both product themes', async
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
   assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56\}/u)
-  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.84;mix-blend-mode:screen\}/u)
+  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.96;filter:brightness\(1\.75\) saturate\(\.92\) contrast\(1\.06\);mix-blend-mode:screen\}/u)
   assert.equal((styles.match(/\[data-theme="dark"\] \.stage-ghost \.brand-outline-stop-[1-4]\{stop-color:#[0-9a-f]{6}\}/gu) ?? []).length, 4, 'dark stage must bind all four formal sheen stops')
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
