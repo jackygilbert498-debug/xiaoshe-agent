@@ -1,9 +1,35 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { CURRENT_RENDERER_PROBE_ATTEMPTS, CURRENT_RENDERER_PROBE_SETTLE_MS, CURRENT_RENDERER_PROBE_TIMEOUT_MS, acceptanceQuitDelay, defaultProductRoot, launchCommand, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed, resolvePowerShell, waitForReady } from '../src/lifecycle.mjs'
+
+const nativeBrandAssets = Object.freeze([
+  ['app-icon-256.png', 'official-app-icon'],
+  ['icon-16.png', 'official-tray-icon'],
+  ['icon-32.png', 'official-tray-icon-retina'],
+])
+
+async function createPackagedProductFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), 'xiaoshe-product-root-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const resourcesPath = join(root, 'signed-app', 'resources')
+  const source = join(resourcesPath, 'product')
+  const userDataPath = join(root, 'user-data')
+  for (const relative of ['runtime/DSH', 'runtime/xiaoshe-legacy/ui/assets', 'setup', 'scripts']) {
+    await mkdir(join(source, relative), { recursive: true })
+  }
+  await writeFile(join(source, 'package.json'), '{"name":"xiaoshe"}\n')
+  await writeFile(join(source, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+  await writeFile(join(source, 'runtime/DSH/package.json'), '{"name":"dsh"}\n')
+  await writeFile(join(source, 'setup/install-windows.ps1'), '# installer\n')
+  await writeFile(join(source, 'scripts/start-xiaoshe-web.sh'), '#!/bin/bash\n')
+  for (const [name, content] of nativeBrandAssets) {
+    await writeFile(join(source, 'runtime/xiaoshe-legacy/ui/assets', name), content)
+  }
+  return { resourcesPath, source, userDataPath }
+}
 
 test('empty packaged product-root overrides do not bypass per-user materialization', () => {
   assert.equal(productRootOverride({}), undefined)
@@ -18,17 +44,7 @@ test('development and packaged product roots remain explicit', () => {
 })
 
 test('packaged product is materialized outside the signed application resources', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'xiaoshe-product-root-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const resourcesPath = join(root, 'signed-app', 'resources')
-  const source = join(resourcesPath, 'product')
-  const userDataPath = join(root, 'user-data')
-  for (const relative of ['runtime/DSH', 'setup', 'scripts']) await mkdir(join(source, relative), { recursive: true })
-  await writeFile(join(source, 'package.json'), '{"name":"xiaoshe"}\n')
-  await writeFile(join(source, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
-  await writeFile(join(source, 'runtime/DSH/package.json'), '{"name":"dsh"}\n')
-  await writeFile(join(source, 'setup/install-windows.ps1'), '# installer\n')
-  await writeFile(join(source, 'scripts/start-xiaoshe-web.sh'), '#!/bin/bash\n')
+  const { resourcesPath, source, userDataPath } = await createPackagedProductFixture(t)
 
   const prepared = await prepareProductRoot({ packaged: true, resourcesPath, userDataPath, version: '0.2.0' })
   assert.notEqual(prepared, source)
@@ -39,6 +55,24 @@ test('packaged product is materialized outside the signed application resources'
   assert.equal(await readFile(join(prepared, '.runtime-state'), 'utf8'), 'preserved')
   assert.equal(await readFile(join(source, 'package.json'), 'utf8'), '{"name":"xiaoshe"}\n')
 })
+
+for (const [missingAsset, expectedContent] of nativeBrandAssets) {
+  test(`packaged product rebuilds a same-version runtime missing ${missingAsset}`, async t => {
+    const { resourcesPath, userDataPath } = await createPackagedProductFixture(t)
+    const prepared = await prepareProductRoot({ packaged: true, resourcesPath, userDataPath, version: '0.2.0' })
+    const assetPath = join('runtime/xiaoshe-legacy/ui/assets', missingAsset)
+    await writeFile(join(prepared, '.runtime-state'), 'preserve-in-recovery')
+    await rm(join(prepared, assetPath))
+
+    const repaired = await prepareProductRoot({ packaged: true, resourcesPath, userDataPath, version: '0.2.0' })
+    assert.equal(repaired, prepared)
+    assert.equal(await readFile(join(repaired, assetPath), 'utf8'), expectedContent)
+    const runtimeEntries = await readdir(join(userDataPath, 'runtime'))
+    const recovery = runtimeEntries.find(name => name.startsWith('0.2.0.recovery-'))
+    assert.ok(recovery, 'the incomplete runtime must remain recoverable')
+    assert.equal(await readFile(join(userDataPath, 'runtime', recovery, '.runtime-state'), 'utf8'), 'preserve-in-recovery')
+  })
+}
 
 test('readiness requires the Xiaoshe product and ready bridge facts', async () => {
   let calls = 0

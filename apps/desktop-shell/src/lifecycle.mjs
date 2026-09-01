@@ -10,6 +10,9 @@ const REQUIRED_PRODUCT_FILES = Object.freeze([
   'package.json',
   'pnpm-lock.yaml',
   'runtime/DSH/package.json',
+  'runtime/xiaoshe-legacy/ui/assets/app-icon-256.png',
+  'runtime/xiaoshe-legacy/ui/assets/icon-16.png',
+  'runtime/xiaoshe-legacy/ui/assets/icon-32.png',
   'setup/install-windows.ps1',
   'scripts/start-xiaoshe-web.sh',
 ])

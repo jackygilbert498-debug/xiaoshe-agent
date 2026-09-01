@@ -64,8 +64,14 @@ if ($CheckOnly) {
 # 桌面壳的服务控制器调用，防止启动器递归。
 if (-not $ServerOnly -and -not $BrowserFallback) {
   if ($DesktopExecutable) {
-    $DesktopArguments = if ($DesktopExecutable -eq $DeveloperElectron) { @((Join-Path $XsRoot 'apps\desktop-shell')) } else { @() }
-    Start-Process -FilePath $DesktopExecutable -ArgumentList $DesktopArguments -WorkingDirectory $XsRoot -WindowStyle Hidden
+    if ($DesktopExecutable -eq $DeveloperElectron) {
+      # Start-Process flattens ArgumentList into a Windows command line. Keep
+      # the application directory quoted so repositories with spaces stay one argv.
+      $ElectronAppArgument = '"{0}"' -f (Join-Path $XsRoot 'apps\desktop-shell')
+      Start-Process -FilePath $DesktopExecutable -ArgumentList $ElectronAppArgument -WorkingDirectory $XsRoot -WindowStyle Hidden
+    } else {
+      Start-Process -FilePath $DesktopExecutable -WorkingDirectory $XsRoot -WindowStyle Hidden
+    }
     exit 0
   }
   Write-Warning '独立桌面壳尚未安装；本次回退到浏览器。完成安装后默认入口会自动切换为桌面窗口。'

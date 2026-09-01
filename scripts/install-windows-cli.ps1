@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
-  [string]$XsRoot = (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)),
+  [string]$XsRoot,
   [string]$BinPath = (Join-Path $env:LOCALAPPDATA 'Xiaoshe\bin'),
   [switch]$CheckOnly,
   [switch]$NoPathUpdate
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 does not populate $MyInvocation reliably while
+# evaluating parameter defaults, so derive the repository root in the body.
+if ([string]::IsNullOrWhiteSpace($XsRoot)) {
+  $XsRoot = Split-Path -Parent $PSScriptRoot
+}
 $ResolvedXsRoot = (Resolve-Path -LiteralPath $XsRoot).Path
 $TerminalScript = Join-Path $ResolvedXsRoot 'scripts\windows-terminal-entry.ps1'
 $DesktopScript = Join-Path $ResolvedXsRoot 'scripts\windows-start-entry.ps1'

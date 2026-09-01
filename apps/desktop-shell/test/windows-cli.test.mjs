@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -38,6 +38,48 @@ async function installCommands() {
   assert.equal(installed.status, 0, installed.stderr || installed.stdout)
   return { root, fakeRoot, bin }
 }
+
+async function createDesktopLaunchHarness(t, startProcessDefinition) {
+  const root = await mkdtemp(join(tmpdir(), 'xiaoshe-desktop-launch-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const localAppData = join(root, 'local-app-data')
+  const installed = join(localAppData, 'Programs', '小蛇', '小蛇.exe')
+  const marker = join(root, 'launch.marker')
+  const harness = join(root, 'launch.ps1')
+  await mkdir(dirname(installed), { recursive: true })
+  await writeFile(installed, '')
+  await writeFile(harness, [
+    startProcessDefinition,
+    '& $env:XIAOSHE_TEST_ENTRY',
+    '',
+  ].join('\r\n'), 'ascii')
+  return {
+    harness,
+    marker,
+    env: {
+      ...process.env,
+      LOCALAPPDATA: localAppData,
+      XIAOSHE_TEST_ENTRY: resolve(productRoot, 'scripts', 'windows-start-entry.ps1'),
+      XIAOSHE_TEST_MARKER: marker,
+    },
+  }
+}
+
+test('Windows CLI installer resolves its product root under Windows PowerShell 5.1', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaoshe-windows-installer-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const installer = resolve(productRoot, 'scripts', 'install-windows-cli.ps1')
+  const checked = spawnSync(powershell, [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer,
+    '-BinPath', join(root, 'bin'), '-CheckOnly', '-NoPathUpdate',
+  ], { encoding: 'utf8', windowsHide: true })
+
+  assert.equal(checked.status, 0, checked.stderr || checked.stdout)
+  const report = JSON.parse(checked.stdout)
+  assert.equal(report.schema, 'xiaoshe-windows-cli/v1')
+})
 
 test('Windows s command launches the terminal entry and forwards arguments', {
   skip: process.platform !== 'win32',
@@ -144,4 +186,67 @@ test('Windows desktop entry resolves the localized installed application', {
   assert.equal(report.kind, 'installed')
   assert.equal(report.selectedDesktop, installed)
   assert.equal(report.launched, false)
+})
+
+test('Windows desktop entry launches a packaged executable without binding an empty argument list', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const fixture = await createDesktopLaunchHarness(t, [
+    'function Start-Process {',
+    '  param(',
+    '    [Parameter(Mandatory=$true)][string]$FilePath,',
+    '    [ValidateNotNullOrEmpty()][object[]]$ArgumentList,',
+    '    [string]$WorkingDirectory,',
+    '    [string]$WindowStyle',
+    '  )',
+    "  $Value = if ($PSBoundParameters.ContainsKey('ArgumentList')) { 'arguments-bound' } else { 'launched-without-arguments' }",
+    '  Set-Content -LiteralPath $env:XIAOSHE_TEST_MARKER -Value $Value -Encoding ASCII -NoNewline',
+    '}',
+  ].join('\r\n'))
+
+  const launched = spawnSync(powershell, [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fixture.harness,
+  ], { encoding: 'utf8', windowsHide: true, env: fixture.env })
+  const marker = await readFile(fixture.marker, 'ascii').catch(() => null)
+
+  assert.equal(launched.status, 0, launched.stderr || launched.stdout)
+  assert.equal(marker, 'launched-without-arguments', launched.stderr || 'desktop process was not launched')
+})
+
+test('Windows desktop entry preserves a spaced Electron application path as one argument', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaoshe electron root-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const fakeRoot = join(root, 'product with spaces')
+  const appRoot = join(fakeRoot, 'apps', 'desktop-shell')
+  const electron = join(appRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
+  const marker = join(root, 'electron.marker')
+  const localAppData = join(root, 'local-app-data')
+  await mkdir(dirname(electron), { recursive: true })
+  await mkdir(localAppData, { recursive: true })
+  await copyFile(process.execPath, electron)
+  await writeFile(join(appRoot, 'package.json'), '{"main":"probe.cjs"}\n')
+  await writeFile(join(appRoot, 'probe.cjs'), [
+    "require('node:fs').writeFileSync(process.env.XIAOSHE_TEST_MARKER, process.argv[1], 'utf8')",
+    '',
+  ].join('\n'))
+  const entry = join(fakeRoot, '启动小蛇.ps1')
+  await copyFile(resolve(productRoot, '启动小蛇.ps1'), entry)
+
+  const launched = spawnSync(powershell, [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', entry,
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, LOCALAPPDATA: localAppData, XIAOSHE_TEST_MARKER: marker },
+  })
+  assert.equal(launched.status, 0, launched.stderr || launched.stdout)
+
+  let observed = null
+  for (let attempt = 0; attempt < 40 && observed === null; attempt += 1) {
+    observed = await readFile(marker, 'utf8').catch(() => null)
+    if (observed === null) await new Promise(resolveDelay => setTimeout(resolveDelay, 50))
+  }
+  assert.equal(observed, appRoot, launched.stderr || 'Electron did not receive the complete application path')
 })
