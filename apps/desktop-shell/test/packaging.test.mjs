@@ -120,8 +120,11 @@ test('native icons keep the formal mark, official menu sizes, and white app tile
 
 test('adapted empty-stage outline remains legible in both product themes', async () => {
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
-  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.34\}/u)
-  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.26\}/u)
+  const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
+  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56\}/u)
+  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.40\}/u)
+  assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon', \.7\)/u)
+  assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
 })
 
 test('Windows acceptance launches the packaged product rather than the development Electron runtime', async () => {
