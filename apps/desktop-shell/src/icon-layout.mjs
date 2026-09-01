@@ -24,3 +24,19 @@ export function fittedWidth(bounds, targetHeight) {
   }
   return Math.max(1, Math.round(bounds.width * targetHeight / bounds.height))
 }
+
+export function trayHeightForDisplay(display, fallback = 15) {
+  if (!Number.isInteger(fallback) || fallback <= 0) throw new TypeError('fallback tray height must be a positive integer')
+  const boundsY = display?.bounds?.y
+  const workAreaY = display?.workArea?.y
+  if (!Number.isFinite(boundsY) || !Number.isFinite(workAreaY)) return fallback
+
+  // On macOS the top work-area inset is the menu-bar height in DIP. Deriving
+  // from that system geometry adapts to display scaling and notched screens;
+  // bounded output prevents a transient or unusual work area from oversizing
+  // the status item. Auto-hidden menu bars report no usable inset, so retain
+  // the reviewed 15pt baseline in that case.
+  const menuBarHeight = workAreaY - boundsY
+  if (menuBarHeight < 16 || menuBarHeight > 80) return fallback
+  return Math.min(17, Math.max(14, Math.round(menuBarHeight * 0.625)))
+}

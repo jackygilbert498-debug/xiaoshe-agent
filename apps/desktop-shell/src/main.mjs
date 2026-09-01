@@ -1,16 +1,16 @@
-import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, screen, session, shell } from 'electron'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed } from './lifecycle.mjs'
 import { interactionAcceptanceRequested, runInteractionAcceptance } from './interaction-acceptance.mjs'
-import { alphaBounds, fittedWidth } from './icon-layout.mjs'
+import { alphaBounds, fittedWidth, trayHeightForDisplay } from './icon-layout.mjs'
 import { allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from './security-policy.mjs'
 
 const PRODUCT_URL = resolveProductUrl(process.env)
 const ORIGIN = productOrigin(PRODUCT_URL)
 const RENDERER_HEARTBEAT = 'xiaoshe:renderer-heartbeat'
-let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let rendererReadySequence = 0; let rendererRecoveryPending = false; let rendererUnresponsiveSequence = 0; let quitting = false
+let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let trayRefreshTimer; let trayTargetHeight = 15; let rendererReadySequence = 0; let rendererRecoveryPending = false; let rendererUnresponsiveSequence = 0; let quitting = false
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
@@ -22,6 +22,7 @@ else {
   })
   app.on('activate', () => { if (controller !== undefined) showWindow() })
   app.on('before-quit', event => {
+    if (trayRefreshTimer !== undefined) clearTimeout(trayRefreshTimer)
     if (quitting) return
     if (controller === undefined) { quitting = true; return }
     event.preventDefault(); quitting = true
@@ -145,7 +146,7 @@ function loadAppIcon(size) {
   if (image.isEmpty()) throw new Error(`小蛇正式应用图标不可用：${iconPath}`)
   return image
 }
-function loadTrayImage() {
+function loadTrayImage(targetHeight = 15) {
   const assets = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
   const iconPath = join(assets, 'icon-16.png')
   const retinaPath = join(assets, 'icon-32.png')
@@ -155,9 +156,9 @@ function loadTrayImage() {
     throw new Error(`小蛇正式菜单栏图标不可用：${sourceImage.isEmpty() ? iconPath : retinaPath}`)
   }
   // 正式 16/32px 原件的透明画布让图形本体只有 12/23px 高。仅裁掉透明
-  // 留白并等比放至 15pt；不复制、重画或改变正式标识几何。
-  const image = fitTrayGlyph(sourceImage, 15)
-  const retinaImage = fitTrayGlyph(retinaSource, 30)
+  // 留白并按菜单栏实际高度等比适配；不复制、重画或改变正式标识几何。
+  const image = fitTrayGlyph(sourceImage, targetHeight)
+  const retinaImage = fitTrayGlyph(retinaSource, targetHeight * 2)
   image.addRepresentation({ scaleFactor: 2, buffer: retinaImage.toPNG() })
   // 菜单栏按用户要求使用纯白；Template 只取正式小尺寸原件的 alpha
   // 形状交给 macOS 着色，不引入另一套自绘几何。
@@ -169,11 +170,46 @@ function fitTrayGlyph(source, targetHeight) {
   const bounds = alphaBounds(source.toBitmap({ scaleFactor: 1 }), size.width, size.height)
   return source.crop(bounds).resize({ width: fittedWidth(bounds, targetHeight), height: targetHeight, quality: 'best' })
 }
+function currentTrayProfile() {
+  const display = screen.getPrimaryDisplay()
+  return {
+    displayId: display.id,
+    menuBarHeight: Math.max(0, display.workArea.y - display.bounds.y),
+    scaleFactor: display.scaleFactor,
+    targetHeight: process.platform === 'darwin' ? trayHeightForDisplay(display) : 15,
+  }
+}
+function scheduleTrayImageRefresh(reason) {
+  if (quitting || tray === undefined || tray.isDestroyed()) return
+  if (trayRefreshTimer !== undefined) clearTimeout(trayRefreshTimer)
+  trayRefreshTimer = setTimeout(() => {
+    trayRefreshTimer = undefined
+    if (quitting || tray === undefined || tray.isDestroyed()) return
+    const profile = currentTrayProfile()
+    if (profile.targetHeight === trayTargetHeight) return
+    tray.setImage(loadTrayImage(profile.targetHeight))
+    trayTargetHeight = profile.targetHeight
+    void recordStartup('tray-icon-resized', { reason, ...profile }).catch(() => {})
+  }, 120)
+  trayRefreshTimer.unref()
+}
+function installTrayDisplaySync() {
+  screen.on('display-added', () => scheduleTrayImageRefresh('display-added'))
+  screen.on('display-removed', () => scheduleTrayImageRefresh('display-removed'))
+  screen.on('display-metrics-changed', (_event, _display, changedMetrics) => {
+    if (changedMetrics.some(metric => ['bounds', 'workArea', 'scaleFactor'].includes(metric))) scheduleTrayImageRefresh('display-metrics-changed')
+  })
+}
 function createTray() {
   if (tray !== undefined) return tray
-  tray = new Tray(loadTrayImage()); tray.setToolTip('小蛇')
+  const profile = currentTrayProfile()
+  trayTargetHeight = profile.targetHeight
+  tray = new Tray(loadTrayImage(trayTargetHeight)); tray.setToolTip('小蛇')
   tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开小蛇', click: showWindow }, { type: 'separator' }, { label: '退出', click: () => { quitting = true; void controller.stopOwned().finally(() => app.quit()) } }]))
-  tray.on('double-click', showWindow); return tray
+  tray.on('double-click', showWindow)
+  if (process.platform === 'darwin') installTrayDisplaySync()
+  void recordStartup('tray-icon-ready', profile).catch(() => {})
+  return tray
 }
 function installPageRecovery(target) {
   target.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
