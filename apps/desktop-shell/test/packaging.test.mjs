@@ -135,7 +135,7 @@ test('adapted stage and conversation outlines share the requested theme treatmen
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
   assert.equal((client.match(/className: 'brand-outline-stop-[1-4]'/gu) ?? []).length, 4, 'outline gradient stops must remain theme-addressable')
-  assert.equal((client.match(/radius: '\.46'/gu) ?? []).length, 2, 'both outline edges must use the requested radius .46')
+  assert.equal((client.match(/radius: '\.92'/gu) ?? []).length, 2, 'both outline edges must use the requested doubled radius .92')
 })
 
 test('Windows acceptance launches the packaged product rather than the development Electron runtime', async () => {
