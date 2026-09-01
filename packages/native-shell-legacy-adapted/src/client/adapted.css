@@ -174,7 +174,7 @@
 /* Keep the official outline subordinate to the wordmark while tuning its
  * theme contrast independently from the immutable source asset. */
 .xsla-shell[data-theme="light"] .stage-ghost{opacity:.56}
-.xsla-shell[data-theme="dark"] .stage-ghost{opacity:1;filter:brightness(2.35) saturate(.82) contrast(1.08);mix-blend-mode:screen}
+.xsla-shell[data-theme="dark"] .stage-ghost{opacity:.88;filter:brightness(1.45) saturate(.90);mix-blend-mode:screen}
 /* Electron can fall back to black when custom properties are supplied only
  * through SVG presentation attributes. Bind the formal dark-theme sheen
  * directly to the central outline so it cannot disappear into the ink canvas. */
