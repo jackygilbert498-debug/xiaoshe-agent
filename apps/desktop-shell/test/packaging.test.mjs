@@ -121,9 +121,11 @@ test('native icons keep the formal mark, official menu sizes, and white app tile
 test('adapted empty-stage outline remains legible in both product themes', async () => {
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
-  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.56\}/u)
-  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.88;filter:brightness\(1\.45\) saturate\(\.90\);mix-blend-mode:screen\}/u)
-  assert.equal((styles.match(/\[data-theme="dark"\] \.stage-ghost \.brand-outline-stop-[1-4]\{stop-color:#[0-9a-f]{6}\}/gu) ?? []).length, 4, 'dark stage must bind all four formal sheen stops')
+  assert.match(styles, /\[data-theme="light"\] \.stage-ghost\{opacity:\.45\}/u)
+  assert.match(styles, /\[data-theme="dark"\] \.stage-ghost\{opacity:\.88\}/u)
+  for (const [stop, color] of [['1', '#f0f4f1'], ['2', '#a7d6bf'], ['3', '#5fa17f'], ['4', '#dbc788']]) {
+    assert.match(styles, new RegExp(`\\[data-theme="dark"\\] \\.stage-ghost \\.brand-outline-stop-${stop}\\{stop-color:${color}\\}`, 'u'), `dark stage stop ${stop} must retain the formal legacy color`)
+  }
   assert.match(client, /renderBrandOutline\(e, 'stage-ghost', 'xsla-stage-icon'\)/u)
   assert.match(client, /renderBrandOutline\(e, 'conversation-ghost', 'xsla-conversation-icon'\)/u)
   assert.equal((client.match(/className: 'brand-outline-stop-[1-4]'/gu) ?? []).length, 4, 'outline gradient stops must remain theme-addressable')
