@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed } from './lifecycle.mjs'
 import { interactionAcceptanceRequested, runInteractionAcceptance } from './interaction-acceptance.mjs'
+import { alphaBounds, fittedWidth } from './icon-layout.mjs'
 import { allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from './security-policy.mjs'
 
 const PRODUCT_URL = resolveProductUrl(process.env)
@@ -148,18 +149,25 @@ function loadTrayImage() {
   const assets = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
   const iconPath = join(assets, 'icon-16.png')
   const retinaPath = join(assets, 'icon-32.png')
-  const image = nativeImage.createFromPath(iconPath)
-  const retinaImage = nativeImage.createFromPath(retinaPath)
-  if (image.isEmpty() || retinaImage.isEmpty()) {
-    throw new Error(`小蛇正式菜单栏图标不可用：${image.isEmpty() ? iconPath : retinaPath}`)
+  const sourceImage = nativeImage.createFromPath(iconPath)
+  const retinaSource = nativeImage.createFromPath(retinaPath)
+  if (sourceImage.isEmpty() || retinaSource.isEmpty()) {
+    throw new Error(`小蛇正式菜单栏图标不可用：${sourceImage.isEmpty() ? iconPath : retinaPath}`)
   }
-  // 只使用正式 UI 目录中的 16/32px 标识原件；32px 原件作为 2x Retina
-  // 表示加入，避免 Electron 自行放大或把正式几何重绘成近似字母。
+  // 正式 16/32px 原件的透明画布让图形本体只有 12/23px 高。仅裁掉透明
+  // 留白并等比放至 15pt；不复制、重画或改变正式标识几何。
+  const image = fitTrayGlyph(sourceImage, 15)
+  const retinaImage = fitTrayGlyph(retinaSource, 30)
   image.addRepresentation({ scaleFactor: 2, buffer: retinaImage.toPNG() })
   // 菜单栏按用户要求使用纯白；Template 只取正式小尺寸原件的 alpha
   // 形状交给 macOS 着色，不引入另一套自绘几何。
   image.setTemplateImage(process.platform === 'darwin')
   return image
+}
+function fitTrayGlyph(source, targetHeight) {
+  const size = source.getSize()
+  const bounds = alphaBounds(source.toBitmap({ scaleFactor: 1 }), size.width, size.height)
+  return source.crop(bounds).resize({ width: fittedWidth(bounds, targetHeight), height: targetHeight, quality: 'best' })
 }
 function createTray() {
   if (tray !== undefined) return tray

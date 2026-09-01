@@ -67,6 +67,8 @@ test('desktop navigation retries transient refusal and all native icons use the 
   assert.match(main, /app\.dock\.setIcon\(loadAppIcon\(512\)\)/u)
   assert.match(main, /'icon-16\.png'/u)
   assert.match(main, /'icon-32\.png'/u)
+  assert.match(main, /fitTrayGlyph\(sourceImage, 15\)/u)
+  assert.match(main, /fitTrayGlyph\(retinaSource, 30\)/u)
   assert.match(main, /addRepresentation\(\{ scaleFactor: 2, buffer: retinaImage\.toPNG\(\) \}\)/u)
   assert.doesNotMatch(main, /trayTemplate/u)
   assert.match(main, /setTemplateImage\(process\.platform === 'darwin'\)/u)
