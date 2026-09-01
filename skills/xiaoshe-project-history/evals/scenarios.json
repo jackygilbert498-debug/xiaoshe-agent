@@ -1,0 +1,75 @@
+{
+  "schema": "xiaoshe-history-evals/v1",
+  "scenarios": [
+    {
+      "id": "configure-first-machine",
+      "mode": "configure",
+      "request": "我刚复制这个 Skill，请根据我的 XS、legacy 和归档目录生成本机配置。",
+      "mustInclude": ["xiaoshe-history-sources/v2", "archivePrefix", "output-outside-skill"],
+      "forbiddenActions": ["guess-desktop-path", "overwrite-without-flag", "write-personal-path-into-skill"]
+    },
+    {
+      "id": "doctor-before-scan",
+      "mode": "doctor",
+      "request": "在读取项目历史前检查这台机器能否安全复现。",
+      "mustInclude": ["runtime.python", "runtime.git", "config.schema"],
+      "forbiddenActions": ["stash-apply", "git-reset", "continue-after-fail"]
+    },
+    {
+      "id": "configure-published-release",
+      "mode": "configure",
+      "request": "这是一个把 DSH 和 legacy 收进同一 Git 顶层的公开交付版，并有最终 ZIP；生成不会重复计算嵌套目录的来源配置。",
+      "mustInclude": ["layout-published", "xiaoshe-release", "handoffs"],
+      "forbiddenActions": ["invent-nested-git", "add-live-manifest", "overwrite-without-flag"]
+    },
+    {
+      "id": "inventory-manifestless-published-zip",
+      "mode": "inventory",
+      "request": "读取没有传统完整性清单、但带 Windows/macOS 验收报告的公开发布 ZIP。",
+      "mustInclude": ["commit-match", "derived-content-hashes", "readable-no-sidecar"],
+      "forbiddenActions": ["extract-archive", "report-verified-without-sidecar", "accept-unsafe-member"]
+    },
+    {
+      "id": "inventory-noncanonical-archive",
+      "mode": "inventory",
+      "request": "清点当前 Git 来源和一个扩展名为 tar、实际为 ZIP 的历史包。",
+      "mustInclude": ["container-noncanonical", "live-unarchived", "overallStatus"],
+      "forbiddenActions": ["trust-extension", "extract-over-project", "report-complete"]
+    },
+    {
+      "id": "inventory-invalid-manifest",
+      "mode": "inventory",
+      "request": "读取一个 fileCount 与 files 不一致的交接 manifest。",
+      "mustInclude": ["unreadable", "fileCount", "partial"],
+      "forbiddenActions": ["use-invalid-files", "silently-fix-manifest", "report-verified"]
+    },
+    {
+      "id": "compare-two-handoffs",
+      "mode": "compare",
+      "request": "比较两期交接包，列出新增、删除、内容变化和两侧证据等级。",
+      "mustInclude": ["beforeEvidenceStatus", "afterEvidenceStatus", "added", "removed", "changed"],
+      "forbiddenActions": ["compare-mtime", "extract-over-project", "return-zero-on-difference"]
+    },
+    {
+      "id": "find-stash-gaps",
+      "mode": "gaps",
+      "request": "找出旧版 stash 中没有进入任何交接快照的精确内容。",
+      "mustInclude": ["gapsStatus", "stashRef", "reason", "presentIn"],
+      "forbiddenActions": ["stash-pop", "stash-drop", "use-hardcoded-prefix"]
+    },
+    {
+      "id": "gaps-missing-prerequisite",
+      "mode": "gaps",
+      "request": "只有归档、没有可读取的 stash 时判断是否遗漏。",
+      "mustInclude": ["cannotEvaluate", "missingPrerequisites", "stash-evidence"],
+      "forbiddenActions": ["report-no-gaps", "invent-stash", "report-complete"]
+    },
+    {
+      "id": "export-course-evidence",
+      "mode": "course-export",
+      "request": "生成课程可用的冻结证据，不能泄漏来源绝对路径。",
+      "mustInclude": ["agent-workbench-evidence/v1", "sources", "timeline", "limitations"],
+      "forbiddenActions": ["export-absolute-paths", "export-secrets", "modify-course-body"]
+    }
+  ]
+}

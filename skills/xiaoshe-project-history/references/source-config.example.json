@@ -1,0 +1,32 @@
+{
+  "schema": "xiaoshe-history-sources/v2",
+  "sources": [
+    {
+      "id": "xs",
+      "kind": "git",
+      "path": "../../your-workspace/XS",
+      "manifest": "../../your-workspace/XS/交接工具/完整性清单.json"
+    },
+    {
+      "id": "dsh",
+      "kind": "git",
+      "path": "../../your-workspace/XS/runtime/DSH"
+    },
+    {
+      "id": "embedded-legacy",
+      "kind": "git",
+      "path": "../../your-workspace/XS/runtime/xiaoshe-legacy"
+    },
+    {
+      "id": "desktop-legacy",
+      "kind": "git-with-stashes",
+      "path": "../../your-workspace/legacy-xiaoshe",
+      "archivePrefix": "runtime/xiaoshe-legacy/"
+    },
+    {
+      "id": "handoffs",
+      "kind": "archive-directory",
+      "path": "../../your-workspace/handoffs"
+    }
+  ]
+}

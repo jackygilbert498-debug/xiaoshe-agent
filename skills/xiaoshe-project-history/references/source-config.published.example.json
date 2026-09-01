@@ -1,0 +1,15 @@
+{
+  "schema": "xiaoshe-history-sources/v2",
+  "sources": [
+    {
+      "id": "xiaoshe-release",
+      "kind": "git",
+      "path": "../../your-workspace/xiaoshe-public-release"
+    },
+    {
+      "id": "handoffs",
+      "kind": "archive-directory",
+      "path": "../../your-workspace/final-handoffs"
+    }
+  ]
+}

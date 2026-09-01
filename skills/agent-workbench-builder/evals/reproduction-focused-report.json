@@ -1,0 +1,51 @@
+{
+  "archiveSha256": "9967f5c13cedb0738f2b4a1ac8e50cc5dba4ec2bdc9aa7a961bd8261c40b32d7",
+  "capabilityCount": 1,
+  "commands": {
+    "firstEvaluation": {
+      "exitCode": 0,
+      "schema": "agent-workbench-graduation/v4",
+      "status": "PASS",
+      "stderrEmpty": true
+    },
+    "scaffold": {
+      "exitCode": 0,
+      "schema": "agent-workbench-scaffold-result/v3",
+      "status": "created",
+      "stderrEmpty": true
+    },
+    "secondEvaluation": {
+      "exitCode": 0,
+      "schema": "agent-workbench-graduation/v4",
+      "status": "PASS",
+      "stderrEmpty": true
+    },
+    "starterEvaluation": {
+      "exitCode": 2,
+      "schema": "agent-workbench-graduation/v4",
+      "status": "PARTIAL",
+      "stderrEmpty": true
+    }
+  },
+  "domainAdaptationApplied": true,
+  "domainAdaptedProjectGraduated": true,
+  "externalDshBundled": false,
+  "externalDshVerified": true,
+  "handoffExtractedAndGraduated": true,
+  "limitations": [
+    "This is an isolated automated reproduction, not an independent human usability test.",
+    "The bundled reproduction domain proves the lifecycle mechanics, not every possible domain.",
+    "DeepSeek Harness remained an external dependency and was not copied into either project or handoff."
+  ],
+  "productKind": "focused-agent",
+  "projectSlug": "local-request-triage",
+  "representativeScenarioCount": 1,
+  "resultDigest": "448b85afad5031effb69da92f76a509953e406fff419c1c1ed81e8cd8c98785c",
+  "resultDigestStable": true,
+  "runtime": "dsh",
+  "schema": "agent-workbench-reproduction/v3",
+  "serializedFilesChecked": 32,
+  "starterEvaluationStatus": "PARTIAL",
+  "status": "PASS",
+  "unicodeAndSpacePath": true
+}

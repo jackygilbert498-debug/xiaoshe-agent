@@ -1,0 +1,86 @@
+{
+  "checks": [
+    {
+      "detail": "DSH is referenced externally and is not copied by the Builder.",
+      "id": "external-boundary",
+      "status": "pass"
+    },
+    {
+      "detail": "DSH 0.1.0-rc.8 matches the tested boundary.",
+      "id": "manifest-version",
+      "status": "pass"
+    },
+    {
+      "detail": "MIT metadata and license file are present.",
+      "id": "license",
+      "status": "pass"
+    },
+    {
+      "detail": "v24.18.0",
+      "id": "node",
+      "status": "pass"
+    },
+    {
+      "detail": "11.7.0",
+      "id": "pnpm",
+      "status": "pass"
+    },
+    {
+      "detail": "Agent loop, session, model, tools, approval, and Web markers were resolved.",
+      "id": "config-dump",
+      "status": "pass"
+    },
+    {
+      "detail": "HEAD 141eb6fef834, dirty=True, trackedChanged=91, untracked=4.",
+      "id": "git-provenance",
+      "status": "pass"
+    }
+  ],
+  "externalDependency": {
+    "bundled": false,
+    "downloadedByBuilder": false,
+    "name": "DeepSeek Harness",
+    "officialRepository": "https://github.com/deepseek-ai/deepseek-harness",
+    "testedVersion": "0.1.0-rc.8"
+  },
+  "git": {
+    "branch": "master",
+    "dirty": true,
+    "head": "141eb6fef83422698aef7a981029e843e8161534",
+    "isRepository": true,
+    "origin": "https://github.com/deepseek-ai/deepseek-harness.git",
+    "statusSha256": "6e916c8a438c0ba69dae2d0924b16e51b8c0e17b1fb2668aa5d304154a8a4f4f",
+    "tagsAtHead": [
+      "dsh-v0.1.0-rc.8"
+    ],
+    "trackedChanged": 91,
+    "untracked": 4
+  },
+  "limitations": [
+    "The DSH checkout is dirty; PASS covers the observed working tree, not an immutable reproduction of the tag alone."
+  ],
+  "observed": {
+    "capabilities": {
+      "agentLoop": true,
+      "approval": true,
+      "model": true,
+      "session": true,
+      "tools": true,
+      "web": true
+    },
+    "configDump": true,
+    "engines": {
+      "node": "^22.19.0 || >=24.0.0"
+    },
+    "license": "MIT",
+    "nodeVersion": "v24.18.0",
+    "observedCliVersion": "0.1.0-rc.8",
+    "packageManager": "pnpm@11.7.0",
+    "pnpmVersion": "11.7.0",
+    "requiredFiles": 6,
+    "version": "0.1.0-rc.8"
+  },
+  "schema": "agent-workbench-dsh-doctor/v2",
+  "sourceDigest": "d29041c874ac789f990e4558730cd0ca3cce5c9a8de1618b1511e62444f094a6",
+  "status": "PASS"
+}
