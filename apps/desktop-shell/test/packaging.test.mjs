@@ -122,7 +122,7 @@ test('adapted stage and conversation outlines share the requested theme treatmen
   const styles = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'adapted.css'), 'utf8')
   const client = await readFile(resolve(productRoot, 'packages', 'native-shell-legacy-adapted', 'src', 'client', 'index.ts'), 'utf8')
   assert.match(styles, /\[data-theme="light"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.35\}/u)
-  assert.match(styles, /\[data-theme="ink-jade"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.75\}/u)
+  assert.match(styles, /\[data-theme="ink-jade"\] :is\(\.stage-ghost,\.conversation-ghost\)\{opacity:\.45\}/u)
   assert.match(client, /const theme = themeSnapshot\.active\.colorScheme === 'dark' \? 'ink-jade' : 'light'/u)
   for (const [theme, palette] of [
     ['light', [['1', '#23362d'], ['2', '#4f8069'], ['3', '#9cc2b1'], ['4', '#d7c27f']]],
