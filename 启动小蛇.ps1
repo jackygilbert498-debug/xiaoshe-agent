@@ -35,17 +35,28 @@ $DesktopKind = if ($InstalledDesktop) {
 }
 
 if ($CheckOnly) {
-  # Windows PowerShell 5.1 writes redirected native output with the active OEM
-  # code page. Force UTF-8 so JSON paths containing the localized product name
-  # remain machine-readable when consumed by Node or another automation host.
-  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-  [pscustomobject]@{
+  $CheckReport = [pscustomobject]@{
     schema = 'xiaoshe-windows-desktop/v1'
     kind = $DesktopKind
     selectedDesktop = $DesktopExecutable
     installedCandidates = $InstalledDesktopCandidates
     launched = $false
-  } | ConvertTo-Json -Depth 3
+  }
+  # Windows PowerShell 5.1 uses the active OEM code page for redirected output.
+  # Escape non-ASCII JSON characters instead of mutating process-wide Console
+  # encoding, so every machine consumer receives an unambiguous ASCII transport.
+  $Json = $CheckReport | ConvertTo-Json -Depth 3
+  $AsciiJson = @(
+    foreach ($Character in $Json.ToCharArray()) {
+      $CodeUnit = [int]$Character
+      if ($CodeUnit -le 0x7F) {
+        [string]$Character
+      } else {
+        '\u{0:x4}' -f $CodeUnit
+      }
+    }
+  ) -join ''
+  Write-Output $AsciiJson
   exit 0
 }
 

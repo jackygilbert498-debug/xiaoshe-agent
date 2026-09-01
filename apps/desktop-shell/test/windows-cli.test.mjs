@@ -137,6 +137,7 @@ test('Windows desktop entry resolves the localized installed application', {
     env: { ...process.env, LOCALAPPDATA: localAppData },
   })
   assert.equal(checked.status, 0, checked.stderr || checked.stdout)
+  assert.match(checked.stdout, /\\u5c0f\\u86c7/u, 'localized JSON must remain ASCII-safe over Windows PowerShell pipes')
 
   const report = JSON.parse(checked.stdout)
   assert.equal(report.schema, 'xiaoshe-windows-desktop/v1')
