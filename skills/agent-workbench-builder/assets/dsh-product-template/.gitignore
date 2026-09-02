@@ -1,9 +1,0 @@
-.DS_Store
-.runtime/
-dist/
-node_modules/
-work/
-__pycache__/
-*.py[cod]
-evidence/*.json
-!evidence/.gitkeep

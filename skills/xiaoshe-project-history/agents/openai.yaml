@@ -1,6 +1,0 @@
-interface:
-  display_name: "小蛇项目历史"
-  short_description: "配置并核对 XS、DSH、旧版与交接包的可复现项目历程"
-  default_prompt: "Use $xiaoshe-project-history to diagnose my read-only sources, compare platform acceptance reports with current HEAD, and reconstruct an evidence-labeled project history."
-policy:
-  allow_implicit_invocation: true

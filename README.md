@@ -2,16 +2,7 @@
 
 小蛇是一套本地优先的桌面 Agent 产品源码。仓库内包含可直接构建的产品层、插件、DSH 运行时、旧版小蛇兼容层，以及 Windows/macOS 安装与启动入口。
 
-本仓库面向希望自行安装、运行或继续开发小蛇的开发者。小蛇产品本身的内部设计稿、修改过程、个人验收现场、个人会话、运行期 Profile 和密钥不属于发行内容；公开 Skills 自带的最小测试夹具与脱敏复现报告用于验证其可移植合同。
-
-## 可复用 Skills
-
-仓库同时公开两套配套 Skill。它们不是“小蛇换皮模板”，而是把工程方法和证据合同带到你自己的工作或生活场景：
-
-- [`agent-workbench-builder`](skills/agent-workbench-builder)：在外置 DSH 上，从真实场景搭建单场景 Agent 或多能力工作台，并验证领域适配、审批拒绝、幂等、代表场景、干净交接和证据追溯。
-- [`xiaoshe-project-history`](skills/xiaoshe-project-history)：只读盘点、比较和重建 XS、DSH、legacy、stash、公开版与交接归档的证据化项目历史。
-
-安装、适用边界、验证命令和当前复现状态见 [`skills/README.md`](skills/README.md)。
+本仓库面向希望自行安装、运行或继续开发小蛇的开发者。内部设计稿、修改过程、测试夹具、验收证据、个人会话、运行期 Profile 和密钥不属于发行内容。
 
 ## 包含的能力
 
