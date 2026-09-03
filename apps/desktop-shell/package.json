@@ -1,0 +1,22 @@
+{
+  "name": "@xiaoshe/desktop-shell",
+  "version": "0.2.0",
+  "description": "小蛇本地 Agent 的独立、安全桌面窗口",
+  "author": "Xiaoshe Contributors",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.mjs",
+  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "brand:icons": "node ./scripts/build-brand-icons.mjs --rasterize",
+    "pack:dir": "electron-builder --dir --config electron-builder.yml",
+    "pack": "electron-builder --config electron-builder.yml",
+    "verify:artifact": "node ./scripts/verify-artifact.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3"
+  }
+}

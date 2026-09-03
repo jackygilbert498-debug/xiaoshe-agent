@@ -1,0 +1,75 @@
+appId: com.xiaoshe.desktop
+productName: 小蛇
+asar: true
+directories:
+  output: dist-desktop
+files:
+  - src/**
+  - package.json
+extraResources:
+  - from: ../../runtime
+    to: product/runtime
+    filter:
+      - '**/*'
+      - '!**/.git/**'
+      - '!**/node_modules/**'
+      - '!**/.venv/**'
+  - from: ../../packages
+    to: product/packages
+    filter:
+      - '**/*'
+      - '!**/node_modules/**'
+      - '!**/test/**'
+  - from: ../../scripts
+    to: product/scripts
+  - from: ../../setup
+    to: product/setup
+  - from: ../../python
+    to: product/python
+  - from: ../../src
+    to: product/src
+  - from: ../../package.json
+    to: product/package.json
+  - from: ../../pnpm-lock.yaml
+    to: product/pnpm-lock.yaml
+  - from: ../../pnpm-workspace.yaml
+    to: product/pnpm-workspace.yaml
+  - from: ../../tsconfig.json
+    to: product/tsconfig.json
+  - from: ../../tsconfig.build.json
+    to: product/tsconfig.build.json
+  - from: ../../README.md
+    to: product/README.md
+  - from: ../../cordis.patch.yml
+    to: product/cordis.patch.yml
+  - from: ../../启动小蛇.ps1
+    to: product/启动小蛇.ps1
+  - from: ../../停止小蛇.ps1
+    to: product/停止小蛇.ps1
+  - from: ../../诊断小蛇-Windows.ps1
+    to: product/诊断小蛇-Windows.ps1
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  icon: ../../runtime/xiaoshe-legacy/ui/assets/app-icon-256.png
+  artifactName: Xiaoshe-${version}-${arch}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  icon: ../../runtime/xiaoshe-legacy/ui/assets/app-icon-512.png
+  hardenedRuntime: true
+  gatekeeperAssess: true
+  category: public.app-category.developer-tools
+  artifactName: Xiaoshe-${version}-${arch}.${ext}
+publish: null

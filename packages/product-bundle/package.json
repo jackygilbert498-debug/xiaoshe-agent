@@ -21,9 +21,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@xiaoshe/coding-workbench": "workspace:*",
     "@xiaoshe/heartbeat": "workspace:*",
     "@xiaoshe/memory": "workspace:*",
+    "@xiaoshe/migration-recovery": "workspace:*",
     "@xiaoshe/plugin-governance": "workspace:*",
+    "@xiaoshe/provider-readiness": "workspace:*",
     "@xiaoshe/completion-receipt": "workspace:*",
     "@xiaoshe/native-shell-legacy-adapted": "workspace:*",
     "@xiaoshe/runtime-dsh-provider": "workspace:*",

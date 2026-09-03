@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
+    "test": "node ./scripts/build-test-client.mjs && node --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

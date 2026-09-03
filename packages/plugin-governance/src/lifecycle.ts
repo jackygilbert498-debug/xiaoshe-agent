@@ -4,6 +4,7 @@ import type { CandidateIdentity, CandidateProvenance, CandidateResolver, Candida
 import { candidateDisclosures } from './audit.js'
 import { validateProfileName, type DshProfileManagerLike, type ProfileInspection, type ProfileReceipt } from './dsh-profile.js'
 import type { HealthCheckInput, HealthResult, ProfileHealthCheckerLike } from './health.js'
+import { evaluatePluginCompatibility, type PluginCompatibilityReport } from './compatibility.js'
 import { inverseOperation } from './rollback.js'
 import { type PluginAction, type PluginTransaction, PluginTransactionStore, type ProcessReceiptView, type RollbackReceipt } from './store.js'
 
@@ -21,6 +22,7 @@ export interface ConfirmationChallenge {
   readonly provenance?: CandidateProvenance
   readonly disclosures: readonly string[]
   readonly osSandboxEnforced: false
+  readonly compatibility?: PluginCompatibilityReport
 }
 
 export interface PreparePluginInput {
@@ -54,6 +56,7 @@ export interface PluginLifecycleServiceOptions {
   readonly defaultHealthPath?: string
   readonly now?: () => number
   readonly tokenFactory?: () => string
+  readonly runtimeVersions?: { readonly xiaoshe: string; readonly dsh: string }
 }
 
 /** Confirmation-gated lifecycle owner. Browser callers never receive an executable command. */
@@ -66,6 +69,7 @@ export class PluginLifecycleService {
   readonly #defaultHealthPath: string | undefined
   readonly #now: () => number
   readonly #tokenFactory: () => string
+  readonly #runtimeVersions: { readonly xiaoshe: string; readonly dsh: string }
   readonly #candidates = new Map<string, ResolvedCandidate>()
   readonly #prepared = new Map<string, PreparedOperation>()
   readonly #runningProfiles = new Set<string>()
@@ -82,6 +86,7 @@ export class PluginLifecycleService {
     this.#defaultHealthPath = options.defaultHealthPath
     this.#now = options.now ?? Date.now
     this.#tokenFactory = options.tokenFactory ?? (() => randomBytes(32).toString('base64url'))
+    this.#runtimeVersions = Object.freeze(options.runtimeVersions ?? { xiaoshe: '0.2.0', dsh: '0.1.0-rc.8' })
     this.#ready = this.#recoverInterruptedTransactions()
   }
 
@@ -105,9 +110,18 @@ export class PluginLifecycleService {
     const action = input.action
     const prior = await this.#profileManager.inspect(input.profile)
     const candidate = input.candidate ?? (input.candidateId === undefined ? undefined : this.#candidates.get(input.candidateId))
+    let compatibility: PluginCompatibilityReport | undefined
     let rollbackTarget: PluginTransaction | undefined
     if (action === 'add' || action === 'update') {
       if (candidate === undefined || !candidate.audit.valid) throw new TypeError(`${action} requires one audited candidate`)
+      compatibility = evaluatePluginCompatibility({
+        action, packageName: candidate.packageName, version: candidate.version,
+        signatureStatus: candidate.signature.status, provenanceSelection: candidate.provenance.selection,
+        policy: candidate.audit.policy, dependencyRequirements: candidate.audit.dependencyRequirements,
+        peerRequirements: candidate.audit.peerRequirements, profileDependencies: prior.dependencies,
+        runtime: this.#runtimeVersions,
+      })
+      if (compatibility.status === 'blocked') throw new PluginCompatibilityError(compatibility)
     }
     if (action === 'bootstrap') {
       if (input.sourceProfile === undefined) throw new TypeError('bootstrap requires sourceProfile')
@@ -128,7 +142,12 @@ export class PluginLifecycleService {
     const disclosures = Object.freeze(candidate === undefined ? [
       `${action} ${packageName}@${version} in inactive Profile ${input.profile}`,
       '插件将在 Host 进程内运行；系统沙箱未启用。',
-    ] : [...candidateDisclosures(candidate), `目标为非活动受管 Profile ${input.profile}`])
+    ] : [
+      ...candidateDisclosures(candidate),
+      ...(compatibility?.warnings ?? []).map(row => `兼容性提醒：${row}`),
+      ...(compatibility?.facts ?? []).map(row => `兼容性事实：${row}`),
+      `目标为非活动受管 Profile ${input.profile}`,
+    ])
     const now = this.#now()
     const expiresAt = now + 10 * 60_000
     const challengeId = `challenge-${randomUUID()}`
@@ -140,6 +159,7 @@ export class PluginLifecycleService {
       id: challengeId, token, expiresAt: new Date(expiresAt).toISOString(), action, profile: input.profile,
       packageName, version, candidateSha256, manifestSha256,
       ...(candidate === undefined ? {} : { identity: candidate.identity, provenance: candidate.provenance }),
+      ...(compatibility === undefined ? {} : { compatibility }),
       disclosures, osSandboxEnforced: false,
     })
     await this.#store.save({
@@ -195,6 +215,8 @@ export class PluginLifecycleService {
       } catch (error) {
         return this.#handleFailure(prepared, controller.signal, undefined, `CLI mutation failed: ${safeMessage(error)}`)
       }
+      const graphError = await this.#verifyProfileGraph(prepared)
+      if (graphError !== undefined) return this.#handleFailure(prepared, controller.signal, processReceipt, graphError)
       const health = await this.#verifyMutation(prepared, controller.signal)
       if (health.state !== 'failed') {
         return this.#store.update(prepared.transactionId, row => ({
@@ -210,6 +232,11 @@ export class PluginLifecycleService {
   }
 
   listTransactions(): readonly PluginTransaction[] { return this.#store.list() }
+
+  /** Redacted ledger projection used by migration export and diagnostics. */
+  snapshot(): Readonly<Record<string, unknown>> {
+    return Object.freeze({ activeProfile: this.#activeProfile, runtimeVersions: this.#runtimeVersions, transactions: this.#store.list() })
+  }
 
   dispose(): void {
     if (this.#disposed) return
@@ -241,6 +268,16 @@ export class PluginLifecycleService {
       profile: prepared.challenge.profile, packageName: prepared.challenge.packageName, expected,
       ...(healthPath === undefined ? {} : { candidateHealthPath: healthPath }), signal,
     })
+  }
+
+  async #verifyProfileGraph(prepared: PreparedOperation): Promise<string | undefined> {
+    const post = await this.#profileManager.inspect(prepared.challenge.profile)
+    const installed = post.dependencies[prepared.challenge.packageName]
+    const targetAction = prepared.challenge.action === 'rollback' ? prepared.rollbackTarget?.action : prepared.challenge.action
+    const expectedAbsent = targetAction === 'remove' || (prepared.challenge.action === 'rollback' && prepared.rollbackTarget?.action === 'add')
+    if (expectedAbsent && installed !== undefined) return `post-mutation Profile graph still contains ${prepared.challenge.packageName}`
+    if (!expectedAbsent && prepared.challenge.action !== 'bootstrap' && installed === undefined) return `post-mutation Profile graph does not contain ${prepared.challenge.packageName}`
+    return undefined
   }
 
   async #handleFailure(prepared: PreparedOperation, signal: AbortSignal, processReceipt: ProfileReceipt | undefined, message: string, failedHealth?: HealthResult): Promise<PluginTransaction> {
@@ -322,6 +359,14 @@ export class PluginLifecycleService {
     }
   }
   #assertLive(): void { if (this.#disposed) throw new Error('plugin lifecycle service is disposed') }
+}
+
+/** A prepare-time blocker with a structured report safe for the Client. */
+export class PluginCompatibilityError extends Error {
+  readonly name = 'PluginCompatibilityError'
+  constructor(readonly report: PluginCompatibilityReport) {
+    super(report.blockers.join('；') || 'plugin compatibility is blocked')
+  }
 }
 
 function processView(receipt: ProfileReceipt): ProcessReceiptView {

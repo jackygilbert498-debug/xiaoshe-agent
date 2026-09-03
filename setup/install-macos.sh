@@ -8,6 +8,11 @@ DSH_ROOT="$XS_ROOT/runtime/DSH"
 CHECK_ONLY=0
 [ "${1:-}" = "--check-only" ] && CHECK_ONLY=1
 [ "$#" -le 1 ] || { printf '[错误] 用法：%s [--check-only]\n' "$0" >&2; exit 2; }
+INSTALL_MODE="${XIAOSHE_INSTALL_MODE:-developer-source}"
+case "$INSTALL_MODE" in
+  developer-source|embedded-runtime) ;;
+  *) printf '[错误] 未知安装模式：%s\n' "$INSTALL_MODE" >&2; exit 2 ;;
+esac
 
 say() { printf '\n[%s] %s\n' "$1" "$2"; }
 fail() { printf '[错误] %s\n' "$1" >&2; exit 1; }
@@ -58,7 +63,15 @@ require_file "$XS_ROOT/package.json"
 require_file "$DSH_ROOT/package.json"
 require_file "$XS_ROOT/runtime/xiaoshe-legacy/run.py"
 require_file "$XS_ROOT/packages/product-bundle/package.json"
+require_file "$XS_ROOT/packages/provider-readiness/package.json"
+require_file "$XS_ROOT/packages/migration-recovery/package.json"
+require_file "$XS_ROOT/packages/coding-workbench/package.json"
 require_file "$TOOL_DIR/profile/cordis.patch.yml"
+if [ "$INSTALL_MODE" = 'developer-source' ]; then
+  require_file "$XS_ROOT/启动小蛇.command"
+  require_file "$XS_ROOT/启动小蛇终端.command"
+  require_file "$XS_ROOT/停止小蛇.command"
+fi
 printf '  Node %s\n' "$("$NODE" --version)"
 if [ -n "$PNPM" ]; then printf '  pnpm %s\n' "$($PNPM --version)"; else printf '  pnpm 将由安装器配置为 11.7.0\n'; fi
 printf '  XS %s\n' "$XS_ROOT"
@@ -105,11 +118,28 @@ say '构建' '安装 XS 锁定依赖并构建产品插件…'
   # Finder 或其他目录启动时会静默匹配 0 个 workspace 包。
   cd "$XS_ROOT"
   "$PNPM" install --frozen-lockfile
+  # pnpm 的依赖图可能已完整，但 Electron 的平台二进制仍可能因
+  # 主机空间、缓存或 install script 中断而缺失。ss 是原生入口，
+  # 因此安装不能只信任 pnpm 的退出码，必须验证真实可执行文件。
+  if [ "$INSTALL_MODE" = 'developer-source' ]; then
+    ELECTRON_ROOT="$XS_ROOT/apps/desktop-shell/node_modules/electron"
+    ELECTRON_INSTALL="$ELECTRON_ROOT/install.js"
+    ELECTRON_BIN="$ELECTRON_ROOT/dist/Electron.app/Contents/MacOS/Electron"
+    if [ ! -x "$ELECTRON_BIN" ]; then
+      [ -f "$ELECTRON_INSTALL" ] || fail 'Electron 依赖不完整，缺少官方安装脚本。'
+      say '安装' '补齐 Electron 原生桌面运行时…'
+      "$NODE" "$ELECTRON_INSTALL"
+    fi
+    [ -x "$ELECTRON_BIN" ] || fail 'Electron 安装脚本已返回，但原生可执行文件仍缺失。'
+  fi
   # 冷设备没有任何 lib：按拓扑构建上游导出，再检查产品源码类型。
   "$PNPM" -r --filter './packages/**' run build
   "$PNPM" -r --filter './packages/**' run typecheck
   "$PNPM" run typecheck
   "$PNPM" run build
+  if [ -f "$XS_ROOT/apps/desktop-shell/package.json" ]; then
+    "$PNPM" --filter '@xiaoshe/desktop-shell' test
+  fi
 )
 
 say '配置' '将 ModLens、XS 桌面能力和完整 Product Bundle 接入 DSH web Profile…'
@@ -126,6 +156,9 @@ say '配置' '将 ModLens、XS 桌面能力和完整 Product Bundle 接入 DSH w
     "$XS_ROOT/packages/heartbeat" \
     "$XS_ROOT/packages/memory" \
     "$XS_ROOT/packages/plugin-governance" \
+    "$XS_ROOT/packages/provider-readiness" \
+    "$XS_ROOT/packages/migration-recovery" \
+    "$XS_ROOT/packages/coding-workbench" \
     "$XS_ROOT/packages/task-timeline" \
     "$DSH_ROOT/packages/session-query/tool-session-query" \
     "$XS_ROOT/packages/product-bundle"
@@ -136,29 +169,43 @@ PROFILE_PATCH="$PROFILE_ROOT/cordis.patch.yml"
   --target "$PROFILE_PATCH" \
   --template "$TOOL_DIR/profile/cordis.patch.yml"
 
-chmod +x "$XS_ROOT/启动小蛇.command" "$XS_ROOT/启动小蛇终端.command" "$XS_ROOT/停止小蛇.command" "$XS_ROOT/scripts/"*.sh "$TOOL_DIR/install-macos.sh"
-ZSHRC="${HOME}/.zshrc"
-[ ! -e "$ZSHRC" ] || cp -p "$ZSHRC" "${ZSHRC}.before-xiaoshe-$(date +%Y%m%d-%H%M%S).bak"
-TMP_ZSHRC="$(mktemp)"
-if [ -f "$ZSHRC" ]; then
-  awk '/^# >>> XS 小蛇 >>>$/{skip=1;next}/^# <<< XS 小蛇 <<<$/{skip=0;next}!skip{print}' "$ZSHRC" > "$TMP_ZSHRC"
+chmod +x "$XS_ROOT/scripts/"*.sh "$TOOL_DIR/install-macos.sh"
+if [ "$INSTALL_MODE" = 'developer-source' ]; then
+  chmod +x "$XS_ROOT/启动小蛇.command" "$XS_ROOT/启动小蛇终端.command" "$XS_ROOT/停止小蛇.command"
+  ZSHRC="${HOME}/.zshrc"
+  [ ! -e "$ZSHRC" ] || cp -p "$ZSHRC" "${ZSHRC}.before-xiaoshe-$(date +%Y%m%d-%H%M%S).bak"
+  TMP_ZSHRC="$(mktemp)"
+  if [ -f "$ZSHRC" ]; then
+    # 兼容早期交接包写入的旧标记，避免重复安装后留下两组 s / ss。
+    awk '/^# >>> XS 小蛇(交接)? >>>$/{skip=1;next}/^# <<< XS 小蛇(交接)? <<<$/{skip=0;next}!skip{print}' "$ZSHRC" > "$TMP_ZSHRC"
+  fi
+  ESCAPED_ROOT="${XS_ROOT//\'/\'\\\'\'}"
+  {
+    printf '%s\n' '# >>> XS 小蛇 >>>'
+    printf '%s\n' 'unalias s ss 2>/dev/null || true'
+    printf '%s\n' 'unfunction s ss 2>/dev/null || true'
+    printf "s() { bash '%s/scripts/start-xiaoshe-terminal.sh' \"\$@\"; }\n" "$ESCAPED_ROOT"
+    printf "ss() { bash '%s/启动小蛇.command' \"\$@\"; }\n" "$ESCAPED_ROOT"
+    printf '%s\n' '# <<< XS 小蛇 <<<'
+  } >> "$TMP_ZSHRC"
+  mv "$TMP_ZSHRC" "$ZSHRC"
+else
+  say '配置' '桌面应用运行时不修改终端配置；启动与退出由已安装的“小蛇.app”管理。'
 fi
-ESCAPED_ROOT="${XS_ROOT//\'/\'\\\'\'}"
-{
-  printf '%s\n' '# >>> XS 小蛇 >>>'
-  printf '%s\n' 'unalias s ss 2>/dev/null || true'
-  printf '%s\n' 'unfunction s ss 2>/dev/null || true'
-  printf "s() { bash '%s/scripts/start-xiaoshe-terminal.sh' \"\$@\"; }\n" "$ESCAPED_ROOT"
-  printf "ss() { bash '%s/启动小蛇.command' \"\$@\"; }\n" "$ESCAPED_ROOT"
-  printf '%s\n' '# <<< XS 小蛇 <<<'
-} >> "$TMP_ZSHRC"
-mv "$TMP_ZSHRC" "$ZSHRC"
 
 say '终验' '解析最终 DSH web Profile…'
 "$PNPM" --dir "$DSH_ROOT" dsh web --dump-config >/dev/null
 
-say '完成' '开发者发行版、依赖、Profile 与 s / ss 双入口已安装。'
-printf '%s\n' \
-  '  1. 本包故意不包含 API Key；首次打开后在设置里配置 DEEPSEEK_API_KEY。' \
-  '  2. macOS 需为真实宿主授予“屏幕与系统录音”及“辅助功能”权限。' \
-  '  3. 重开终端输入 s 启动终端版；输入 ss 或双击 XS/启动小蛇.command 启动界面版。'
+if [ "$INSTALL_MODE" = 'developer-source' ]; then
+  say '完成' '开发者发行版、依赖、Profile、独立桌面壳与 s / ss 双入口已安装。'
+  printf '%s\n' \
+    '  1. 本包故意不包含 API Key；首次打开后在设置里配置 DEEPSEEK_API_KEY。' \
+    '  2. macOS 需为真实宿主授予“屏幕与系统录音”及“辅助功能”权限。' \
+    '  3. 重开终端输入 s 启动终端版；输入 ss 或双击 XS/启动小蛇.command 启动界面版。'
+else
+  say '完成' '桌面应用运行时、锁定依赖与 DSH web Profile 已安装。'
+  printf '%s\n' \
+    '  1. 应用不包含 API Key；首次打开后在设置里配置 DEEPSEEK_API_KEY。' \
+    '  2. macOS 需为“小蛇”授予“屏幕与系统录音”及“辅助功能”权限。' \
+    '  3. 后续由“小蛇.app”启动；未修改终端快捷入口。'
+fi

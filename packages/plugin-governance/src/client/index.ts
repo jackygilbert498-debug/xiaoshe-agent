@@ -18,8 +18,9 @@ export interface PublicCandidate {
   readonly provenance: {
     readonly kind: 'local-directory' | 'local-tarball' | 'registry'
     readonly selection: 'local-bytes' | 'exact-version' | 'floating-reference' | 'external-reference'
-    readonly label: string; readonly assurance: 'unverified'
+    readonly label: string; readonly assurance: 'unverified' | 'signed-untrusted' | 'verified-publisher' | 'invalid-signature'
   }
+  readonly signature: { readonly status: 'unsigned' | 'invalid' | 'valid-untrusted' | 'trusted'; readonly fingerprint?: string; readonly publisher?: string; readonly reason: string }
   readonly audit: Readonly<Record<string, unknown>>
   readonly healthPath?: string
   readonly osSandboxEnforced: false
@@ -67,7 +68,7 @@ export class PluginGovernanceProvider {
     }
   }
 
-  auditCandidate(source: { readonly kind: 'directory' | 'tarball'; readonly path: string } | { readonly kind: 'registry'; readonly spec: string }, signal?: AbortSignal): Promise<RpcResult<{ candidate: PublicCandidate }>> {
+  auditCandidate(source: { readonly kind: 'directory' | 'tarball'; readonly path: string; readonly signaturePath?: string } | { readonly kind: 'registry'; readonly spec: string; readonly signaturePath?: string }, signal?: AbortSignal): Promise<RpcResult<{ candidate: PublicCandidate }>> {
     return this.#request('/api/xiaoshe/plugins/audit', { source }, signal)
   }
   prepareChange(input: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<RpcResult<{ challenge: Readonly<Record<string, unknown>> }>> {

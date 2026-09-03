@@ -32,6 +32,9 @@ Require-File (Join-Path $XsRoot 'package.json')
 Require-File (Join-Path $DshRoot 'package.json')
 Require-File (Join-Path $XsRoot 'runtime\xiaoshe-legacy\run.py')
 Require-File (Join-Path $XsRoot 'packages\product-bundle\package.json')
+Require-File (Join-Path $XsRoot 'packages\provider-readiness\package.json')
+Require-File (Join-Path $XsRoot 'packages\migration-recovery\package.json')
+Require-File (Join-Path $XsRoot 'packages\coding-workbench\package.json')
 Require-File (Join-Path $ToolDir 'profile\cordis.patch.yml')
 if ($CheckOnly) { Step '通过' '源码结构和前置工具已验证；未修改本机。'; exit 0 }
 $PnpmPrefix = Join-Path $HOME '.xiaoshe\pnpm-11.7.0'
@@ -83,6 +86,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'XS 根包类型检查失败。' }
   & $Pnpm run build
   if ($LASTEXITCODE -ne 0) { throw 'XS 根包构建失败。' }
+  if (Test-Path -LiteralPath (Join-Path $XsRoot 'apps\desktop-shell\package.json')) {
+    & $Pnpm --filter '@xiaoshe/desktop-shell' test
+    if ($LASTEXITCODE -ne 0) { throw '桌面壳安全与生命周期测试失败。' }
+  }
 } finally {
   Pop-Location
 }
@@ -99,6 +106,9 @@ $ProductPackages = @(
   (Join-Path $XsRoot 'packages\heartbeat'),
   (Join-Path $XsRoot 'packages\memory'),
   (Join-Path $XsRoot 'packages\plugin-governance'),
+  (Join-Path $XsRoot 'packages\provider-readiness'),
+  (Join-Path $XsRoot 'packages\migration-recovery'),
+  (Join-Path $XsRoot 'packages\coding-workbench'),
   (Join-Path $XsRoot 'packages\task-timeline'),
   (Join-Path $DshRoot 'packages\session-query\tool-session-query'),
   (Join-Path $XsRoot 'packages\product-bundle')
@@ -121,5 +131,5 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH Profile 解析失败。' }
 Step '命令' '安装 Windows 短入口 s 与 xiaoshe-doctor…'
 & (Join-Path $XsRoot 'scripts\install-windows-cli.ps1') -XsRoot $XsRoot | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Windows 命令入口安装失败。' }
-Step '完成' '已安装开发者发行版。重开终端输入 s；输入 xiaoshe-doctor 可运行只读诊断。首次使用请在设置中配置模型凭据。'
+Step '完成' '已安装开发者发行版与独立桌面壳。双击启动器进入桌面窗口；重开终端输入 s；输入 xiaoshe-doctor 可运行只读诊断。'
 Write-Host '桌面操作仍受系统权限和当前设备显示配置约束，请先在小蛇中检查权限状态。' -ForegroundColor Yellow

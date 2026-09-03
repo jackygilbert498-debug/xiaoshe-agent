@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import type { CandidateSource, ResolvedCandidate } from './audit.js'
-import type { ConfirmationChallenge, PluginLifecycleService, PreparePluginInput } from './lifecycle.js'
+import { PluginCompatibilityError, type ConfirmationChallenge, type PluginLifecycleService, type PreparePluginInput } from './lifecycle.js'
 import type { PluginTransaction } from './store.js'
 
 export const PLUGIN_TRANSACTIONS_PATH = '/api/xiaoshe/plugins/transactions'
@@ -106,6 +106,7 @@ function guarded(method: 'GET' | 'POST', handler: (request: PluginHttpRequest, r
       if (error instanceof UnsupportedMediaTypeError) { sendJson(response, 415, { error: error.message, kind: 'PLUGIN_JSON_REQUIRED' }); return }
       if (error instanceof RequestBodyTooLargeError) { sendJson(response, 413, { error: error.message, kind: 'PLUGIN_BODY_TOO_LARGE' }); return }
       if (error instanceof ResourceNotFoundError) { sendJson(response, 404, { error: error.message, kind: 'PLUGIN_RESOURCE_NOT_FOUND' }); return }
+      if (error instanceof PluginCompatibilityError) { sendJson(response, 409, { error: error.message, kind: 'PLUGIN_COMPATIBILITY_BLOCKED', compatibility: error.report }); return }
       const message = safeMessage(error)
       const conflict = /expired|already|active profile|running|changed|token|restart/iu.test(message)
       const invalid = error instanceof SyntaxError || error instanceof TypeError || error instanceof RangeError
@@ -136,12 +137,14 @@ async function requireJson(request: PluginHttpRequest): Promise<Record<string, u
 function parseSource(value: unknown): CandidateSource {
   if (!isRecord(value)) throw new TypeError('source must be an object')
   if (value.kind === 'directory' || value.kind === 'tarball') {
-    assertOnlyFields(value, ['kind', 'path'])
-    return { kind: value.kind, path: requiredString(value.path, 'source.path', 2_000) }
+    assertOnlyFields(value, ['kind', 'path', 'signaturePath'])
+    const signaturePath = optionalString(value.signaturePath, 'source.signaturePath', 2_000)
+    return { kind: value.kind, path: requiredString(value.path, 'source.path', 2_000), ...(signaturePath === undefined ? {} : { signaturePath }) }
   }
   if (value.kind === 'registry') {
-    assertOnlyFields(value, ['kind', 'spec'])
-    return { kind: 'registry', spec: requiredString(value.spec, 'source.spec', 500) }
+    assertOnlyFields(value, ['kind', 'spec', 'signaturePath'])
+    const signaturePath = optionalString(value.signaturePath, 'source.signaturePath', 2_000)
+    return { kind: 'registry', spec: requiredString(value.spec, 'source.spec', 500), ...(signaturePath === undefined ? {} : { signaturePath }) }
   }
   throw new TypeError('source.kind must be directory, tarball or registry')
 }
@@ -151,6 +154,7 @@ function publicCandidate(candidate: ResolvedCandidate): Record<string, unknown> 
     id: candidate.id, packageName: candidate.packageName, version: candidate.version,
     sha256: candidate.sha256, manifestSha256: candidate.manifestSha256,
     identity: candidate.identity, provenance: candidate.provenance, audit: candidate.audit,
+    signature: candidate.signature,
     ...(candidate.healthPath === undefined ? {} : { healthPath: candidate.healthPath }),
     osSandboxEnforced: false,
   }

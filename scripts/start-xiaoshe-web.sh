@@ -26,6 +26,10 @@ NODE="${XIAOSHE_NODE:-}"
 PNPM_CLI="${XIAOSHE_PNPM_CLI:-}"
 CODEX_APP_BIN="${XIAOSHE_CODEX_BIN:-/Applications/ChatGPT.app/Contents/Resources/codex}"
 INSTALLER="$PLUGIN_ROOT/setup/install-macos.sh"
+INSTALL_MODE='developer-source'
+if [ -f "$PLUGIN_ROOT/.xiaoshe-product-runtime.json" ]; then
+  INSTALL_MODE='embedded-runtime'
+fi
 LOG_DIR="${XIAOSHE_DSH_LOG_DIR:-${HOME}/Library/Logs/小蛇}"
 LOG_FILE="${LOG_DIR}/web.log"
 ERROR_LOG_FILE="${LOG_DIR}/web.error.log"
@@ -71,10 +75,15 @@ is_xiaoshe_ready() {
 
 open_ui() {
   [ "${XIAOSHE_DSH_NO_OPEN:-0}" = "1" ] && return 0
+  # LaunchServices may only focus an existing Edge tab when the exact URL was
+  # opened before.  If that tab contains a connection-error page, `ss` appears
+  # broken even though the freshly checked service is healthy.  A per-launch
+  # query forces a real navigation while keeping the DSH service URL unchanged.
+  local launch_url="${URL}?xiaoshe_launch=$(date +%s)-$$"
   if [ -d '/Applications/Microsoft Edge.app' ]; then
-    open -a 'Microsoft Edge' "$URL" || open "$URL"
+    open -a 'Microsoft Edge' "$launch_url" || open "$launch_url"
   else
-    open "$URL"
+    open "$launch_url"
   fi
 }
 
@@ -119,6 +128,9 @@ profile_has_current_product_packages() {
 @xiaoshe/heartbeat|$PLUGIN_ROOT/packages/heartbeat
 @xiaoshe/memory|$PLUGIN_ROOT/packages/memory
 @xiaoshe/plugin-governance|$PLUGIN_ROOT/packages/plugin-governance
+@xiaoshe/provider-readiness|$PLUGIN_ROOT/packages/provider-readiness
+@xiaoshe/migration-recovery|$PLUGIN_ROOT/packages/migration-recovery
+@xiaoshe/coding-workbench|$PLUGIN_ROOT/packages/coding-workbench
 @xiaoshe/task-timeline|$PLUGIN_ROOT/packages/task-timeline
 @deepseek-ai/dsh-tool-session-query|$DSH_ROOT/packages/session-query/tool-session-query
 @xiaoshe/product-bundle|$PLUGIN_ROOT/packages/product-bundle
@@ -139,6 +151,9 @@ sync_current_product_packages() {
       "$PLUGIN_ROOT/packages/heartbeat" \
       "$PLUGIN_ROOT/packages/memory" \
       "$PLUGIN_ROOT/packages/plugin-governance" \
+      "$PLUGIN_ROOT/packages/provider-readiness" \
+      "$PLUGIN_ROOT/packages/migration-recovery" \
+      "$PLUGIN_ROOT/packages/coding-workbench" \
       "$PLUGIN_ROOT/packages/task-timeline" \
       "$DSH_ROOT/packages/session-query/tool-session-query" \
       "$PLUGIN_ROOT/packages/product-bundle"
@@ -158,7 +173,7 @@ if [ ! -f "$DSH_ROOT/apps/cli/lib/bin.js" ] \
   || [ ! -f "$PROFILE_ROOT/package.json" ]; then
   require_file "$INSTALLER"
   printf '[首次启动] 正在安装锁定依赖、构建 DSH 并配置小蛇 Profile…\n'
-  XIAOSHE_DSH_NO_PAUSE=1 bash "$INSTALLER"
+  XIAOSHE_DSH_NO_PAUSE=1 XIAOSHE_INSTALL_MODE="$INSTALL_MODE" bash "$INSTALLER"
 fi
 
 # 安装器可能刚在 Apple Silicon 或 Intel Homebrew 路径中补齐 Node，亦可能
@@ -242,13 +257,14 @@ printf '[启动] DSH web profile + 小蛇 + ModLens…\n'
 remove_service
 SERVICE_ENV=(
   "PATH=$PATH"
+  "HOME=$HOME"
   "XIAOSHE_DSH_ROOT=$DSH_ROOT"
   "XIAOSHE_LEGACY_ROOT=$LEGACY_ROOT"
   "XIAOSHE_DSH_HOST=$HOST"
   "XIAOSHE_DSH_PORT=$PORT"
   "XIAOSHE_NODE=$NODE"
 )
-for KEY in XIAOSHE_PYTHON XIAOSHE_DESKTOP_ACTIONS XIAOSHE_DESKTOP_TIMEOUT_MS; do
+for KEY in DSH_HOME XIAOSHE_PYTHON XIAOSHE_DESKTOP_ACTIONS XIAOSHE_DESKTOP_TIMEOUT_MS; do
   if [ "${!KEY+x}" = x ]; then
     SERVICE_ENV+=("$KEY=${!KEY}")
   fi

@@ -1,8 +1,11 @@
 # Dependencies and generated output
 node_modules/
+packages/runtime-dsh-provider/test/.generated/
+packages/provider-readiness/test/.generated/
 dist/
 packages/*/lib/
 packages/*/dist/
+/apps/desktop-shell/dist-desktop/
 runtime/DSH/packages/*/lib/
 runtime/DSH/packages/*/dist/
 coverage/
@@ -41,6 +44,8 @@ Thumbs.db
 /var/
 
 # Local archives and build products are not source inputs.
+/artifacts/
+/docs/superpowers/
 *.tgz
 *.tar.gz
 *.zip

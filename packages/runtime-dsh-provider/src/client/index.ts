@@ -7,6 +7,9 @@ import type {
   RuntimeImageInputLimits,
   RuntimeSessionProjection,
   RuntimeSessionSnapshot,
+  RunCenter,
+  RunCenterQueueAction,
+  RunCenterSnapshot,
   SendTurnInput,
   SessionCommand,
   SessionCommandInput,
@@ -31,7 +34,7 @@ import type {
   WorkspaceCatalogSnapshot,
   WorkSurfaceRegistry,
 } from '@xiaoshe/runtime-contract'
-import { deriveCompactionCheckpoints, deriveContextBudget } from '@xiaoshe/runtime-contract'
+import { deriveCompactionCheckpoints, deriveContextBudget, parseRunCenterSnapshot } from '@xiaoshe/runtime-contract'
 import { DshWorkSurfaceRegistry } from './surfaces.js'
 
 export { DshWorkSurfaceRegistry, isLoopbackHost, projectDshWorkSurfaces, safeSurfaceUrl } from './surfaces.js'
@@ -51,8 +54,25 @@ interface SessionFacePort {
   rename(title: string): Promise<RpcResult<{ readonly title: string; readonly seq: number }>>
   command?(line: string): Promise<{ readonly ok: true; readonly value: { readonly matched: boolean } } | { readonly ok: false; readonly error: RpcErrorLike }>
   readonly projections?: { faceOf(key: string): ObservableSnapshotPort }
-  getSnapshot?(): { readonly nodes?: readonly unknown[]; readonly partial?: { readonly text?: string } | null; readonly pending?: readonly PendingWaitPort[] }
+  getSnapshot?(): {
+    readonly nodes?: readonly unknown[]
+    readonly partial?: { readonly text?: string } | null
+    readonly pending?: readonly PendingWaitPort[]
+    readonly queue?: readonly QueueItemPort[]
+  }
   subscribe?(listener: () => void): () => void
+  updateQueue?(itemId: string, action: QueueActionPort): Promise<RpcResult<{ accepted: true }>>
+}
+type QueueActionPort =
+  | { readonly kind: 'edit'; readonly content: readonly { readonly type: 'text'; readonly text: string }[] }
+  | { readonly kind: 'remove' }
+  | { readonly kind: 'steer' }
+interface QueueItemPort {
+  readonly id: string
+  readonly messageId: string
+  readonly placement: 'queued' | 'steering' | 'context'
+  readonly preview: string
+  readonly text: string | null
 }
 interface PendingWaitPort {
   readonly kind: string
@@ -87,17 +107,54 @@ interface SessionSummaryPort {
 }
 interface SessionsPort {
   readonly list: {
-    getSnapshot(): { readonly current?: string; readonly ids: readonly string[]; readonly byId: Readonly<Record<string, SessionSummaryPort>> }
+    getSnapshot(): {
+      readonly current?: string
+      readonly ids: readonly string[]
+      readonly byId: Readonly<Record<string, SessionSummaryPort>>
+      readonly jobsBySession?: Readonly<Record<string, readonly JobViewPort[]>>
+      readonly subagentsByParent?: Readonly<Record<string, SubagentCatalogPort>>
+    }
     subscribe(listener: () => void): () => void
   }
   binding(id: string): { readonly session: SessionFacePort } | undefined
   fork(input: { readonly sessionId: string; readonly atSeq?: number; readonly increaseTitle: boolean }): Promise<string>
   create(input: { readonly loose: true }): Promise<string>
   open(id: string): void
+  refreshSubagents?(parentSessionId: string): Promise<void>
+  selectSubagent?(address: SubagentAddressPort): void
   search(query: string, signal: AbortSignal): Promise<RpcResult<{
     readonly items: readonly { readonly sessionId: string; readonly snippet: string }[]
     readonly hasMore: boolean
   }>>
+}
+interface JobViewPort {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+  readonly detail?: string
+  readonly startedAt: number
+  readonly finishedAt?: number
+}
+type SubagentAddressPort = {
+  readonly parentSessionId: string
+  readonly childSessionId: string
+} & ({ readonly mode: 'one-shot' } | { readonly mode: 'continuable' })
+type SubagentEntryPort =
+  | {
+    readonly kind: 'child'
+    readonly id: string
+    readonly activity: 'running' | 'inactive'
+    readonly hasChildren: boolean
+    readonly mode: 'one-shot' | 'continuable'
+    readonly label?: string
+  }
+  | { readonly kind: 'diagnostic'; readonly id: string; readonly reason: 'corrupt' | 'unsupported' | 'unavailable' }
+interface SubagentCatalogPort {
+  readonly entries: readonly SubagentEntryPort[]
+  readonly parentAvailable: boolean
+  readonly state?: 'loading' | 'ready' | 'error'
+  readonly error?: RpcErrorLike | null
 }
 interface WorkspacesPort {
   readonly list: {
@@ -155,7 +212,19 @@ interface ConnectionPort {
       models(input: { readonly sessionId: string }): Promise<{ readonly result: RpcResult<SessionModelsPort> }>
       selectModel(input: ModelSelectionPort & { readonly sessionId: string }): Promise<{ readonly result: RpcResult<{ readonly selected: ModelSelectionPort }> }>
     }
+    readonly skills?: {
+      list(input: { readonly sessionId: string }, signal?: AbortSignal): Promise<{ readonly result: RpcResult<{ readonly skills: readonly SkillEntryPort[] }> }>
+    }
+    readonly subagents?: {
+      interrupt(input: Extract<SubagentAddressPort, { readonly mode: 'continuable' }>): Promise<{ readonly result: RpcResult<{ readonly accepted: true }> }>
+    }
   }
+}
+interface SkillEntryPort {
+  readonly name: string
+  readonly description: string
+  readonly whenToUse?: string
+  readonly modelInvocable: boolean
 }
 interface ClientContextLike {
   inject(names: readonly string[], mount: (scope: ClientScopeLike) => void): unknown
@@ -1044,6 +1113,248 @@ export class DshWorkspaceCatalog implements WorkspaceCatalog {
   }
 }
 
+/**
+ * Product projection over the public DSH run surfaces. The provider never
+ * owns job, queue, goal, skill, or subagent state; it only narrows those
+ * authoritative faces into the stable Xiaoshe contract.
+ */
+export class DshRunCenter implements RunCenter {
+  private readonly listeners = new Set<() => void>()
+  private readonly unsubscribeList: () => void
+  private readonly unsubscribeSurfaces: () => void
+  private unsubscribeSession: (() => void) | undefined
+  private boundSessionId: string | undefined
+  private skills: readonly SkillEntryPort[] = Object.freeze([])
+  private lifecycle: RunCenterSnapshot['status'] = 'idle'
+  private failure: string | undefined
+  private snapshot: RunCenterSnapshot
+  private generation = 0
+  private disposed = false
+
+  constructor(
+    private readonly sessions: SessionsPort,
+    private readonly connection: ConnectionPort,
+    private readonly surfaces: Pick<WorkSurfaceRegistry, 'getSnapshot' | 'subscribe'>,
+  ) {
+    this.boundSessionId = sessions.list.getSnapshot().current
+    this.snapshot = this.projectSnapshot()
+    this.unsubscribeList = sessions.list.subscribe(() => {
+      const nextSessionId = sessions.list.getSnapshot().current
+      if (nextSessionId !== this.boundSessionId) {
+        this.generation += 1
+        this.skills = Object.freeze([])
+        this.failure = undefined
+        this.lifecycle = nextSessionId === undefined ? 'idle' : 'ready'
+        this.bindSession(nextSessionId)
+      }
+      this.publishProjection()
+    })
+    this.unsubscribeSurfaces = surfaces.subscribe(() => { this.publishProjection() })
+    this.bindSession(this.boundSessionId)
+  }
+
+  getSnapshot(): RunCenterSnapshot { return this.snapshot }
+
+  subscribe(listener: () => void): () => void {
+    if (this.disposed) return () => {}
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  async refresh(): Promise<RuntimeCommandResult<RunCenterSnapshot>> {
+    if (this.disposed) return conflict('run center is disposed')
+    const sessionId = this.sessions.list.getSnapshot().current
+    if (sessionId === undefined) {
+      this.skills = Object.freeze([])
+      this.lifecycle = 'idle'
+      this.failure = undefined
+      this.publishProjection()
+      return { ok: true, value: this.snapshot }
+    }
+    const generation = ++this.generation
+    this.lifecycle = 'loading'
+    this.failure = undefined
+    this.publishProjection()
+    const controller = new AbortController()
+    try {
+      await this.sessions.refreshSubagents?.(sessionId)
+      const response = this.connection.api.skills === undefined
+        ? { result: { ok: true as const, value: { skills: Object.freeze([]) } } }
+        : await this.connection.api.skills.list({ sessionId }, controller.signal)
+      if (!response.result.ok) return this.failRefresh(generation, sessionId, response.result.error)
+      if (this.disposed || generation !== this.generation || this.sessions.list.getSnapshot().current !== sessionId) {
+        return conflict('run center refresh became stale')
+      }
+      this.skills = Object.freeze(response.result.value.skills.map(skill => Object.freeze({ ...skill })))
+      this.lifecycle = 'ready'
+      this.failure = undefined
+      this.publishProjection()
+      return { ok: true, value: this.snapshot }
+    } catch (error: unknown) {
+      return this.failRefresh(generation, sessionId, { code: 'run-center-refresh', message: errorMessage(error) })
+    } finally {
+      controller.abort()
+    }
+  }
+
+  async updateQueue(input: {
+    readonly sessionId: string
+    readonly itemId: string
+    readonly action: RunCenterQueueAction
+  }): Promise<RuntimeCommandResult<{ accepted: true }>> {
+    if (input.sessionId.trim() === '' || input.itemId.trim() === '') return invalid('sessionId and itemId must not be blank')
+    const item = this.snapshot.sessionId === input.sessionId
+      ? this.snapshot.queue.find(candidate => candidate.id === input.itemId)
+      : undefined
+    if (item === undefined) return conflict('queue item is no longer present')
+    if (item.placement !== 'queued') return conflict('only queued messages can be changed')
+    const session = this.sessions.binding(input.sessionId)?.session
+    if (session?.updateQueue === undefined) return unsupported('queue mutation is unavailable')
+    let action: QueueActionPort
+    if (input.action.kind === 'edit') {
+      const text = input.action.text.trim()
+      if (text === '' || Array.from(text).length > 32_000) return invalid('queue edit text is invalid')
+      action = { kind: 'edit', content: [{ type: 'text', text }] }
+    } else {
+      action = input.action
+    }
+    try {
+      return fold(await session.updateQueue(input.itemId, action))
+    } catch (error: unknown) {
+      return ambiguous('updateQueue', error)
+    }
+  }
+
+  openSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): RuntimeCommandResult<{ opened: true }> {
+    const child = this.snapshot.sessionId === input.parentSessionId
+      ? this.snapshot.subagents.find(candidate => candidate.kind === 'child' && candidate.id === input.childSessionId)
+      : undefined
+    if (child === undefined || child.kind !== 'child') return conflict('subagent is no longer available')
+    if (this.sessions.selectSubagent === undefined) return unsupported('subagent navigation is unavailable')
+    this.sessions.selectSubagent({ parentSessionId: input.parentSessionId, childSessionId: input.childSessionId, mode: child.mode })
+    return { ok: true, value: { opened: true } }
+  }
+
+  async interruptSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Promise<RuntimeCommandResult<{ accepted: true }>> {
+    const child = this.snapshot.sessionId === input.parentSessionId
+      ? this.snapshot.subagents.find(candidate => candidate.kind === 'child' && candidate.id === input.childSessionId)
+      : undefined
+    if (child === undefined || child.kind !== 'child' || child.mode !== 'continuable' || !child.canInterrupt) {
+      return conflict('subagent cannot be interrupted in its current state')
+    }
+    if (this.connection.api.subagents === undefined) return unsupported('subagent interruption is unavailable')
+    try {
+      const { result } = await this.connection.api.subagents.interrupt({
+        parentSessionId: input.parentSessionId,
+        childSessionId: input.childSessionId,
+        mode: 'continuable',
+      })
+      return fold(result)
+    } catch (error: unknown) {
+      return ambiguous('interruptSubagent', error)
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.generation += 1
+    this.unsubscribeList()
+    this.unsubscribeSurfaces()
+    this.unsubscribeSession?.()
+    this.unsubscribeSession = undefined
+    this.listeners.clear()
+  }
+
+  private bindSession(sessionId: string | undefined): void {
+    this.unsubscribeSession?.()
+    this.unsubscribeSession = undefined
+    this.boundSessionId = sessionId
+    if (sessionId === undefined) return
+    const session = this.sessions.binding(sessionId)?.session
+    if (session?.subscribe !== undefined) this.unsubscribeSession = session.subscribe(() => { this.publishProjection() })
+  }
+
+  private failRefresh(generation: number, sessionId: string, error: RpcErrorLike): RuntimeCommandResult<never> {
+    if (!this.disposed && generation === this.generation && this.sessions.list.getSnapshot().current === sessionId) {
+      this.lifecycle = 'error'
+      this.failure = error.message.slice(0, 1_000)
+      this.publishProjection()
+    }
+    return rpcFailure(error)
+  }
+
+  private publishProjection(): void {
+    if (this.disposed) return
+    this.snapshot = this.projectSnapshot()
+    for (const listener of this.listeners) listener()
+  }
+
+  private projectSnapshot(): RunCenterSnapshot {
+    const list = this.sessions.list.getSnapshot()
+    const sessionId = list.current
+    if (sessionId === undefined) {
+      return parseRunCenterSnapshot({
+        status: 'idle', jobs: [], subagents: [], queue: [], todos: [], skills: [], deliverables: [],
+      })
+    }
+    const summary = list.byId[sessionId]
+    const projections = summary?.projectionValues ?? {}
+    const sessionSnapshot = this.sessions.binding(sessionId)?.session.getSnapshot?.()
+    const catalog = list.subagentsByParent?.[sessionId]
+    const surfaceSnapshot = this.surfaces.getSnapshot()
+    const goal = projectRunCenterGoal(projections.goal)
+    const plan = isRecord(projections.plan) ? projections.plan : undefined
+    return parseRunCenterSnapshot({
+      sessionId,
+      status: this.lifecycle === 'idle' ? 'ready' : this.lifecycle,
+      jobs: list.jobsBySession?.[sessionId] ?? [],
+      subagents: (catalog?.entries ?? []).map(entry => entry.kind === 'child'
+        ? { ...entry, parentAvailable: catalog?.parentAvailable === true }
+        : entry),
+      queue: sessionSnapshot?.queue ?? [],
+      ...(goal === undefined ? {} : { goal }),
+      ...(plan === undefined ? {} : { plan }),
+      todos: projectRunCenterTodos(projections.todos),
+      skills: this.skills,
+      deliverables: surfaceSnapshot.sessionId === sessionId
+        ? surfaceSnapshot.items.map(surface => ({
+          id: surface.id,
+          title: surface.title,
+          kind: surface.type,
+          status: surface.status,
+          ...(surface.source === undefined ? {} : { source: surface.source }),
+        }))
+        : [],
+      ...(this.failure === undefined ? {} : { error: this.failure }),
+    })
+  }
+}
+
+function projectRunCenterGoal(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.goal)) return undefined
+  const goal = value.goal
+  const blockedReason = isRecord(goal.blockedReason) && typeof goal.blockedReason.message === 'string'
+    ? goal.blockedReason.message
+    : undefined
+  return {
+    id: goal.id,
+    revision: goal.revision,
+    objective: goal.objective,
+    phase: goal.phase,
+    roundsStarted: value.roundsStarted,
+    maxGoalRounds: goal.maxGoalRounds,
+    ...(blockedReason === undefined ? {} : { blockedReason }),
+  }
+}
+
+function projectRunCenterTodos(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value)) return []
+  return value.map((todo, index) => isRecord(todo)
+    ? { id: `todo-${String(index + 1)}`, text: todo.content, status: todo.status }
+    : todo)
+}
+
 export function apply(ctx: ClientContextLike): void {
   ctx.inject(inject, (scope) => {
     const runtime = new DshAgentRuntimeSession(scope.sessions, scope.workspaces)
@@ -1057,6 +1368,7 @@ export function apply(ctx: ClientContextLike): void {
     const models = new DshModelCatalog(scope.sessions, scope.connection)
     const workspaces = new DshWorkspaceCatalog(scope.sessions, scope.workspaces)
     const surfaces: WorkSurfaceRegistry & { dispose(): void } = new DshWorkSurfaceRegistry(scope.sessions)
+    const runCenter = new DshRunCenter(scope.sessions, scope.connection, surfaces)
     scope.provide('agentRuntimeSession', runtime)
     scope.provide('sessionCatalog', catalog)
     scope.provide('contextGovernance', context)
@@ -1068,7 +1380,11 @@ export function apply(ctx: ClientContextLike): void {
     scope.provide('modelCatalog', models)
     scope.provide('workspaceCatalog', workspaces)
     scope.provide('workSurfaceRegistry', surfaces)
-    scope.effect(() => () => { runtime.dispose(); catalog.dispose(); context.dispose(); timeline.dispose(); approvals.dispose(); questions.dispose(); permissions.dispose(); models.dispose(); workspaces.dispose(); surfaces.dispose() }, 'xiaoshe-runtime-dsh-provider: public session projections')
+    scope.provide('runCenter', runCenter)
+    scope.effect(() => {
+      void runCenter.refresh()
+      return () => { runtime.dispose(); catalog.dispose(); context.dispose(); timeline.dispose(); approvals.dispose(); questions.dispose(); permissions.dispose(); models.dispose(); workspaces.dispose(); runCenter.dispose(); surfaces.dispose() }
+    }, 'xiaoshe-runtime-dsh-provider: public session projections')
   })
 }
 

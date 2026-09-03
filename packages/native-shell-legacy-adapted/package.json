@@ -29,6 +29,7 @@
     "client": {
       "inject": [
         "@xiaoshe/runtime-dsh-provider",
+        "@xiaoshe/provider-readiness",
         "@xiaoshe/plugin-governance",
         "@xiaoshe/memory",
         "@xiaoshe/heartbeat"

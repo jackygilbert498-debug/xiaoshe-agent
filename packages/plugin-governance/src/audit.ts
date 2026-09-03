@@ -3,11 +3,16 @@ import { lstat, mkdir, readFile, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { inspectCandidateTarball } from './tar-manifest.js'
 import { runBoundedProcess, type ProcessResult } from './process-runner.js'
+import { parsePluginManifestPolicy, type PluginManifestPolicy } from './compatibility.js'
+import {
+  readPluginSignatureEnvelope, type PluginSignatureVerification, type TrustedPluginKey,
+  verifyDetachedPluginSignature,
+} from './signature.js'
 
 export type CandidateSource =
-  | { readonly kind: 'directory'; readonly path: string }
-  | { readonly kind: 'tarball'; readonly path: string }
-  | { readonly kind: 'registry'; readonly spec: string }
+  | { readonly kind: 'directory'; readonly path: string; readonly signaturePath?: string }
+  | { readonly kind: 'tarball'; readonly path: string; readonly signaturePath?: string }
+  | { readonly kind: 'registry'; readonly spec: string; readonly signaturePath?: string }
 
 export interface CandidateIdentity {
   readonly displayName: string
@@ -22,8 +27,7 @@ export interface CandidateProvenance {
   readonly kind: 'local-directory' | 'local-tarball' | 'registry'
   readonly selection: 'local-bytes' | 'exact-version' | 'floating-reference' | 'external-reference'
   readonly label: string
-  /** No signed catalog or publisher proof is available yet. */
-  readonly assurance: 'unverified'
+  readonly assurance: 'unverified' | 'signed-untrusted' | 'verified-publisher' | 'invalid-signature'
 }
 
 export interface CandidateAudit {
@@ -35,6 +39,9 @@ export interface CandidateAudit {
   readonly installScripts: readonly string[]
   readonly scriptCommands: readonly string[]
   readonly dependencies: readonly string[]
+  readonly dependencyRequirements: Readonly<Record<string, string>>
+  readonly peerRequirements: Readonly<Record<string, string>>
+  readonly policy: PluginManifestPolicy
   readonly runtimeSignals: readonly string[]
   readonly requestedServices: readonly string[]
   readonly risk: 'low' | 'medium' | 'high'
@@ -52,6 +59,7 @@ export interface ResolvedCandidate {
   readonly identity: CandidateIdentity
   readonly provenance: CandidateProvenance
   readonly audit: CandidateAudit
+  readonly signature: PluginSignatureVerification
   readonly healthPath?: string
 }
 
@@ -61,6 +69,7 @@ export interface CandidateResolverOptions {
   readonly cwd?: string
   readonly timeoutMs?: number
   readonly run?: typeof runBoundedProcess
+  readonly trustedKeys?: readonly TrustedPluginKey[] | (() => Promise<readonly TrustedPluginKey[]>)
 }
 
 /** Resolve a local/registry candidate to one immutable, audited npm tarball. */
@@ -70,6 +79,7 @@ export class CandidateResolver {
   readonly #cwd: string
   readonly #timeoutMs: number
   readonly #run: typeof runBoundedProcess
+  readonly #trustedKeys: readonly TrustedPluginKey[] | (() => Promise<readonly TrustedPluginKey[]>)
 
   constructor(options: CandidateResolverOptions) {
     if (!isAbsolute(options.cacheDirectory)) throw new TypeError('candidate cache directory must be absolute')
@@ -78,17 +88,24 @@ export class CandidateResolver {
     this.#cwd = resolve(options.cwd ?? process.cwd())
     this.#timeoutMs = options.timeoutMs ?? 120_000
     this.#run = options.run ?? runBoundedProcess
+    this.#trustedKeys = options.trustedKeys ?? []
   }
 
   async resolve(source: CandidateSource): Promise<ResolvedCandidate> {
     await mkdir(this.#cacheDirectory, { recursive: true })
-    const provenance = describeCandidateSource(source)
     const sourcePath = source.kind === 'tarball'
       ? await exactFile(source.path, 'candidate tarball')
       : await this.#pack(source)
     const bytes = await readFile(sourcePath)
     const inspected = inspectCandidateTarball(bytes)
     const sha256 = digest(bytes)
+    const envelope = await readPluginSignatureEnvelope(source.signaturePath)
+    const trustedKeys = typeof this.#trustedKeys === 'function' ? await this.#trustedKeys() : this.#trustedKeys
+    const signature = verifyDetachedPluginSignature({
+      packageName: inspected.packageName, version: inspected.version, tarballSha256: sha256,
+      ...(envelope === undefined ? {} : { envelope }), trustedKeys,
+    })
+    const provenance = Object.freeze({ ...describeCandidateSource(source), assurance: signatureAssurance(signature.status) })
     const stablePath = join(this.#cacheDirectory, `${safeArtifactName(inspected.packageName)}-${inspected.version}-${sha256.slice(0, 16)}.tgz`)
     if (resolve(sourcePath) !== resolve(stablePath)) {
       const { copyFile } = await import('node:fs/promises')
@@ -104,6 +121,7 @@ export class CandidateResolver {
       identity: inspected.identity,
       provenance,
       audit: inspected.audit,
+      signature,
       ...(inspected.healthPath === undefined ? {} : { healthPath: inspected.healthPath }),
     })
   }
@@ -144,9 +162,10 @@ export function auditCandidateManifest(value: unknown): CandidateAudit {
   const scriptMap = isRecord(value.scripts) ? value.scripts : {}
   const installScripts = Object.keys(scriptMap).filter(name => /^(?:preinstall|install|postinstall|prepare)$/u.test(name)).sort()
   const scriptCommands = installScripts.flatMap(name => typeof scriptMap[name] === 'string' ? [`${name}: ${scriptMap[name]}`] : [])
-  const dependencies = [...new Set([
-    ...dependencyNames(value.dependencies), ...dependencyNames(value.optionalDependencies), ...dependencyNames(value.peerDependencies),
-  ])].sort()
+  const dependencyRequirements = dependencyMap(value.dependencies, 'dependencies')
+  const optionalRequirements = dependencyMap(value.optionalDependencies, 'optionalDependencies')
+  const peerRequirements = dependencyMap(value.peerDependencies, 'peerDependencies')
+  const dependencies = [...new Set([...Object.keys(dependencyRequirements), ...Object.keys(optionalRequirements), ...Object.keys(peerRequirements)])].sort()
   const runtimeSignals = [
     ...dependencies.filter(name => /(?:node-gyp|prebuild|ffi|native|sharp|sqlite|playwright|puppeteer)/iu.test(name)).map(name => `可能包含原生或下载行为：${name}`),
     ...scriptCommands.filter(command => /(?:curl|wget|invoke-webrequest|https?:|node-gyp|prebuild|download|powershell|bash|sh\s)/iu.test(command)).map(command => `安装命令需要人工审阅：${command}`),
@@ -158,12 +177,17 @@ export function auditCandidateManifest(value: unknown): CandidateAudit {
     ...(isRecord(dsh.bundle) && Array.isArray(dsh.bundle.inject) ? dsh.bundle.inject : []),
   ].filter((item): item is string => typeof item === 'string').sort()
   const repository = repositorySource(value.repository)
+  const policy = parsePluginManifestPolicy(value)
+  const permissionRisk = policy.permissions.some(permission => ['credentials:read', 'network:external', 'filesystem:write', 'process:spawn', 'desktop:control'].includes(permission))
   const findings = [
     ...(installScripts.length > 0 ? [`包含安装脚本：${installScripts.join(', ')}`] : []),
     ...runtimeSignals,
     ...(scope === 'profile-bundle' ? ['Bundle 请求进入 DSH Host 进程内运行（未启用系统沙箱）'] : []),
     ...(scope === 'session-dynamic' ? ['动态 Host VM 不是安全边界'] : []),
     ...(repository === undefined ? ['未声明可核验的 repository 来源'] : []),
+    ...(policy.permissions.length === 0 ? ['未声明小蛇权限清单；共享 Host 内仍按完全受信代码处理'] : [`请求权限：${policy.permissions.join(', ')}`]),
+    ...(policy.unknownPermissions.length === 0 ? [] : [`包含未知权限：${policy.unknownPermissions.join(', ')}`]),
+    `隔离声明：${policy.isolation}；实际边界为共享 Host 进程`,
   ]
   const valid = validPackageName(value.name) && validVersion(value.version)
   return Object.freeze({
@@ -175,9 +199,12 @@ export function auditCandidateManifest(value: unknown): CandidateAudit {
     installScripts: Object.freeze(installScripts),
     scriptCommands: Object.freeze(scriptCommands),
     dependencies: Object.freeze(dependencies),
+    dependencyRequirements: Object.freeze({ ...dependencyRequirements, ...optionalRequirements }),
+    peerRequirements: Object.freeze(peerRequirements),
+    policy,
     runtimeSignals: Object.freeze(runtimeSignals),
     requestedServices: Object.freeze(requestedServices),
-    risk: installScripts.length > 0 || runtimeSignals.length > 0 || scope === 'profile-bundle' || scope === 'unknown' ? 'high' : 'medium',
+    risk: installScripts.length > 0 || runtimeSignals.length > 0 || scope === 'profile-bundle' || scope === 'unknown' || permissionRisk || policy.unknownPermissions.length > 0 ? 'high' : 'medium',
     osSandboxEnforced: false,
     findings: Object.freeze(findings),
   })
@@ -228,7 +255,8 @@ export function candidateDisclosures(candidate: ResolvedCandidate): readonly str
   return Object.freeze([
     `将变更 ${candidate.packageName}@${candidate.version}（sha256 ${candidate.sha256}）`,
     `来源：${candidate.provenance.label}；选择方式：${sourceSelectionLabel(candidate.provenance.selection)}`,
-    '来源核验：未签名；SHA-256 只绑定审计后的安装包字节，不证明发布者身份。',
+    `来源核验：${candidate.signature.reason}`,
+    ...(candidate.signature.fingerprint === undefined ? [] : [`发布者公钥指纹：${candidate.signature.fingerprint}`]),
     '显示名称、说明与开发者信息来自插件清单，不证明作者身份。',
     ...candidate.audit.findings,
     '插件将在 Host 进程内运行；系统沙箱未启用。',
@@ -236,7 +264,11 @@ export function candidateDisclosures(candidate: ResolvedCandidate): readonly str
 }
 
 function invalidAudit(message: string): CandidateAudit {
-  return Object.freeze({ valid: false, scope: 'unknown', installScripts: [], scriptCommands: [], dependencies: [], runtimeSignals: [], requestedServices: [], risk: 'high', osSandboxEnforced: false, findings: [message] })
+  return Object.freeze({
+    valid: false, scope: 'unknown', installScripts: [], scriptCommands: [], dependencies: [],
+    dependencyRequirements: {}, peerRequirements: {}, policy: parsePluginManifestPolicy({}),
+    runtimeSignals: [], requestedServices: [], risk: 'high', osSandboxEnforced: false, findings: [message],
+  })
 }
 
 function validPackageName(value: unknown): value is string {
@@ -247,7 +279,14 @@ function validVersion(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$/u.test(value)
 }
 
-function dependencyNames(value: unknown): string[] { return isRecord(value) ? Object.keys(value) : [] }
+function dependencyMap(value: unknown, label: string): Record<string, string> {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).length > 500) throw new TypeError(`${label} must be a bounded object`)
+  return Object.fromEntries(Object.entries(value).map(([name, spec]) => {
+    if (!validPackageName(name) || typeof spec !== 'string' || spec.trim() === '' || spec.length > 500 || /[\r\n\0]/u.test(spec)) throw new TypeError(`${label}.${name} is invalid`)
+    return [name, spec]
+  }))
+}
 function repositorySource(value: unknown): string | undefined {
   const source = typeof value === 'string' ? value : isRecord(value) ? value.url : undefined
   const normalized = boundedText(source, 1_000)
@@ -330,6 +369,10 @@ function exactRegistryVersion(value: string): boolean {
 
 function sourceSelectionLabel(value: CandidateProvenance['selection']): string {
   return ({ 'local-bytes': '本地字节', 'exact-version': '固定版本', 'floating-reference': '浮动引用', 'external-reference': '外部引用' } as const)[value]
+}
+
+function signatureAssurance(status: PluginSignatureVerification['status']): CandidateProvenance['assurance'] {
+  return status === 'trusted' ? 'verified-publisher' : status === 'valid-untrusted' ? 'signed-untrusted' : status === 'invalid' ? 'invalid-signature' : 'unverified'
 }
 
 async function exactFile(input: string, label: string): Promise<string> {
