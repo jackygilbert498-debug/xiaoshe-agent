@@ -53,10 +53,93 @@ test('bootstrap waits only on new public service names', () => {
   assert.equal(provider.inject.includes('remote.subagents'), true)
 })
 
+test('late workspaceFiles namespace cannot leave a mounted file reader permanently unsupported', async () => {
+  const { Context } = await loadUpstream('vendor/cordis/src/index.ts')
+  const ctx = new Context()
+  let reader
+  const sessions = { list: { getSnapshot: () => ({ current: 'one' }), subscribe: () => () => {} }, binding: () => ({}) }
+  ctx.inject(provider.inject, scope => {
+    reader = new provider.DshRuntimeFiles(sessions, undefined, scope.remote.workspaceFiles, {
+      getSnapshot: () => ({ sessionId: 'one', items: [{ sessionId: 'one', type: 'file', source: '/work/report.md' }] }),
+    })
+  })
+  for (const name of provider.inject.filter(name => name !== 'remote.workspaceFiles')) ctx.provide(name, {})
+  await new Promise(resolve => setImmediate(resolve))
+  const identity = { absolutePath: '/work/report.md', version: 'v1', bytes: 5 }
+  const workspaceFiles = {
+    stat: async () => ({ ok: true, value: identity }),
+    readBytes: async () => ({ ok: true, value: { ...identity, offset: 0, eof: true, data: 'aGVsbG8=' } }),
+  }
+  ctx.remote.workspaceFiles = workspaceFiles
+  ctx.provide('remote.workspaceFiles', workspaceFiles)
+  await new Promise(resolve => setImmediate(resolve))
+  try {
+    const result = await reader.read({ sessionId: 'one', path: '/work/report.md' })
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(new TextDecoder().decode(result.value.data), 'hello')
+  } finally { reader?.dispose(); await ctx.fiber.dispose() }
+})
+
+for (const code of ['interrupted', 'ABORTED', 'ABORTED_BEFORE_DISPATCH']) test(`${code} tool is retained as a canceled action rather than an actionable tool failure`, () => {
+  const sessions = { list: { getSnapshot: () => ({ current: 'one', byId: {} }), subscribe: () => () => {} }, binding: () => ({ session: {
+    getSnapshot: () => ({ nodes: [{ kind: 'tool-result', seq: 7, call: { name: 'pwsh' }, content: [], isError: true, error: { name: 'AbortError', code } }] }), subscribe: () => () => {},
+  } }) }
+  const timeline = new provider.DshTaskTimeline(sessions)
+  assert.equal(timeline.getSnapshot().items[0].text, '已取消：pwsh')
+  assert.notEqual(timeline.getSnapshot().items[0].isError, true)
+  timeline.dispose()
+})
+
+test('abort words in an ordinary failed tool cannot impersonate structured cancellation', () => {
+  const sessions = { list: { getSnapshot: () => ({ current: 'one', byId: {} }), subscribe: () => () => {} }, binding: () => ({ session: {
+    getSnapshot: () => ({ nodes: [{ kind: 'tool-result', seq: 7, call: { name: 'pwsh' }, isError: true,
+      error: { name: 'AbortError', code: 'EXIT_1', message: 'tool call aborted' } }] }), subscribe: () => () => {},
+  } }) }
+  const timeline = new provider.DshTaskTimeline(sessions)
+  assert.equal(timeline.getSnapshot().items[0].text, '失败：pwsh')
+  assert.equal(timeline.getSnapshot().items[0].isError, true)
+  timeline.dispose()
+})
+
 async function loadUpstream(relative) {
   const result = await build({ entryPoints: [fileURLToPath(new URL(`../../../runtime/DSH/${relative}`, import.meta.url))], bundle: true, write: false, platform: 'node', format: 'esm' })
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)
 }
+
+test('canonical and real DSH chat assembly both preserve structured cancellation and prior true failure', async () => {
+  const { ConversationNodeAssembler } = await loadUpstream('packages/client/ui-conversation/src/client/conversation/assembler.ts')
+  const { toolDefinition } = await loadUpstream('packages/client/ui-chat/src/client/conversation-nodes/tool.ts')
+  const { chatViewDefinition } = await loadUpstream('packages/client/ui-chat/src/client/conversation-nodes/chat-snapshot-builder.ts')
+  const { foldTaskTimeline } = await loadUpstream('../../packages/task-timeline/src/index.ts')
+  const event = (type, seq, data) => ({ type, seq, time: seq, data, ...(type === 'tool/result' ? { surfaceOp: 'append' } : {}) })
+  const events = [
+    event('turn/start', 1, { turn: 1 }), event('step/start', 2, { turn: 1, step: 1 }),
+    event('tool/call', 3, { turn: 1, step: 1, name: 'pwsh', callId: 'old', arguments: '{}' }),
+    event('tool/result', 4, { turn: 1, step: 1, error: { code: 'EXIT_1', message: 'tool call aborted' }, message: {
+      source: { kind: 'tool', callId: 'old' }, content: [{ type: 'tool-result', toolCallId: 'old', content: [], isError: true }] } }),
+    event('step/end', 5, { turn: 1, step: 1 }), event('turn/end', 6, { turn: 1, reason: { kind: 'completed' } }),
+    event('turn/start', 66, { turn: 4 }), event('step/start', 68, { turn: 4, step: 1 }),
+    event('tool/call', 75, { turn: 4, step: 1, name: 'pwsh', callId: 'call_00_VVzSpC3kYm1IySSxpkjL4464', arguments: '{}' }),
+    event('tool/result', 76, { turn: 4, step: 1, error: { name: 'AbortError', code: 'ABORTED' }, message: {
+      source: { kind: 'tool', callId: 'call_00_VVzSpC3kYm1IySSxpkjL4464' }, content: [{ type: 'tool-result', toolCallId: 'call_00_VVzSpC3kYm1IySSxpkjL4464', content: [{ type: 'text', text: 'Error: tool call aborted' }], isError: true }] } }),
+    event('step/end', 77, { turn: 4, step: 1 }), event('turn/end', 78, { turn: 4, reason: { kind: 'aborted', reason: { kind: 'user' } } }),
+  ]
+  const assembler = new ConversationNodeAssembler({ entries: () => [toolDefinition], fallbackEntry: () => undefined }, { entries: () => [chatViewDefinition] })
+  assembler.replaceWindow(events.map(event => ({ type: 'event', event })), false)
+  assembler.activateTarget('chat'); assembler.flush()
+  const chat = assembler.snapshot('chat')
+  for (const canonical of [false, true]) {
+    const sessions = { list: { getSnapshot: () => ({ current: 'qa', byId: { qa: { projectionValues: canonical ? { taskTimeline: foldTaskTimeline(events) } : {} } } }), subscribe: () => () => {} },
+      binding: () => ({ session: { getSnapshot: () => chat.legacy, subscribe: () => () => {} } }) }
+    const timeline = new provider.DshTaskTimeline(sessions)
+    try {
+      const rows = timeline.getSnapshot().items
+      assert.equal(rows.find(row => row.seq === 76).text, '已取消：pwsh', `canonical=${canonical}`)
+      assert.notEqual(rows.find(row => row.seq === 76).isError, true)
+      assert.equal(rows.find(row => row.seq === 4).isError, true)
+    } finally { timeline.dispose() }
+  }
+})
 
 test('new Remote namespaces preserve model result and session projection', async () => {
   assert.equal(typeof provider.createRemoteConnection, 'function')

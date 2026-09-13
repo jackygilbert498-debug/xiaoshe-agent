@@ -2647,6 +2647,9 @@ export function apply(
     const permissions = react.useSyncExternalStore(listener => ctx.permissionPresets.subscribe(listener), () => ctx.permissionPresets.getSnapshot())
     const memoryState = react.useSyncExternalStore(listener => ctx.memoryLifecycle.subscribe(listener), () => ctx.memoryLifecycle.getSnapshot())
     const productHealth = react.useSyncExternalStore(listener => ctx.productHealth.subscribe(listener), () => ctx.productHealth.getSnapshot())
+    const connectionUnavailableRef = react.useRef(false)
+    const connectionView = runtimeConnectionPresentation(productHealth, connectionUnavailableRef.current)
+    connectionUnavailableRef.current = connectionView.unavailable
     const pluginState = react.useSyncExternalStore(listener => ctx.pluginGovernance.subscribe(listener), () => ctx.pluginGovernance.getSnapshot())
     const themeSnapshot = react.useSyncExternalStore(listener => ctx.on('theme/change', listener), () => ctx.theme.getTheme())
     const appearanceSnapshot = react.useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
@@ -3259,7 +3262,7 @@ export function apply(
 
     const submit = async (event: { preventDefault(): void; currentTarget: HTMLFormElement }): Promise<void> => {
       event.preventDefault()
-      if (submittingRef.current || current?.state === 'blocked' || sessionQuestionRequests[0] !== undefined || sessionApprovals[0] !== undefined) return
+      if (connectionUnavailableRef.current || submittingRef.current || current?.state === 'blocked' || sessionQuestionRequests[0] !== undefined || sessionApprovals[0] !== undefined) return
       setError('')
       const form = event.currentTarget
       const draftText = String(new FormData(form).get('content') ?? '')
@@ -3494,7 +3497,8 @@ export function apply(
     const openModelSettings = (): void => openManagementSettings('models')
 
     const updateRunQueue = async (itemId: string, kind: 'remove' | 'steer' | 'edit', text?: string): Promise<void> => {
-      if (currentId === undefined || queueBusy !== undefined) return
+      if (connectionUnavailableRef.current || currentId === undefined || queueBusy !== undefined) return
+      if (kind === 'steer' && (stoppingRef.current || current?.state !== 'running')) return
       setError('')
       setQueueBusy(itemId)
       try {
@@ -4067,11 +4071,11 @@ export function apply(
     })
     const sessionWindow = windowSessionCatalog(matchingSessions, sessionDisplayLimit, currentId)
     const visibleSessions = sessionWindow.items
-    const status = current?.state ?? 'idle'
+    const status = connectionView.unavailable ? 'disconnected' : current?.state ?? 'idle'
     // A retained receipt describes a previous finished turn while work resumes.
-    const receipt = status === 'running' || status === 'blocked' || stopping || sessionQuestionRequests.length > 0 || sessionApprovals.length > 0
+    const receipt = connectionView.unavailable || status === 'running' || status === 'blocked' || stopping || sessionQuestionRequests.length > 0 || sessionApprovals.length > 0
       ? undefined : current?.completionReceipt?.outcome
-    const runtimeLabel = sessionQuestionRequests.length > 0 ? '需要回答' : sessionApprovals.length > 0 ? '需要确认' : stopping ? '正在停止' : statusLabel(status)
+    const runtimeLabel = connectionView.unavailable ? connectionView.label : sessionQuestionRequests.length > 0 ? '需要回答' : sessionApprovals.length > 0 ? '需要确认' : stopping ? '正在停止' : statusLabel(status)
     const contextRow = currentId === undefined ? undefined : context.sessions[currentId]
     const contextView = contextPresentation(contextRow)
     const modelView = modelPresentation(sessionModels)
@@ -4460,12 +4464,12 @@ export function apply(
                 queueEdit?.id === item.id ? e('form', { className: 'queue-edit-form', onSubmit: (event: { preventDefault(): void }) => { event.preventDefault(); void updateRunQueue(item.id, 'edit', queueEdit.text) } },
                   e('textarea', { value: queueEdit.text, rows: 2, 'aria-label': '修改队列消息', disabled: queueBusy !== undefined,
                     onChange: (event: { currentTarget: HTMLTextAreaElement }) => setQueueEdit({ id: item.id, text: event.currentTarget.value }) }),
-                  e('button', { type: 'submit', disabled: queueBusy !== undefined || queueEdit.text.trim() === '' }, '保存'),
+                  e('button', { type: 'submit', disabled: connectionView.unavailable || queueBusy !== undefined || queueEdit.text.trim() === '' }, '保存'),
                   e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => setQueueEdit(undefined) }, '取消')) : e('span', { className: 'queue-preview' }, item.preview),
                 queueEdit?.id === item.id ? null : e('div', { className: 'queue-actions' },
                   item.editable && item.text != null ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => setQueueEdit({ id: item.id, text: item.text! }) }, '编辑') : null,
-                  item.steerable ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => { void updateRunQueue(item.id, 'steer') } }, '立即调整') : null,
-                  item.removable ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => { void updateRunQueue(item.id, 'remove') } }, '移除') : null))))),
+                  item.steerable && status === 'running' ? e('button', { type: 'button', disabled: queueBusy !== undefined || stopping || connectionView.unavailable, onClick: () => { void updateRunQueue(item.id, 'steer') } }, '立即调整') : null,
+                  item.removable ? e('button', { type: 'button', disabled: connectionView.unavailable || queueBusy !== undefined, onClick: () => { void updateRunQueue(item.id, 'remove') } }, '移除') : null))))),
             e('form', {
               className: 'cbox', 'data-has-images': draftImages.length > 0,
               onSubmit: (event: unknown) => { void submit(event as { preventDefault(): void; currentTarget: HTMLFormElement }) },
@@ -4605,7 +4609,7 @@ export function apply(
                 }, icon(e, 'stop'), e('span', null, stopping ? '停止中' : '停止')) : null,
                 e('button', {
                   className: `send ${current?.state === 'running' && sendMode === 'steer' ? 'steer' : ''}`.trim(), type: 'submit',
-                  disabled: interactionBlocked || submitting || stopping,
+                  disabled: connectionView.unavailable || interactionBlocked || submitting || stopping,
                   title: submitting ? '正在发送' : current?.state === 'running' ? (sendMode === 'queue' ? '加入队列' : '调整方向') : '发送',
                   'aria-label': submitting ? '正在发送' : current?.state === 'running' ? (sendMode === 'queue' ? '加入队列' : '调整方向') : '发送',
                 }, icon(e, 'send'))))),
@@ -5564,7 +5568,7 @@ function renderWorkSurfaceDock(e: ReactLike['createElement'], options: WorkSurfa
           options.onFullscreen === undefined ? null : e('button', { type: 'button', 'aria-pressed': options.fullscreen === true, onClick: options.onFullscreen }, options.fullscreen ? '退出全屏' : '全屏阅读'),
           options.onSplit === undefined ? null : e('button', { type: 'button', disabled: !options.splitAvailable, 'aria-pressed': options.split === true, onClick: options.onSplit }, options.split ? '单栏' : '双栏对照'),
           e('button', { type: 'button', disabled: !active.capabilities.copySource, onClick: () => options.onCopy(active) }, '复制来源'),
-          e('button', { type: 'button', disabled: !active.capabilities.externalOpen, onClick: () => options.onExternal(active) }, '另行打开'))),
+          active.capabilities.externalOpen ? e('button', { type: 'button', onClick: () => options.onExternal(active) }, '另行打开') : null)),
       e('div', { className: 'surface-summary' },
         e('div', null, e('b', null, active.title), e('span', { 'data-status': active.status }, workSurfaceStatusLabel(active.status))),
         active.source === undefined ? null : e('code', { title: active.source }, active.source)),
@@ -6419,6 +6423,13 @@ export function heartbeatPresentation(value: unknown): { readonly status: string
 }
 
 /** Combine transport health with the retained heartbeat value shown by the shell. */
+export function runtimeConnectionPresentation(value: ProductHealthSnapshot, previousUnavailable = false): { readonly unavailable: boolean; readonly label: string } {
+  // A loading snapshot retains old health values; only a settled read may restore controls.
+  const unavailable = value.status === 'loading' ? previousUnavailable : value.status === 'error'
+  return { unavailable, label: unavailable ? '连接中断，任务状态待确认' : '' }
+}
+
+/** Combine transport health with the retained heartbeat value shown by the shell. */
 export function heartbeatHealthPresentation(value: ProductHealthSnapshot): ReturnType<typeof heartbeatPresentation> {
   const heartbeat = 'value' in value ? value.value?.heartbeat : undefined
   const sourceError = heartbeatReadError(value)
@@ -6905,12 +6916,13 @@ export function taskStatePresentation(input: {
   if (input.queued > 0) return { label: '等待处理', detail: '补充要求正在等待处理，可在下方调整或移除。', tone: 'warn' }
   if (input.active > 0) return { label: '正在推进', detail: '下方事项正在推进，可以查看进展和工作材料。', tone: 'ok' }
   if (input.receipt === 'completed') return { label: '已结束', detail: '本轮执行已结束，任务结果请看回复中的证据。命令自动分类未覆盖不等于任务失败，也不代表所有执行影响均已独立验证。' }
+  if (input.receipt === 'cancelled') return { label: '已取消', detail: '已按你的请求停止。未完成要求和未验证的执行影响仍保留，不代表任务完成。' }
   if (input.receipt !== undefined) return { label: receiptLabel(input.receipt), detail: `${receiptLabel(input.receipt)}。工作材料包含过程记录，请以本轮结果说明为准。`, ...(input.receipt === 'verified' ? { tone: 'ok' as const } : {}) }
   return input.loading ? { label: '正在读取', detail: '正在读取本轮任务信息，请稍候。' } : { label: '等待任务', detail: '发送一项任务后，在这里查看进展和工作材料。' }
 }
 
 function receiptLabel(value: string): string {
-  return ({ completed: '已结束', verified: '已验证', partial: '部分验证', blocked: '受阻', failed: '失败', not_run: '未执行', release_held: '待发布', running: '执行中' } as Record<string, string>)[value] ?? value
+  return ({ completed: '已结束', verified: '已验证', partial: '部分验证', blocked: '受阻', failed: '失败', cancelled: '已取消', not_run: '未执行', release_held: '待发布', running: '执行中' } as Record<string, string>)[value] ?? value
 }
 
 function eventLabel(value: string): string {

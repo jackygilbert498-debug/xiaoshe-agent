@@ -72,6 +72,7 @@ async function main() {
     app.exit(0)
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
+    if (error?.journeyFailure) process.stderr.write(`[native-shell-journey] failure evidence: ${JSON.stringify(error.journeyFailure)}\n`)
     await writeReport({
       schema: 'xiaoshe-native-shell-journey/v1',
       accepted: false,
@@ -79,6 +80,7 @@ async function main() {
       blockedNetworkRequests,
       viewports: results,
       error: error instanceof Error ? error.stack : String(error),
+      failure: error?.journeyFailure,
     })
     clearInterval(keepAlive)
     app.exit(1)
@@ -107,6 +109,21 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       sandbox: false,
     },
   })
+  // Evaluate each trusted fixture script once. Electron otherwise replaces its
+  // renderer exception with a generic message and loses the failing selector.
+  const execute = browser.webContents.executeJavaScript.bind(browser.webContents)
+  browser.webContents.executeJavaScript = async (code, ...args) => {
+    try {
+      const result = await execute(`(async () => {
+        try { return { ok: true, value: await eval(${JSON.stringify(code)}) } }
+        catch (error) { return { ok: false, error: String(error?.stack || error) } }
+      })()`, ...args)
+      if (!result.ok) throw new Error(result.error)
+      return result.value
+    } catch (error) {
+      throw new Error(`Renderer evaluation failed for script:\n${code.slice(0, 2_000)}\n${error instanceof Error ? error.stack : String(error)}`, { cause: error })
+    }
+  }
   // The production web-server serves these exact canonical assets. A file://
   // fixture has no /api server; without this port, Chromium paints a broken
   // image glyph through the watermark's outline filter instead of the logo.
@@ -152,6 +169,11 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
     assert.equal(moduleProbe.error, undefined, moduleProbe.error)
     assert.deepEqual(moduleProbe, { react: 'function', reactDom: 'function' })
     await waitFor(browser, 'window.__journey?.state?.client !== undefined')
+    // loadFile has executed the actual client/negative fixture script, and the
+    // real native collectors above are live. Fail only on observed violations;
+    // retain the end-of-journey checks for requests/errors that arrive later.
+    assert.deepEqual(blockedRequests, [], 'native network gate observed an external request during client loading')
+    assert.deepEqual(consoleErrors, [], 'native console gate observed a renderer error during client loading')
     await browser.webContents.executeJavaScript('window.__journey.mount()')
     await waitFor(browser, 'document.querySelector("textarea[name=content]") !== null')
     assert.equal(await browser.webContents.executeJavaScript(`new Promise(resolve => {
@@ -174,11 +196,36 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
     assert.deepEqual(initial.ledger, { sends: [], stopRunCalls: [], cancelCalls: [], durableEvents: [], modelSelections: [], paidModelRequests: [] })
     await browser.webContents.executeJavaScript('window.__journey.setEmptyTask(true)')
     await waitFor(browser, 'document.querySelector(".task-summary")?.textContent.includes("等待任务") === true')
-    assert.equal(await browser.webContents.executeJavaScript('getComputedStyle(document.querySelector(".stage-ghost")).display === "none"'), width <= 520, 'only phone empty-state decoration yields space to task starters')
-    assert.equal(await browser.webContents.executeJavaScript('getComputedStyle(document.querySelector(".stage-word")).display !== "none"'), true, 'the brand wordmark stays visible on every viewport')
     for (const theme of ['light', 'ink-jade']) {
       if (theme === 'ink-jade') await click(browser, '.theme-toggle')
       await waitFor(browser, `document.querySelector('.xsla-shell')?.dataset.theme === ${JSON.stringify(theme)}`)
+      // The current welcome surface is one compact symbol plus three draft
+      // actions, not the retired ghost/wordmark. Check actual painted geometry.
+      const emptyStage = await browser.webContents.executeJavaScript(`(() => {
+        const geometry = element => {
+          if (!element) return { visible: false, withinViewport: false, width: 0, height: 0 }
+          const rect = element.getBoundingClientRect(), style = getComputedStyle(element)
+          return {
+            visible: element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && style.display !== 'none' && rect.width > 0 && rect.height > 0,
+            withinViewport: rect.left >= -0.5 && rect.top >= -0.5 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5,
+            width: rect.width, height: rect.height,
+          }
+        }
+        return {
+          symbol: geometry(document.querySelector('.stage-empty .stage-symbol')),
+          starters: [...document.querySelectorAll('.stage-empty .stage-starters button')].map(button => ({
+            id: button.dataset.taskStarter, enabled: !button.disabled && button.tabIndex >= 0, ...geometry(button),
+          })),
+        }
+      })()`)
+      assert.equal(emptyStage.symbol.visible, true, `${theme} welcome symbol must be visible at ${width}x${height}`)
+      assert.equal(emptyStage.symbol.withinViewport, true, 'welcome symbol must fit inside the real viewport')
+      assert.ok(Math.abs(emptyStage.symbol.width - emptyStage.symbol.height) <= 1, 'welcome symbol must retain square geometry')
+      assert.deepEqual(emptyStage.starters.map(item => item.id), ['organize', 'research', 'code'], 'all three task drafts must be present')
+      for (const starter of emptyStage.starters) {
+        assert.equal(starter.visible && starter.withinViewport && starter.enabled, true, `${starter.id} task draft must be visible, reachable and enabled`)
+        assert.ok(starter.height >= 44, `${starter.id} task draft must retain a usable hit target`)
+      }
       screenshots.push(await captureScene(browser, width, height, `empty-${theme}`))
     }
     await click(browser, '.theme-toggle')
@@ -188,7 +235,7 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
     const starter = await browser.webContents.executeJavaScript('window.__journey.inspect()')
     assert.match(starter.composerValue, /整理/u)
     assert.equal(starter.ledger.sends.length, 0)
-    await click(browser, '[data-task-starter="image"]')
+    await attemptBlockedStarter(browser, 'research')
     assert.equal((await browser.webContents.executeJavaScript('window.__journey.inspect()')).composerValue, starter.composerValue)
     await fillComposer(browser, '')
     await browser.webContents.executeJavaScript(`(() => {
@@ -197,7 +244,7 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       document.querySelector('textarea[name=content]').dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData: data }))
     })()`)
     await waitFor(browser, 'document.querySelectorAll(".attachment-item").length === 1')
-    await click(browser, '[data-task-starter="organize"]')
+    await attemptBlockedStarter(browser, 'organize')
     assert.equal((await browser.webContents.executeJavaScript('window.__journey.inspect()')).composerValue, '')
     assert.equal(await browser.webContents.executeJavaScript('document.querySelectorAll(".attachment-item").length'), 1)
     await click(browser, '.attachment-remove')
@@ -215,7 +262,7 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       launchers: document.querySelectorAll('[data-workbench-launcher]').length,
       controls: document.querySelector('[data-workbench-launcher]')?.getAttribute('aria-controls'),
       defaultCollapsed: document.querySelector('#xsla-insp')?.classList.contains('collapsed'),
-    })`), { launchers: 1, controls: 'xsla-insp', defaultCollapsed: width <= 900 })
+    })`), { launchers: 1, controls: 'xsla-insp', defaultCollapsed: true }, 'this empty-timeline fixture starts with the workbench collapsed at every width')
     if (width <= 900) {
       await browser.webContents.executeJavaScript(`(() => {
         const trigger = document.querySelector('[data-workbench-launcher]')
@@ -244,7 +291,7 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       await setExactViewport(browser, width, height)
       await openWorkbench(browser, 'task')
       await waitFor(browser, 'document.querySelector("#xsla-insp")?.classList.contains("mobile-open") === true')
-    }
+    } else await openWorkbench(browser, 'task')
     const taskWorkbench = await browser.webContents.executeJavaScript(`(() => {
       const panel = document.querySelector('#xsla-panel-status')
       const history = panel?.querySelector('.run-history')
@@ -591,6 +638,11 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       assert.equal(passiveLayout.primaryActionVisible, true)
       const closedComposerSize = await browser.webContents.executeJavaScript(`(() => { const rect = document.querySelector('.cbox').getBoundingClientRect(); return { width: rect.width, height: rect.height } })()`)
       await openWorkbench(browser, 'materials')
+      // These are immutable tool records, including terminal output. The
+      // current "files" category intentionally excludes non-file activity.
+      assert.match(await browser.webContents.executeJavaScript('document.querySelector(".material-categories button:last-child").textContent'), /^执行快照/u)
+      await click(browser, '.material-categories button:last-child')
+      await waitFor(browser, 'document.querySelector(".material-categories button:last-child").getAttribute("aria-pressed") === "true"')
       const first = materialEvidence.surfaces.items[0]
       await click(browser, `[data-run-deliverable-id="${first.id}"]`)
       await waitFor(browser, 'document.querySelector("#xsla-work-surface-dock") !== null')
@@ -713,10 +765,12 @@ async function runViewport({ width, height }, blockedNetworkRequests) {
       layout,
     }
   } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error))
+    failure.journeyFailure = { viewport: { width, height }, consoleErrors: [...consoleErrors], blockedNetworkRequests: [...blockedRequests] }
     // Keep the actual failed viewport, not just a parent assertion after its
     // private fixture has been removed. Screenshot capture cannot mask failure.
     try { await captureScene(browser, width, height, 'failure') } catch {}
-    throw error
+    throw failure
   } finally {
     if (browser.webContents.debugger.isAttached()) browser.webContents.debugger.detach()
     if (!browser.isDestroyed()) browser.destroy()
@@ -997,6 +1051,23 @@ async function captureScene(browser, width, height, name) {
   }
   await writeFile(path, screenshot.toPNG())
   return { name, captured: true, path, diagnostics }
+}
+
+/** Existing text/attachments hide and disable starters; even synthetic clicks must not replace them. */
+async function attemptBlockedStarter(browser, id) {
+  const selector = `[data-task-starter="${id}"]`
+  await waitFor(browser, `document.querySelector(${JSON.stringify(selector)})?.disabled === true`)
+  assert.deepEqual(await browser.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)})
+    return { disabled: target.disabled, tabIndex: target.tabIndex, ariaHidden: target.closest('.stage-starters').getAttribute('aria-hidden'),
+      visible: target.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) }
+  })()`), { disabled: true, tabIndex: -1, ariaHidden: 'true', visible: false }, 'existing user input must make task starters noninteractive')
+  await browser.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)})
+    target.click()
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  })()`)
+  await browser.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
 }
 
 async function click(browser, selector) {

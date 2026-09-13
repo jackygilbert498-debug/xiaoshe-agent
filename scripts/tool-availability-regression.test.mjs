@@ -101,7 +101,7 @@ async function fixture(t) {
       assert.equal(args.path, join(directory, 'input.jsonl'))
       return { matches: (await readFile(args.path, 'utf8')).split('\n').filter(line => line.includes(args.pattern)) }
     } })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent,
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent,
     message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }) })
   const calls = []
   const call = async (name, args = {}) => {

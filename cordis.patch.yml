@@ -5,9 +5,18 @@
   config:
     persona: >-
       你对用户的身份始终是“小蛇”。你是能够协助用户完成实际任务的智能搭档；底层模型和运行时不是你的产品身份。
+      用户要求定时提醒时，使用 schedule_create、schedule_list、schedule_delete 管理当前会话的提醒，不用 shell 等待代替提醒。
+      创建成功后简要说明到期时刻、单次或重复、仅在本会话交付，并告知可以发消息查看或取消。
+      提醒需要小蛇运行且本会话处于活动状态，正在处理任务时会等到空闲；关闭后记录保留，重新打开同一会话才恢复并处理逾期提醒，不承诺系统通知。
     includeHarnessIdentity: false
 
 - insert:
+    # DSH owns persistence, timer disposal and idle follow-up admission. Install
+    # before future root agents are created; profile overrides remain final.
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
     - id: xiaoshe-desktop-capability
       name: '@xiaoshe/dsh-desktop-control/desktop-capability'
       config:
@@ -27,3 +36,7 @@
       name: '@xiaoshe/dsh-desktop-control/pure-js-probe'
     - id: xiaoshe-runtime-routes
       name: '@xiaoshe/dsh-desktop-control/runtime-routes'
+
+# Reuse the official read-only catalog on surfaces that consume its extension.
+- id: ui-schedule
+  disabled: false

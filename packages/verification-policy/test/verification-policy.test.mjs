@@ -2,6 +2,42 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createVerificationPolicy } from '../lib/index.js'
 
+test('ordinary full document deliveries require independent content proof instead of engineering gates', () => {
+  const policy = createVerificationPolicy()
+  for (const file_path of ['output/comparison.md', 'output/acceptance/runtime-notes.markdown',
+    'output/build-report.txt', 'C:\\workspace\\output\\comparison.md']) {
+    const classified = policy.classifyTool({ toolName: 'write', arguments: { file_path, content: '# 对比\nA=185，B=200，差额=15。' } })
+    assert.deepEqual(classified, { mutation: true, change: { kind: 'data', risk: 'low' } }, file_path)
+    assert.deepEqual(policy.planTool({ toolName: 'write', ...classified.change }).gates, ['functional-probe'])
+  }
+})
+
+test('document delivery exceptions exclude executable content, engineering targets and ambiguous write semantics', () => {
+  const policy = createVerificationPolicy()
+  const content = '# Result'
+  const targets = ['src/a.md', 'output/a.mdx', 'output/a.qmd', 'output/AGENTS.md', 'output/SKILL.md',
+    'output/CLAUDE.md', 'output/src/a.md', 'output/.github/a.md', 'output/.claude/a.md',
+    'output/CMakeLists.txt', 'output/requirements.txt', 'output/../a.md', 'output/a.md:evil.md',
+    'output/a.md\n', 'output/a.md.', '\\\\server\\output\\a.md']
+  for (const file_path of targets) assert.equal(policy.classifyTool({ toolName: 'write', arguments: { file_path, content } }).change.kind, 'code', file_path)
+  for (const value of ['---\nexecute: true\n---\n# Report', '```{python}\nprint(1)\n```', '<script>alert(1)</script>',
+    'import X from "x"\n<X />', '# Report\n<!-- runnable -->', '# Report\n```js exec\nrun()\n```']) {
+    assert.equal(policy.classifyTool({ toolName: 'write', arguments: { file_path: 'output/a.md', content: value } }).change.kind, 'code', value)
+  }
+  for (const [toolName, args] of [['write_file', { file_path: 'output/a.md', content }],
+    ['write', { file_path: 'output/a.md', content, mode: 'append' }],
+    ['write', { file_path: 'output/a.md', content: '\u0000binary' }]]) {
+    assert.equal(policy.classifyTool({ toolName, arguments: args }).change.kind, 'code')
+  }
+})
+
+test('an absolute nested output spelling cannot hide engineering ancestors from document classification', () => {
+  const policy = createVerificationPolicy()
+  for (const file_path of ['C:\\workspace\\output\\src\\output\\report.md', '/workspace/output/.github/output/report.md']) {
+    assert.equal(policy.classifyTool({ toolName: 'write', arguments: { file_path, content: '# Result' } }).change.kind, 'code')
+  }
+})
+
 test('JSONL edits use data proof gates; embedded script syntax never invents code gates', () => {
   const policy = createVerificationPolicy()
   for (const toolName of ['edit', 'write']) {

@@ -9,6 +9,7 @@ import { snapshotScript, targetScript, scrollScript } from './browser-page-scrip
 const WORLD = 12017
 const LIMIT = 12
 const fault = (code, message) => Object.assign(new Error(message), { code })
+const TIMEOUT_MESSAGE = '[BROWSER_TIMEOUT] 网页响应超时；本次操作未完成独立验证。页面可能已经显示，可用 browser_status 核对本会话标签，再用 browser_snapshot 只读观察现状；不要直接重复提交。'
 const text = (value, name, max = 8192) => { if (typeof value !== 'string' || !value || value.length > max) throw fault('BROWSER_ARGUMENT', `${name} 无效。`); return value }
 function check(signal) { if (signal?.aborted) throw fault('BROWSER_CANCELLED', '浏览器操作已停止；请重新核对已发出的操作结果。') }
 // Bound even a stalled renderer. Abandoning a response never means a submitted
@@ -17,7 +18,7 @@ function bounded(promise, signal, timeoutMs = 25_000) {
   return new Promise((resolve, reject) => {
     const finish = (error, value) => { clearTimeout(timer); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(value) }
     const abort = () => finish(fault('BROWSER_CANCELLED', '浏览器操作已停止，请核对已发出的操作结果。'))
-    const timer = setTimeout(() => finish(fault('BROWSER_TIMEOUT', '网页响应超时，请重新观察；不要直接重复写入。')), timeoutMs)
+    const timer = setTimeout(() => finish(fault('BROWSER_TIMEOUT', TIMEOUT_MESSAGE)), timeoutMs)
     signal?.addEventListener('abort', abort, { once: true })
     Promise.resolve(promise).then(value => finish(undefined, value), error => finish(error))
     if (signal?.aborted) abort()
@@ -274,13 +275,25 @@ export class BrowserWorkspace {
     if (actor === 'agent' && owner.mode !== 'agent') throw fault('BROWSER_PAUSED', owner.mode === 'user' ? '用户正在接管浏览器。等待用户点“交给小蛇”，不能自行恢复。' : '浏览器已暂停，等待用户恢复。')
     if (tab.operation) throw fault('BROWSER_BUSY', '这个标签已有操作进行中，请稍后重新观察。')
     const controller = new AbortController(); tab.operation = controller
-    const deadline = setTimeout(() => controller.abort(), 28_000)
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    let deadlineReached = false
+    const deadline = setTimeout(() => {
+      if (combined.aborted) return
+      deadlineReached = true; controller.abort()
+    }, 28_000)
     const contents = tab.view.webContents
     const cancelled = () => { if (!contents.isDestroyed()) contents.stop() }
     combined.addEventListener('abort', cancelled, { once: true }); this.changed()
     try { check(combined); return await bounded(operation(combined), combined, 29_000) }
-    catch (error) { controller.abort(); throw error }
+    catch (error) {
+      controller.abort()
+      const failure = deadlineReached && error?.code === 'BROWSER_CANCELLED' ? fault('BROWSER_TIMEOUT', TIMEOUT_MESSAGE) : error
+      const last = tab.lastSnapshot
+      if (failure?.code === 'BROWSER_TIMEOUT' && last?.epoch === tab.epoch && Date.now() - last.at <= 45_000) {
+        throw fault('BROWSER_TIMEOUT', `${failure.message} 已有本会话未过期的页面快照可供观察；这不补足本次超时动作的验证。`)
+      }
+      throw failure
+    }
     finally { clearTimeout(deadline); combined.removeEventListener('abort', cancelled); if (tab.operation === controller) tab.operation = undefined; this.changed() }
   }
   async agent(ownerId, command, args = {}, signal) {
@@ -367,7 +380,7 @@ export class BrowserWorkspace {
         }
       } else throw fault('BROWSER_COMMAND', '不支持的浏览器操作。')
       await delay(180, undefined, { signal: activeSignal }).catch(() => check(activeSignal))
-      return withBrowserVerificationHint(command, args, await this.snapshot(tab, activeSignal, { command, args }))
+      return withBrowserVerificationHint(command, args, await this.snapshot(tab, activeSignal, { command, args }), this.productUrl)
     })
   }
   async key(tab, key, signal) {
@@ -383,13 +396,14 @@ export class BrowserWorkspace {
     // Takeover abort is synchronous but the old promise unwinds on a microtask.
     if (actor === 'user' && tab.operation) await delay(0)
     tab.localOrigin = url.startsWith('http:') ? new URL(url).origin : undefined
-    return this.run(tab, actor, signal, async activeSignal => {
+    return this.run(tab, actor, signal, activeSignal => bounded((async () => {
       const loading = tab.view.webContents.loadURL(url)
-      const timeout = setTimeout(() => tab.operation?.abort(), 22_000)
-      try { await bounded(loading, activeSignal); check(activeSignal); return actor === 'agent'
-        ? withBrowserVerificationHint('open', args, await this.snapshot(tab, activeSignal, { command: 'open', args })) : this.status(ownerId) }
-      finally { clearTimeout(timeout) }
-    })
+      await bounded(loading, activeSignal); check(activeSignal)
+      return actor === 'agent'
+        ? withBrowserVerificationHint('open', args, await this.snapshot(tab, activeSignal, { command: 'open', args }), this.productUrl) : this.status(ownerId)
+      // Reject before run() aborts cleanup: a host deadline must not race its
+      // own cancellation listener and become indistinguishable from takeover.
+    })(), activeSignal, 22_000))
   }
   close(tab) {
     tab.operation?.abort()

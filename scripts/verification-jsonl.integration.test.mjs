@@ -13,7 +13,8 @@ import { foldCompletionReceipt } from '../packages/completion-receipt/lib/index.
 import LocalFileSystem from '../runtime/DSH/packages/fs/fs-local/lib/index.js'
 import * as fsTools from '../runtime/DSH/packages/fs/tool-fs/lib/index.js'
 import { createVerificationPolicy, isJsonlDataPath } from '../packages/verification-policy/lib/index.js'
-import { apply } from '../dist/plugins/verification-results.js'
+const { apply } = await import(process.env.XIAOSHE_TEST_SOURCE === '1'
+  ? '../src/plugins/verification-results.ts' : '../dist/plugins/verification-results.js')
 import { prepareJsonlMutation, captureJsonlMutation, captureJsonlRead } from '../dist/plugins/verification-jsonl.js'
 
 async function fixture(t) {
@@ -38,6 +39,8 @@ async function fixture(t) {
   const steers = []
   const agent = { id: 'jsonl-agent', ctx, session, steer(message) { steers.push(message) } }
   session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'goal-1' })
+  session.append('user/message', { id: 'goal-1', role: 'user', source: { kind: 'user' },
+    content: [{ type: 'text', text: 'Update the JSONL data and verify the complete changed scope.' }] }, { surfaceOp: 'append' })
   session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
   let count = 0
   async function call(name, args) {

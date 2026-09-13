@@ -73,6 +73,23 @@ function fixture() {
   return { conversation, list, sessions, connection, surfaces, queueActions, selected, refreshed, interrupted }
 }
 
+test('stopped turns keep queue edits but cannot steer, and a new running turn restores steering', async () => {
+  const f = fixture(), center = new DshRunCenter(f.sessions, f.connection, f.surfaces)
+  const setRunning = running => {
+    const list = f.list.getSnapshot()
+    f.list.publish({ ...list, byId: { ...list.byId, 'session-1': { ...list.byId['session-1'], running } } })
+  }
+  setRunning(false)
+  assert.equal(center.getSnapshot().queue[0].steerable, false)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'steer' } })).ok, false)
+  assert.equal(f.queueActions.length, 0)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'edit', text: '保留下一条' } })).ok, true)
+  setRunning(true)
+  assert.equal(center.getSnapshot().queue[0].steerable, true)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'steer' } })).ok, true)
+  center.dispose()
+})
+
 test('DshRunCenter projects public run facts and refreshes skills', async () => {
   const f = fixture()
   const center = new DshRunCenter(f.sessions, f.connection, f.surfaces)

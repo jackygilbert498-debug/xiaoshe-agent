@@ -320,7 +320,7 @@ export function createWorkspaceCompatibility(
   }
 }
 
-export const inject = ['sessions', 'workspaces', 'remote', 'remote.session', 'remote.skills', 'remote.subagents', 'uiWorkspace', 'uiConversation', 'uiSession', 'fileUpload']
+export const inject = ['sessions', 'workspaces', 'remote', 'remote.session', 'remote.skills', 'remote.subagents', 'remote.workspaceFiles', 'uiWorkspace', 'uiConversation', 'uiSession', 'fileUpload']
 
 interface PendingInteractionPort {
   readonly key: string; readonly sessionId: string; readonly kind: string
@@ -1494,6 +1494,8 @@ export class DshRunCenter implements RunCenter {
       : undefined
     if (item === undefined) return conflict('queue item is no longer present')
     if (item.placement !== 'queued') return conflict('only queued messages can be changed')
+    // Recheck the authoritative turn at dispatch, since stopping can race a click.
+    if (input.action.kind === 'steer' && this.sessions.list.getSnapshot().byId[input.sessionId]?.running !== true) return conflict('当前任务已停止或结束；这条消息仍在队列中，可以编辑或移除。')
     const session = this.sessions.binding(input.sessionId)?.session
     if (session?.updateQueue === undefined) return unsupported('queue mutation is unavailable')
     let action: QueueActionPort
@@ -1591,7 +1593,7 @@ export class DshRunCenter implements RunCenter {
     const surfaceSnapshot = this.surfaces.getSnapshot()
     const goal = projectRunCenterGoal(projections.goal)
     const plan = isRecord(projections.plan) ? projections.plan : undefined
-    return parseRunCenterSnapshot({
+    const parsed = parseRunCenterSnapshot({
       sessionId,
       status: this.lifecycle === 'idle' ? 'ready' : this.lifecycle,
       jobs: list.jobsBySession?.[sessionId] ?? [],
@@ -1614,6 +1616,7 @@ export class DshRunCenter implements RunCenter {
         : [],
       ...(this.failure === undefined ? {} : { error: this.failure }),
     })
+    return { ...parsed, queue: parsed.queue.map(item => ({ ...item, steerable: item.steerable && summary?.running === true })) }
   }
 }
 
@@ -1791,7 +1794,7 @@ function projectTimeline(sessionId: string | undefined, projected: unknown, snap
       text,
       ...(images.length === 0 ? {} : { images }),
       ...(assistant?.reasoning === undefined || assistant.reasoning === '' ? {} : { reasoning: assistant.reasoning }),
-      ...(value.isError === true ? { isError: true } : {}),
+      ...(value.isError === true && !isInterruptedTool(value) ? { isError: true } : {}),
     })
   }
   if (snapshot?.partial?.text !== undefined && snapshot.partial.text !== '') items.push({ key: 'partial', seq: Number.MAX_SAFE_INTEGER, kind: 'assistant', text: snapshot.partial.text })
@@ -1823,12 +1826,18 @@ function legacyAssistantContent(value: Readonly<Record<string, unknown>>): { rea
 }
 
 function timelineText(value: Readonly<Record<string, unknown>>): string {
+  if (isInterruptedTool(value) && isRecord(value.call) && typeof value.call.name === 'string') return `已取消：${value.call.name}`
   if (typeof value.message === 'string') return value.message
   if (typeof value.summary === 'string') return value.summary
   if (Array.isArray(value.blocks)) return value.blocks.map(block => isRecord(block) && typeof block.text === 'string' ? block.text : isRecord(block) && typeof block.name === 'string' ? `调用 ${block.name}` : '').filter(Boolean).join('\n')
   if (Array.isArray(value.content)) return value.content.map(block => isRecord(block) && typeof block.text === 'string' ? block.text : '').filter(Boolean).join('\n')
   if (isRecord(value.call) && typeof value.call.name === 'string') return `${value.isError === true ? '失败' : '完成'}：${value.call.name}`
   return typeof value.kind === 'string' ? value.kind : '状态更新'
+}
+
+/** Native chat represents cancellation as an Interrupted tool result, not a failed execution. */
+function isInterruptedTool(value: Readonly<Record<string, unknown>>): boolean {
+  return isRecord(value.error) && ['interrupted', 'cancelled', 'canceled', 'aborted', 'ABORTED', 'ABORTED_BEFORE_DISPATCH'].includes(String(value.error.code))
 }
 
 function fold<T>(result: RpcResult<T>): RuntimeCommandResult<T> {
@@ -1840,9 +1849,9 @@ function rpcFailure(error: RpcErrorLike): RuntimeCommandResult<never> {
   return {
     ok: false,
     error: {
-      kind: errorKind(error.code),
+      kind: error.code === 'session/steer-unavailable' ? 'conflict' : errorKind(error.code),
       code: error.code,
-      message: error.message,
+      message: error.code === 'session/steer-unavailable' ? '当前任务已停止或结束；这条消息仍在队列中，可以编辑或移除。' : error.message,
       ...(isRecord(error.details) ? { details: error.details } : {}),
     },
   }

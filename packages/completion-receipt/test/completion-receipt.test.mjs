@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { foldCompletionReceipt } from '../lib/index.js'
+import { foldCompletionReceipt, completionReceiptProjection } from '../lib/index.js'
 
 function fact(type, data, seq) {
   return { type, data, seq, time: 1_000 + seq }
@@ -39,6 +39,72 @@ function userMessage(id, seq) {
   }, seq)
 }
 
+function postGeneration(generation, relation, id, userSeq, seq) {
+  return fact('xiaoshe/task-generation', { version: 2, generation, relation, triggerMessageId: id, triggerMessageSeq: userSeq }, seq)
+}
+
+test('post-admission continuation retains pending mutation debt without publishing an old-generation receipt', () => {
+  const prefix = [taskGeneration(1, 'new', 'first', 0), fact('turn/start', { turn: 1 }, 1), userMessage('first', 2),
+    fact('tool/call', { turn: 1, callId: 'old-write', name: 'write', arguments: '{"file_path":"src/a.ts","content":"a"}' }, 3),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'old-write' }, content: [], isError: false } }, 4),
+    fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 5), fact('turn/start', { turn: 2 }, 6), userMessage('next', 7)]
+  let state = completionReceiptProjection.init()
+  for (const event of prefix) state = completionReceiptProjection.apply(state, event)
+  assert.equal(completionReceiptProjection.view(state), null, 'identity is not settled before the post-admission marker')
+  state = completionReceiptProjection.apply(state, postGeneration(1, 'continuation', 'next', 7, 8))
+  state = completionReceiptProjection.apply(state, fact('turn/end', { turn: 2, reason: { kind: 'completed' } }, 9))
+  assert.equal(completionReceiptProjection.view(state).turn, 2)
+  assert.equal(completionReceiptProjection.view(state).outcome, 'partial')
+  assert.equal(completionReceiptProjection.view(state).tools[0].callId, 'old-write')
+})
+
+test('post-admission identity rejects missing, duplicate, forged-seq, non-user and late bindings', () => {
+  for (const kind of ['missing', 'duplicate', 'forged-seq', 'non-user', 'late', 'replay', 'v1-late', 'duplicate-seq', 'old-obligation', 'padded-id']) {
+    const user = userMessage('next', 7)
+    if (kind === 'non-user') user.data.source.kind = 'subagent'
+    const events = [taskGeneration(1, 'new', 'first', 0), fact('turn/start', { turn: 1 }, 1), userMessage('first', 2),
+      fact('tool/call', { turn: 1, callId: 'old-write', name: 'write', arguments: '{}' }, 3),
+      fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'old-write' }, content: [], isError: false } }, 4),
+      fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 5), fact('turn/start', { turn: 2 }, 6),
+      ...(kind === 'missing' ? [] : [user]), ...(kind === 'duplicate' ? [userMessage('next', 8)] : []),
+      ...(kind === 'late' ? [fact('assistant/message', { turn: 2, content: [] }, 8)] : []),
+      ...(kind === 'duplicate-seq' ? [fact('context/notice', {}, 7)] : []),
+      ...(kind === 'old-obligation' ? [fact('xiaoshe/obligation-state', { version: 1 }, 8)] : []),
+      kind === 'v1-late' ? taskGeneration(1, 'continuation', 'next', 9) : postGeneration(1, 'continuation', kind === 'replay' ? 'first' : kind === 'padded-id' ? ' next' : 'next', kind === 'forged-seq' ? 6 : kind === 'replay' ? 2 : 7, 9),
+      fact('turn/end', { turn: 2, reason: { kind: 'completed' } }, 10)]
+    const receipt = foldCompletionReceipt(events)
+    assert.equal(receipt.tools.some(tool => tool.callId === 'old-write'), false, kind)
+  }
+})
+
+test('batched direct messages wait for their ordered post-admission markers before opening the latest task', () => {
+  const events = [fact('turn/start', { turn: 1 }, 1), userMessage('a', 2), userMessage('b', 3)]
+  let state = completionReceiptProjection.init()
+  for (const event of events) state = completionReceiptProjection.apply(state, event)
+  state = completionReceiptProjection.apply(state, postGeneration(1, 'new', 'a', 2, 4))
+  assert.equal(completionReceiptProjection.view(state), null)
+  state = completionReceiptProjection.apply(state, postGeneration(2, 'new', 'b', 3, 5))
+  assert.equal(completionReceiptProjection.view(state).outcome, 'running')
+  assert.equal(state.receiptGeneration, 2)
+  state = completionReceiptProjection.apply(state, fact('xiaoshe/obligation-state', {
+    version: 1, generation: 2, turn: 1, kind: 'ordered-read', status: 'pending', primary: 'new.txt', fallback: 'fallback.txt',
+  }, 6))
+  state = completionReceiptProjection.apply(state, fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 7))
+  assert.equal(completionReceiptProjection.view(state).outcome, 'partial')
+  assert.equal(completionReceiptProjection.view(state).obligations[0].generation, 2)
+})
+
+test('a consumed v2 continuation cannot be reused by a later duplicate direct message', () => {
+  const events = [taskGeneration(1, 'new', 'first', 0), fact('turn/start', { turn: 1 }, 1), userMessage('first', 2),
+    fact('tool/call', { turn: 1, callId: 'old-write', name: 'write', arguments: '{}' }, 3),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'old-write' }, content: [], isError: false } }, 4),
+    fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 5), fact('turn/start', { turn: 2 }, 6), userMessage('next', 7),
+    postGeneration(1, 'continuation', 'next', 7, 8), fact('turn/end', { turn: 2, reason: { kind: 'completed' } }, 9),
+    fact('turn/start', { turn: 3 }, 10), userMessage('next', 11), postGeneration(1, 'continuation', 'next', 11, 12),
+    fact('turn/end', { turn: 3, reason: { kind: 'completed' } }, 13)]
+  assert.equal(foldCompletionReceipt(events).tools.some(tool => tool.callId === 'old-write'), false)
+})
+
 function successfulTool(name, callId = 'call-1', meta = undefined) {
   return [
     fact('turn/start', { turn: 1 }, 1),
@@ -51,6 +117,102 @@ function successfulTool(name, callId = 'call-1', meta = undefined) {
     fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 4),
   ]
 }
+
+for (const code of ['ABORTED', 'ABORTED_BEFORE_DISPATCH']) test(`canonical ${code} plus user stop is cancellation, not a failed or completed task`, () => {
+  const events = successfulTool('pwsh')
+  events[2].data.error = { name: 'AbortError', code }
+  events[2].data.message.isError = true
+  events[3].data.reason = { kind: 'aborted', reason: { kind: 'user' } }
+  const receipt = foldCompletionReceipt(events)
+  assert.equal(receipt.outcome, 'cancelled')
+  assert.equal(receipt.tools[0].status, 'cancelled')
+  assert.ok(receipt.unverified.includes('任务在完成前中断'))
+  assert.equal(receipt.unverified.includes('工具 pwsh 执行失败'), false)
+  assert.equal(completionReceiptProjection.schema.parse(receipt).outcome, 'cancelled')
+})
+
+test('user stop preserves prior write debt and does not relabel genuine failure as cancellation', () => {
+  const prefix = [fact('turn/start', { turn: 1 }, 0),
+    fact('tool/call', { turn: 1, callId: 'write', name: 'write', arguments: '{}' }, 1),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'write' }, content: [], isError: false } }, 2),
+    fact('tool/call', { turn: 1, callId: 'sleep', name: 'pwsh', arguments: '{}' }, 3)]
+  const end = fact('turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } }, 5)
+  const aborted = fact('tool/result', { turn: 1, error: { name: 'AbortError', code: 'ABORTED' },
+    message: { source: { kind: 'tool', callId: 'sleep' }, content: [], isError: true } }, 4)
+  const receipt = foldCompletionReceipt([...prefix, aborted, end])
+  assert.equal(receipt.outcome, 'cancelled')
+  assert.ok(receipt.requirements.includes('typecheck'))
+  assert.ok(receipt.unverified.includes('验证门禁 typecheck 未通过'))
+  const genuine = structuredClone(aborted)
+  genuine.data.error = { name: 'AbortError', code: 'EXIT_1', message: 'tool call aborted' }
+  assert.equal(foldCompletionReceipt([...prefix, genuine, end]).outcome, 'failed')
+  const hookEnd = structuredClone(end); hookEnd.data.reason.reason.kind = 'hook'
+  assert.equal(foldCompletionReceipt([...prefix, aborted, hookEnd]).outcome, 'partial')
+})
+
+function orphanPrefix() {
+  return [taskGeneration(1, 'new', 'old', 0), fact('turn/start', { turn: 1 }, 1), userMessage('old', 2),
+    fact('tool/call', { turn: 1, callId: 'old-write', name: 'write', arguments: '{}' }, 3),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'old-write' }, content: [], isError: false } }, 4),
+    taskGeneration(90, 'new', 'deleted-queued-message', 5)]
+}
+
+test('an orphan legacy marker cannot reserve a generation or contaminate a fresh same-turn v2 receipt', () => {
+  const events = [...orphanPrefix(), userMessage('fresh', 6), postGeneration(2, 'new', 'fresh', 6, 7),
+    fact('tool/call', { turn: 1, callId: 'fresh-fail', name: 'web_search', arguments: '{}' }, 8),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'fresh-fail' }, isError: true,
+      content: [{ type: 'text', text: 'web_search 不在当前任务的精简能力面中；当前可见能力来自 xiaoshe_capability_plan' }] } }, 9),
+    fact('tool/call', { turn: 1, callId: 'fresh-proof', name: 'read', arguments: '{}' }, 10),
+    fact('tool/result', { turn: 1, message: { source: { kind: 'tool', callId: 'fresh-proof' }, content: [{ type: 'text', text: 'body' }], isError: false } }, 11),
+    fact('xiaoshe/obligation-state', { version: 1, generation: 2, turn: 1, kind: 'route-recovery', status: 'satisfied',
+      failedFamily: 'web_search', alternativeFamily: 'filesystem_read', alternativeTool: 'read', toolContractDigest: '0123456789abcdef', proofResultSeq: 11 }, 12),
+    fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 13)]
+  const receipt = foldCompletionReceipt(events)
+  assert.equal(receipt.outcome, 'verified')
+  assert.deepEqual(receipt.tools.map(tool => tool.callId), ['fresh-fail', 'fresh-proof'])
+  assert.deepEqual(receipt.requirements, [])
+})
+
+test('a continuation after an orphan declaration retains the actual prior mutation debt', () => {
+  const receipt = foldCompletionReceipt([...orphanPrefix(), fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 6),
+    fact('turn/start', { turn: 2 }, 7), userMessage('continue-real', 8), postGeneration(1, 'continuation', 'continue-real', 8, 9),
+    fact('turn/end', { turn: 2, reason: { kind: 'completed' } }, 10)])
+  assert.equal(receipt.outcome, 'partial')
+  assert.equal(receipt.tools[0].callId, 'old-write')
+  assert.ok(receipt.requirements.includes('typecheck'))
+})
+
+test('a legacy pending read is inert until its real user and survives a cached admission tail', () => {
+  const p = completionReceiptProjection
+  let state = p.init()
+  const pending = fact('xiaoshe/obligation-state', { version: 1, generation: 7, turn: 1,
+    kind: 'ordered-read', status: 'pending', primary: 'primary.txt', fallback: 'fallback.txt' }, 1)
+  for (const event of [taskGeneration(7, 'new', 'real-later', 0), pending]) state = p.apply(state, event)
+  assert.equal(p.view(state), null)
+  state = p.stateSchema.parse(JSON.parse(JSON.stringify(state)))
+  for (const event of [fact('turn/start', { turn: 1 }, 2), userMessage('real-later', 3),
+    fact('turn/end', { turn: 1, reason: { kind: 'completed' } }, 4)]) state = p.apply(state, event)
+  assert.equal(p.view(state).outcome, 'partial')
+  assert.equal(p.view(state).obligations[0].primary, 'primary.txt')
+})
+
+test('a new v2 task discards unbound legacy admission and its pending reads', () => {
+  const p = completionReceiptProjection
+  let state = p.init()
+  for (const event of [taskGeneration(90, 'new', 'late-old', 0),
+    fact('xiaoshe/obligation-state', { version: 1, generation: 90, turn: 1, kind: 'ordered-read', status: 'pending', primary: 'old.txt', fallback: 'old-fallback.txt' }, 1),
+    fact('turn/start', { turn: 1 }, 2), userMessage('fresh', 3), postGeneration(1, 'new', 'fresh', 3, 4),
+    userMessage('late-old', 5)]) state = p.apply(state, event)
+  assert.equal(p.view(state), null, 'a late old input needs a new trusted admission, not its stale pre-v2 marker')
+})
+
+test('a legacy marker cannot bind across a different direct input', () => {
+  const p = completionReceiptProjection
+  let state = p.init()
+  for (const event of [taskGeneration(90, 'new', 'late-old', 0), fact('turn/start', { turn: 1 }, 1),
+    userMessage('different', 2), userMessage('late-old', 3)]) state = p.apply(state, event)
+  assert.equal(p.view(state), null)
+})
 
 function trustedVerification(
   mutationCallId,

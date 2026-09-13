@@ -68,21 +68,29 @@ export function browserVerificationObservation(snapshot) {
     viewport: Object.freeze({ scroll_y: snapshot.viewport?.scroll_y }) })
 }
 
-export function browserSnapshotSatisfies(snapshot, assertions) {
-  if (!snapshot) return false
-  if (assertions.expect_url !== undefined && snapshot.url !== assertions.expect_url) return false
-  if (assertions.expect_text !== undefined && !snapshot.text.includes(assertions.expect_text)) return false
-  if (assertions.expect_scroll_y !== undefined && snapshot.viewport?.scroll_y !== assertions.expect_scroll_y) return false
+// Diagnostics expose field names only, never page text, query tokens or values.
+function browserSnapshotMismatches(snapshot, assertions) {
+  if (!snapshot) return ['baseline_snapshot']
+  const fields = []
+  if (assertions.expect_url !== undefined && snapshot.url !== assertions.expect_url) fields.push('expect_url')
+  if (assertions.expect_text !== undefined && !snapshot.text.includes(assertions.expect_text)) fields.push('expect_text')
+  if (assertions.expect_scroll_y !== undefined && snapshot.viewport?.scroll_y !== assertions.expect_scroll_y) fields.push('expect_scroll_y')
   if (assertions.expect_element_id !== undefined) {
     const element = snapshot.elements.find(row => row.element_id === assertions.expect_element_id)
-    if (!element || (assertions.expect_value !== undefined && element.value !== assertions.expect_value)) return false
+    if (!element) fields.push('expect_element_id')
+    else if (assertions.expect_value !== undefined && element.value !== assertions.expect_value) fields.push('expect_value')
   }
-  return true
+  return fields
+}
+
+export function browserSnapshotSatisfies(snapshot, assertions) {
+  return browserSnapshotMismatches(snapshot, assertions).length === 0
 }
 
 export function assertBrowserVerificationObservation(observation, assertions) {
-  if (!browserSnapshotSatisfies(observation, assertions)) {
-    throw Object.assign(new Error('验证断言与该动作的原始观察不一致；本次尚未独立回读页面，当前基线和原有效期未刷新。这不表示页面动作失败；请依据任务和已有观察修正断言，用同一 after_snapshot_id 重试，不要重做动作。不会自动反转义或改写预期。'), { code: 'BROWSER_VERIFICATION_ARGUMENT' })
+  const fields = browserSnapshotMismatches(observation, assertions)
+  if (fields.length) {
+    throw Object.assign(new Error(`验证断言与该动作的原始观察不一致；不匹配字段：${fields.join(', ')}。本次尚未独立回读页面，当前基线和原有效期未刷新。这不表示页面动作失败；请依据任务和已有观察修正所列字段，用同一 after_snapshot_id 重试，不要重做动作。不会自动反转义或改写预期。`), { code: 'BROWSER_VERIFICATION_ARGUMENT' })
   }
 }
 
@@ -115,10 +123,19 @@ export function resolveBrowserVerificationInput(args, contract, binding = {}) {
 }
 
 /** A protocol reminder, never proof or an automatically executed verifier. */
-export function withBrowserVerificationHint(command, args, snapshot) {
+export function withBrowserVerificationHint(command, args, snapshot, productUrl) {
   if (!['open', 'type', 'click', 'press', 'scroll'].includes(command) || !snapshot?.snapshot_id) return snapshot
   const parameters = { tab_id: snapshot.tab_id, after_snapshot_id: snapshot.snapshot_id }
-  if (command === 'open' && typeof args.url === 'string' && args.url.length <= 2048) parameters.expect_url = new URL(args.url).href
+  if (command === 'open') {
+    // A permitted redirect is an observation, not proof. Retain the original
+    // navigation policy and require a separate exact read of its final URL.
+    const requested = browserUrl(args.url, productUrl), observed = browserUrl(snapshot.url, productUrl)
+    if (observed.length > 2048 || (observed === 'about:blank' && requested !== observed)
+      || (observed.startsWith('http:') && new URL(observed).origin !== new URL(requested).origin)) {
+      throw Object.assign(new Error('当前跳转网址不能作为合法且可独立验证的导航目标；未声明导航已验证。'), { code: 'BROWSER_ARGUMENT' })
+    }
+    parameters.expect_url = observed
+  }
   if (command === 'type' && typeof args.text === 'string' && args.text.length <= 2000
     && snapshot.elements?.some(row => row.element_id === args.element_id && row.value === args.text)) {
     parameters.use_action_input = true

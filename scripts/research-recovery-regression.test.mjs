@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { RecoveryController, assessTask } from '../dist/plugins/agent-reliability.js'
+const { RecoveryController, assessTask } = await import(process.env.XIAOSHE_TEST_SOURCE === '1'
+  ? '../src/plugins/agent-reliability.ts' : '../dist/plugins/agent-reliability.js')
 
 // Synthetic data, not news. Match the real DSH native-search envelope and the
 // mixed HTTPS/HTTP source list from the reported failure, without private logs.
@@ -192,7 +193,9 @@ test('a source-only partial answer can acknowledge a read but non-current page w
   const f = fixture('搜索今天人工智能行业新闻')
   const events = []
   f.agent.session = { events, append(type, data) { events.push({ seq: events.length, type, data }) } }
-  f.agent.session.append('xiaoshe/task-generation', { version: 1, generation: f.controller.state(f.agent).taskGeneration, relation: 'new' })
+  f.agent.session.append('xiaoshe/task-generation', { version: 1, generation: f.controller.state(f.agent).taskGeneration, relation: 'new', triggerMessageId: 'partial-source-user' })
+  f.agent.session.append('user/message', { id: 'partial-source-user', role: 'user', source: { kind: 'user' },
+    content: [{ type: 'text', text: '搜索今天人工智能行业新闻' }] })
   f.observe('pwsh', { command: readerCommand }, readerResult({ date: '2001-01-01' }))
   for (let i = 0; i < 8; i++) f.observe('web_fetch', { url: `https://lab.example/missing-${i}` }, f.failure)
   assert.equal(f.research().phase, 'source_only_partial_ready')
@@ -209,7 +212,9 @@ test('direct fetch or browser page reads retain a citeable source without requir
     const f = fixture('搜索今天 AI 行业新闻')
     const events = []
     f.agent.session = { events, append(type, data) { events.push({ seq: events.length, type, data }) } }
-    f.agent.session.append('xiaoshe/task-generation', { version: 1, generation: f.controller.state(f.agent).taskGeneration, relation: 'new' })
+    f.agent.session.append('xiaoshe/task-generation', { version: 1, generation: f.controller.state(f.agent).taskGeneration, relation: 'new', triggerMessageId: 'direct-body-user' })
+    f.agent.session.append('user/message', { id: 'direct-body-user', role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: '搜索今天 AI 行业新闻' }] })
     f.observe(name, { url: articleUrl }, { isError: false, value: { url: articleUrl }, content: [{ type: 'text', text: `Fetched ${articleUrl} (HTTP 200)\nPublished 2001-01-01. This page describes a historical laboratory architecture and its deployment methodology.` }] })
     for (let i = 0; i < 8; i++) f.observe('web_fetch', { url: `https://lab.example/missing-${i}` }, f.failure)
     assert.equal(f.research().phase, 'source_only_partial_ready')

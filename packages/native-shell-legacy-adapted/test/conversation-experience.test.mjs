@@ -13,6 +13,30 @@ const run = more => ({ status: 'ready', jobs: [], subagents: [], queue: [], todo
 const element = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter(Boolean) })
 const nodes = tree => tree && typeof tree === 'object' ? [tree, ...(tree.children ?? []).flatMap(nodes)] : []
 
+test('settled user cancellation is labeled separately from completion and real failure', async () => {
+  const app = await client()
+  const base = { runtimeState: 'idle', stopping: false, questionCount: 0, approvalCount: 0, queued: 0, active: 0, loading: false, attention: false }
+  const cancelled = app.taskStatePresentation({ ...base, receipt: 'cancelled' })
+  assert.equal(cancelled.label, '已取消')
+  assert.match(cancelled.detail, /未完成|未验证/u)
+  assert.equal(app.taskStatePresentation({ ...base, receipt: 'failed' }).label, '失败')
+})
+
+test('lost backend suppresses running and controls through retry, then recovers from fresh health', async () => {
+  const app = await client()
+  assert.equal(typeof app.runtimeConnectionPresentation, 'function')
+  const lost = { status: 'error', value: { heartbeat: { running: true } }, errors: [
+    { source: 'desktop', kind: 'NETWORK_ERROR', message: 'Failed to fetch' },
+    { source: 'heartbeat', kind: 'NETWORK_ERROR', message: 'Failed to fetch' },
+  ] }
+  const offline = app.runtimeConnectionPresentation(lost)
+  assert.equal(offline.unavailable, true)
+  assert.equal(offline.label, '连接中断，任务状态待确认')
+  assert.equal(app.runtimeConnectionPresentation({ status: 'loading', value: lost.value }, offline.unavailable).unavailable, true)
+  assert.equal(app.runtimeConnectionPresentation({ status: 'ready', value: {} }, true).unavailable, false)
+  assert.equal(app.runtimeConnectionPresentation({ status: 'degraded', errors: [{ source: 'heartbeat', kind: 'HEARTBEAT_CHECK_DEGRADED', message: 'lost' }] }).unavailable, false)
+})
+
 test('real provider needs_verification receipt stays unknown, not a definite failed send', async () => {
   const app = await client()
   assert.equal(app.sendFailurePhase({kind:'needs_verification',message:'sendTurn did not return a verifiable result'}), 'unknown')

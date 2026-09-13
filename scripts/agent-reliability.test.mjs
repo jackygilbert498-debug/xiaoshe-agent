@@ -10,7 +10,7 @@ import { liveResearchPartialAnswer, partialResearchSource } from './fixtures/res
 import { materialPrompt } from '../apps/desktop-shell/src/material-acceptance.mjs'
 import { batchPrompt } from '../apps/desktop-shell/src/batch-acceptance.mjs'
 import { VISION_QUESTION } from './acceptance/vision-fixture.mjs'
-import {
+const {
   apply,
   assessTask,
   planExecution,
@@ -18,7 +18,8 @@ import {
   RecoveryController,
   TASK_CONTRACT,
   toolFamily,
-} from '../dist/plugins/agent-reliability.js'
+} = await import(process.env.XIAOSHE_TEST_SOURCE === '1'
+  ? '../src/plugins/agent-reliability.ts' : '../dist/plugins/agent-reliability.js')
 
 const agent = () => ({ id: 'isolated' })
 const execution = (a, name = 'read', args = { path: '/doc' }, options = {}) => ({
@@ -269,7 +270,8 @@ function rawJsonCase(goal, text) {
   const c = new RecoveryController()
   const a = { id: 'raw-json-format', session: { events: [
     { type: 'turn/start', data: { turn: 1 } },
-    { type: 'xiaoshe/task-generation', data: { version: 1, generation: 1 } },
+    { type: 'xiaoshe/task-generation', data: { version: 1, generation: 1, relation: 'new', triggerMessageId: 'raw-json-user' } },
+    { type: 'user/message', data: { id: 'raw-json-user', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: goal }] } },
     { type: 'assistant/message', data: { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } } },
   ] } }
   c.goalChanged(a, assessTask(goal), { goal, reset: true }); c.begin(a, 1)
@@ -346,7 +348,8 @@ test('raw JSON correction uses only the current task and turn, then resets for a
   c.goalChanged(a, assessTask(VISION_QUESTION), { goal: VISION_QUESTION, reset: true })
   c.begin(a, 3)
   a.session.events.push(
-    { type: 'xiaoshe/task-generation', data: { version: 1, generation: 3 } },
+    { type: 'xiaoshe/task-generation', data: { version: 1, generation: 3, relation: 'new', triggerMessageId: 'raw-json-new-user' } },
+    { type: 'user/message', data: { id: 'raw-json-new-user', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: VISION_QUESTION }] } },
     { type: 'assistant/message', data: { turn: 3, message: { content: [{ type: 'text', text: '需要重答 {}' }] } } },
   )
   assert.equal(c.rawJsonStopAction(a)?.kind, 'steer', 'new explicit task has its own bounded opportunity')
@@ -369,7 +372,7 @@ test('raw JSON follows the latest visible answer, ignoring trailing usage and re
     a.session.events.push({ type: 'assistant/message', data: { turn: 1, usage: { outputTokens: 5 }, message: { content } } })
     assert.equal(c.rawJsonStopAction(a), undefined, JSON.stringify(content))
     assert.equal(c.state(a).rawJsonRedirects, 0)
-    a.session.events.splice(2, 1)
+    a.session.events.splice(a.session.events.findIndex(event => event.type === 'assistant/message'), 1)
     assert.equal(c.rawJsonStopAction(a)?.kind, 'steer', 'no visible answer in this whole turn still requires correction')
   }
 })
@@ -747,14 +750,14 @@ test('an additive live steer merges new constraints without dropping prior mutat
   }
   apply(ctx)
   const a = { id: 'live-steer', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'original-change', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '把 src/main.ts 修改为指定值。' }],
   } })
   events.get('tools/result')(execution(a, 'write', { path: 'src/main.ts', content: 'changed' }), success)
   const progress = contexts.find(context => context.name === 'xiaoshe:execution-progress')
   const pending = progress.text({ agent: a })
   assert.match(pending, /待验证|仍需/)
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'steered-constraint', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '另外，不得修改 tests。' }],
   } })
   assert.equal(progress.text({ agent: a }), pending)
@@ -999,7 +1002,7 @@ test('specific browser actions and scoped write paths are denied before executio
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'scoped-constraints', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '打开页面但不得点击。只允许修改 main.ts；不得修改测试或目录外文件。' }],
   } })
@@ -1022,7 +1025,7 @@ test('run_code cannot hide a forbidden browser operation in generic tool argumen
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'constrained-code-operation', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '可以读取页面，但不得点击。' }],
   } })
@@ -1049,7 +1052,7 @@ test('run_code maps Enter presses to submit while allowing explicit non-submit k
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'constrained-code-submit', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '可以观察页面，但不得提交。' }],
   } })
@@ -1076,7 +1079,7 @@ test('hard constraints at the end of a long user goal remain enforceable', async
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'long-tail-constraint', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: `请检查这个复杂页面的现状。${'背景资料。'.repeat(450)}最终硬约束：不得点击。` }],
   } })
@@ -1101,7 +1104,7 @@ test('filesystem-write constraints pierce local MCP and PowerShell envelopes wit
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'read-only-envelopes', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只读检查现有文件，不允许进行任何修改。' }],
   } })
@@ -1139,7 +1142,7 @@ test('allowed write paths apply to typed and PowerShell tools while hard-constra
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'allowed-path-envelopes', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只允许修改 C:\\work\\src\\main.ts；不得修改目录外文件。' }],
   } })
@@ -1173,7 +1176,7 @@ test('only-edit wording creates a relative boundary that cannot suffix-match ano
     }
     apply(ctx)
     const a = { id: `relative-boundary-${index}`, session: { header: { cwd: 'C:\\work' } } }
-    events.get('agent/inbox/inserted')({ agent: a, message: {
+    events.get('agent/inbox/claimed')({ agent: a, message: {
       id: `relative-goal-${index}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: goal }],
     } })
     const allow = async () => ({ kind: 'allow' })
@@ -1212,7 +1215,7 @@ test('Chinese creation constraints consume action verbs without changing quoted 
     }
     apply(ctx)
     const a = { id: `creation-boundary-${index}`, session: { header: { cwd: '/workspace' } } }
-    events.get('agent/inbox/inserted')({ agent: a, message: {
+    events.get('agent/inbox/claimed')({ agent: a, message: {
       id: `creation-goal-${index}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: goal }],
     } })
     const allow = async () => ({ kind: 'allow' })
@@ -1233,7 +1236,7 @@ test('run_code fails closed when its runtime cannot prove hard write or network 
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'constrained-code', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只读检查本地文件，不允许任何修改，也不得联网。' }],
   } })
@@ -1266,7 +1269,7 @@ test('read-only and offline constraints reject unprovable shell effects in nativ
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'strict-shell-envelope', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只读检查本地项目，不允许任何修改，也不得联网。' }],
   } })
@@ -1310,6 +1313,67 @@ test('read-only and offline constraints reject unprovable shell effects in nativ
   }
 })
 
+test('offline literal file hash pipelines remain local and cannot hide another command', async t => {
+  const events = new Map()
+  const ctx = {
+    systemPrompt: { section: () => () => {}, context: () => () => {} },
+    tools: { schemas: () => [schema('pwsh', 'Execute PowerShell.')], register: () => () => {} },
+    on: (key, callback) => events.set(key, callback), effect: callback => callback(),
+  }
+  apply(ctx)
+  const a = agent()
+  events.get('agent/inbox/claimed')({ agent: a, message: {
+    id: 'offline-file-hash', role: 'user', source: { kind: 'user' },
+    content: [{ type: 'text', text: '只读核对本地文件，不得联网，不允许修改文件。' }],
+  } })
+  const allow = async () => ({ kind: 'allow' })
+  for (const command of [
+    String.raw`Get-FileHash 'C:\\Users\\qa\\fixture-a.md','C:\\Users\\qa\\fixture-b.md' -Algorithm SHA256 | Select-Object -Property Hash,Path | Format-List`,
+    `Get-FileHash -LiteralPath 'input/source material.md' -Algorithm SHA256 | Format-List`,
+    `Microsoft.PowerShell.Utility\\Get-FileHash -Path "input/a.md","input/b.md" | Select-Object Hash,Path`,
+    'Get-FileHash src/a.md -Algorithm SHA256',
+    String.raw`Get-FileHash -LiteralPath 'C:\Users\qa\新建文件夹 (10)\result.md' -Algorithm SHA256 | Format-List Path,Hash`,
+    String.raw`Get-FileHash -LiteralPath "C:\Users\qa\新建文件夹 (10)\result.md" -Algorithm SHA256 | Format-List Path,Hash`,
+  ]) await t.test(command, async () => {
+    assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'pwsh', { command }), allow), { kind: 'allow' })
+  })
+  for (const command of [
+    `Get-FileHash 'input/a.md' | Invoke-Expression`,
+    `Get-FileHash (Invoke-Expression 'danger') | Format-List`,
+    `Get-FileHash input/a(1).md | Format-List`,
+    `Get-FileHash 'input/a.md' | Select-Object @{Name='Hash';Expression={Invoke-WebRequest 'https://example.com'}}`,
+    `Get-FileHash 'input/a.md' | Select-Object Hash | Out-File changed.txt`,
+    `Get-FileHash 'input/a.md'; Remove-Item 'input/a.md'`,
+    `Get-FileHash 'input/a.md'\nWrite-Output changed`,
+    `Get-FileHash $(Invoke-WebRequest 'https://example.com') | Format-List`,
+    `Get-FileHash '$target' | Format-List`,
+    String.raw`Get-FileHash '\\server\share\a.md' | Format-List`,
+    String.raw`Get-FileHash “\\server\share\a.md” | Format-List`,
+    String.raw`Get-FileHash ‘\\server\share\a.md’ | Format-List`,
+    `Get-FileHash '//server/share/a.md' | Format-List`,
+    `Get-FileHash 'https://example.com/a.md' | Format-List`,
+    `Get-FileHash 'Env:SECRET' | Format-List`,
+    `Get-FileHash 'input/*.md' | Format-List`,
+    `Get-FileHash -InputStream stream | Format-List`,
+    `Get-FileHash 'input/a.md' -Bogus value | Format-List`,
+    `Get-FileHash`,
+    `Get-FileHash 'input/a.md',`,
+    String.raw`Get-FileHash '\\server\share\a.md'`,
+  ]) await t.test(command, async () => {
+    assert.equal((await events.get('tools/pre-execute')(execution(a, 'pwsh', { command }), allow)).kind, 'deny')
+  })
+  await t.test('rejected scripts do not disable a corrected local hash command', async () => {
+    const denied = await events.get('tools/pre-execute')(execution(a, 'pwsh', {
+      command: "$p = @('input/a.md'); foreach ($f in $p) { Get-FileHash $f }",
+    }), allow)
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /Get-FileHash -LiteralPath/u)
+    assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'pwsh', {
+      command: `Get-FileHash -LiteralPath 'input/资料 (10).md' -Algorithm SHA256 | Format-List Path,Hash`,
+    }), allow), { kind: 'allow' })
+  })
+})
+
 test('hard offline constraints keep npm and Node verifiers fail closed even with sandbox escalation', async () => {
   const events = new Map()
   const ctx = {
@@ -1319,7 +1383,7 @@ test('hard offline constraints keep npm and Node verifiers fail closed even with
   }
   apply(ctx)
   const a = { id: 'offline-local-verifier', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline-verification', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只允许修改当前实现，禁止联网，完成后运行本地测试。' }],
   } })
@@ -1355,7 +1419,7 @@ test('repeated policy redirects are bounded across changed shell commands', asyn
   }
   apply(ctx)
   const a = { id: 'bounded-policy', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '禁止联网。' }],
   } })
   const allow = async () => ({ kind: 'allow' })
@@ -1384,7 +1448,7 @@ test('a source-specific no-research instruction blocks search without blocking l
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'no-public-search', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '不要搜索 GitHub，也不要查公开项目，直接检查并修改当前本地项目。' }],
   } })
@@ -1422,15 +1486,15 @@ test('search stays available by default and a task-local offline instruction doe
   }
   apply(ctx)
   const a = agent(); const allow = async () => ({ kind: 'allow' })
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'online-default', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索今天的最新公开资料。' }],
   } })
   assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'web_search', { query: 'latest' }), allow), { kind: 'allow' })
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline-one-task', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '这个任务不得联网，只看我给的本地资料。' }],
   } })
   assert.equal((await events.get('tools/pre-execute')(execution(a, 'web_search', { query: 'blocked here' }), allow)).kind, 'deny')
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'online-next-task', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索今天另一条最新公开资料。' }],
   } })
   assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'web_search', { query: 'available again' }), allow), { kind: 'allow' })
@@ -1446,11 +1510,11 @@ test('an additive-looking new project restores search while a same-project addit
   const allow = async () => ({ kind: 'allow' })
 
   const sameProject = agent()
-  events.get('agent/inbox/inserted')({ agent: sameProject, message: {
+  events.get('agent/inbox/claimed')({ agent: sameProject, message: {
     id: 'offline-current-project', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全程离线检查这个项目，不得联网。' }],
   } })
-  events.get('agent/inbox/inserted')({ agent: sameProject, message: {
+  events.get('agent/inbox/claimed')({ agent: sameProject, message: {
     id: 'same-project-follow-up', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '还有，这个项目里再检查一个本地文件。' }],
   } })
@@ -1464,11 +1528,11 @@ test('an additive-looking new project restores search while a same-project addit
     ['url', '另外，这个新 URL 需要搜索今天的最新公开资料。'],
   ]) {
     const newSubject = agent()
-    events.get('agent/inbox/inserted')({ agent: newSubject, message: {
+    events.get('agent/inbox/claimed')({ agent: newSubject, message: {
       id: `offline-old-${id}`, role: 'user', source: { kind: 'user' },
       content: [{ type: 'text', text: '全程离线检查旧项目，不得联网。' }],
     } })
-    events.get('agent/inbox/inserted')({ agent: newSubject, message: {
+    events.get('agent/inbox/claimed')({ agent: newSubject, message: {
       id: `new-${id}-follow-up`, role: 'user', source: { kind: 'user' },
       content: [{ type: 'text', text: followUp }],
     } })
@@ -1728,7 +1792,7 @@ test('live research body routes reject unsafe URLs without disabling ordinary lo
   }
   apply(ctx)
   const researcher = agent()
-  events.get('agent/inbox/inserted')({ agent: researcher, message: {
+  events.get('agent/inbox/claimed')({ agent: researcher, message: {
     id: 'secure-research-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '搜索今天上海天气的最新资料，读取公开来源正文并给出带来源的摘要。' }],
   } })
@@ -1752,7 +1816,7 @@ test('live research body routes reject unsafe URLs without disabling ordinary lo
   ), { kind: 'allow' })
 
   const localBrowser = { id: 'ordinary-local-browser', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: localBrowser, message: {
+  events.get('agent/inbox/claimed')({ agent: localBrowser, message: {
     id: 'local-browser-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '打开本机开发页面检查界面。' }],
   } })
@@ -1828,7 +1892,7 @@ test('registered plugin preserves approval, exposes actual model, and distinguis
   }
   apply(ctx)
   const a = agent(); const e = execution(a)
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'runtime', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '当前用的是什么模型？需要重新配模型吗？' }],
   } })
   const selected = { provider: 'deepseek-modlens', model: 'deepseek-v4-flash' }
@@ -1876,25 +1940,25 @@ test('runtime route snapshot replaces stale hints without echoing user secrets',
   apply(ctx)
   const a = agent()
   const direct = { id: 'u', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索今天的消息，TOKEN-SECRET' }] }
-  events.get('agent/inbox/inserted')({ agent: a, message: direct })
+  events.get('agent/inbox/claimed')({ agent: a, message: direct })
   const route = contexts.find(context => context.name === 'xiaoshe:capability-route')
   assert.ok(route)
   assert.match(route.text({ agent: a }), /可靠来源/)
   assert.doesNotMatch(route.text({ agent: a }), /TOKEN-SECRET|web_search|pwsh/)
 
-  events.get('agent/inbox/inserted')({
+  events.get('agent/inbox/claimed')({
     agent: a,
     message: { id: 'plugin', role: 'user', source: { kind: 'plugin', plugin: 'test' }, content: [{ type: 'text', text: '读取项目文件' }] },
   })
   assert.match(route.text({ agent: a }), /可靠来源/)
 
-  events.get('agent/inbox/inserted')({
+  events.get('agent/inbox/claimed')({
     agent: a,
     message: { id: 'u2', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '读取项目文件' }] },
   })
   assert.equal(route.text({ agent: a }), '')
 
-  events.get('agent/inbox/inserted')({
+  events.get('agent/inbox/claimed')({
     agent: a,
     message: { id: 'u3', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '写一句生日祝福' }] },
   })
@@ -1922,7 +1986,7 @@ test('code execution guidance is selected from the current actionable goal witho
     ['Research and compare the public repository then write a comprehensive report.', false],
     ['写一句生日祝福。', false],
   ]) {
-    events.get('agent/inbox/inserted')({ agent: a, message: {
+    events.get('agent/inbox/claimed')({ agent: a, message: {
       id: crypto.randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: goal }],
     } })
     assert.equal(render().length > 0, expected, goal)
@@ -1996,7 +2060,7 @@ test('code-only presentation keeps the protocol intact and labels planned native
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'code-goal', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '读取项目文件' }],
   } })
   const runCode = schema('run_code', 'Execute generated SDK calls.')
@@ -2028,7 +2092,7 @@ test('conversation wording does not revoke registered tools', async () => {
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'conversation-only', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我写一句温柔的生日祝福。' }],
   } })
   const assembly = { sections: [], contexts: [], variables: {}, tools: schemas }
@@ -2062,7 +2126,7 @@ test('Code Mode scope keeps registered tools while installing explicit policy gu
   }
   apply(ctx)
   const a = { ...agent(), ctx: { tools: scopedTools } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'scoped-surface', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '读取当前项目代码并说明问题。' }],
   } })
   assert.ok(filters[0].allow.includes('read'))
@@ -2072,7 +2136,7 @@ test('Code Mode scope keeps registered tools while installing explicit policy gu
   assert.equal(guards[0](execution(a, 'write', { path: 'src/main.ts' })), undefined)
   assert.equal(guards[0](execution(a, 'read', { path: 'src/main.ts' })), undefined)
 
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'scoped-surface-steer', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '另外，不得联网。' }],
   } })
   assert.deepEqual(lifecycle.slice(0, 8), [
@@ -2103,7 +2167,7 @@ test('task mask inspection fails closed on enumeration, restoration and fallback
     }
     apply(ctx)
     const a = { ...agent(), ctx: { tools: scopedTools }, cancel: cause => cancellations.push(cause) }
-    events.get('agent/inbox/inserted')({ agent: a, message: {
+    events.get('agent/inbox/claimed')({ agent: a, message: {
       id: mode, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '读取本地文件；只读，不得写入。' }],
     } })
     armed = true
@@ -2132,7 +2196,7 @@ test('real scoped restriction preserves a selected preset web search tool that i
   }
   apply(ctx)
   const a = { ...agent(), ctx: { tools: scopedTools } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'preset-web-search', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索今天的最新公开资料并给出来源。' }],
   } })
   assert.ok(filters[0].allow.includes('web_search'))
@@ -2153,7 +2217,7 @@ test('mixed code presentation filters forbidden native tools and records a const
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'mixed-code-constraints', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只读检查本地文件，不允许任何修改，也不得联网。' }],
   } })
@@ -2176,7 +2240,7 @@ test('specialist guidance never manufactures a denied tool result', async () => 
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'u', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索今天的最新消息' }],
   } })
   const shell = execution(a, 'pwsh', { cmd: 'curl https://example.com' })
@@ -2184,13 +2248,13 @@ test('specialist guidance never manufactures a denied tool result', async () => 
   assert.deepEqual(first, { kind: 'allow' })
   assert.deepEqual(await events.get('tools/pre-execute')(shell, async () => ({ kind: 'allow' })), { kind: 'allow' })
 
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'u2', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '搜索这个项目今天的最新新闻' }],
   } })
   const projectNews = await events.get('tools/pre-execute')(shell, async () => ({ kind: 'allow' }))
   assert.deepEqual(projectNews, { kind: 'allow' })
 
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'u3', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '修改项目代码并运行 npm test' }],
   } })
   assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'pwsh', { cmd: 'npm test' }), async () => ({ kind: 'allow' })), { kind: 'allow' })
@@ -2639,7 +2703,7 @@ test('complex mutation requires one real plan and relevant evidence before actin
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'complex', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全面检查现有项目代码，定位根因、制定方案、修改实现并运行完整测试' }],
   } })
@@ -2674,7 +2738,7 @@ test('research-first work cannot mutate before a successful evidence route', asy
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'research', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '先比较优秀公开开源项目的实现和最佳实践，再修改当前插件并测试' }],
   } })
@@ -2693,7 +2757,7 @@ test('research-first work cannot mutate before a successful evidence route', asy
 
   const b = agent()
   schemas = [schema('write', 'Write a new file.', { path: { type: 'string' } }, ['path'])]
-  events.get('agent/inbox/inserted')({ agent: b, message: {
+  events.get('agent/inbox/claimed')({ agent: b, message: {
     id: 'no-route', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全面检查并修改这个实现，最后验证' }],
   } })
@@ -2711,7 +2775,7 @@ test('complex preflight remains blocked until evidence changes and cannot be byp
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'bounded', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '先研究比较优秀公开项目，再全面修改当前代码并验证' }],
   } })
@@ -2743,7 +2807,7 @@ test('provided local references can satisfy research-first evidence without redu
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'local-reference', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '先比较我已提供的本地参考项目 C:\\reference\\sample，再修改当前代码并验证' }],
   } })
@@ -2763,7 +2827,7 @@ test('an empty todo snapshot cannot replace evidence, while target evidence can 
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'empty-plan', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '全面检查当前代码，修改实现并完成测试验证' }],
   } })
   events.get('tools/result')(execution(a, 'todo_write', { todos: [] }), success)
@@ -2785,7 +2849,7 @@ test('complete decision evidence may replace todo bookkeeping before a complex m
   }
   apply(ctx)
   const a = { id: 'evidence-instead-of-bureaucracy', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'evidence-first', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '先读取需求、测试、脚本清单和当前实现，再只修改 C:\\work\\src\\normalize.mjs，最后运行测试验证。' }],
   } })
@@ -2805,7 +2869,7 @@ test('an explicitly requested standalone verifier remains available under write-
   }
   apply(ctx)
   const a = { id: 'explicit-verifier', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'verify-within-path-policy', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只允许修改 C:\\work\\src\\main.mjs；完成后必须单独运行 `npm run typecheck`、`npm run test` 和 `npm run build`。' }],
   } })
@@ -2832,7 +2896,7 @@ test('simple exact mutation is not slowed by the complex-task preflight', async 
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'simple', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '把按钮文字改成保存' }],
   } })
   assert.deepEqual(await events.get('tools/pre-execute')(execution(a, 'write'), async () => ({ kind: 'allow' })), { kind: 'allow' })
@@ -2893,7 +2957,7 @@ test('a successful shell file write enters the same verification gates as a type
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'shell-write-proof', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全面检查当前代码，修复实现，运行测试并回读验证结果' }],
   } })
@@ -2922,7 +2986,7 @@ test('multi-step inspect-then-fix work must record a plan and relevant evidence 
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'inspect-before-fix', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '检查当前项目代码，定位问题后修复并运行测试。' }],
   } })
@@ -2946,7 +3010,7 @@ test('a verifier command mixed with a mutation cannot bypass evidence-first pref
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'mixed-verifier-mutation', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全面检查当前代码，修复实现，运行测试并回读验证结果。' }],
   } })
@@ -2970,7 +3034,7 @@ test('complex code delivery needs both tests and readback before the plan can cl
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'complex-proof', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '全面检查当前代码，修复实现，运行测试并回读验证结果' }],
   } })
@@ -3003,7 +3067,7 @@ test('single-segment directory constraints protect descendants including dot dir
   }
   apply(ctx)
   const a = { id: 'directory-boundaries', session: { header: { cwd: 'C:\\work' } } }
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'directory-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只修改 src；不得修改 .github 和 tests。' }],
   } })
@@ -3021,7 +3085,7 @@ test('nested aggregate browser operations cannot bypass click fill or submit con
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'nested-operation-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '不得点击，也不要填写，更不能提交；只观察页面。' }],
   } })
@@ -3047,7 +3111,7 @@ test('no-network mode keeps passive browser inspection but blocks all active bro
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline-browser-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '不得联网，只检查当前已经打开的页面。' }],
   } })
@@ -3071,7 +3135,7 @@ test('no-network mode cannot be bypassed through active desktop controls', async
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline-desktop-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '不得联网，只读观察当前桌面。' }],
   } })
@@ -3100,7 +3164,7 @@ test('offline local-MCP exception cannot be forged by a remote tool name suffix'
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'offline-mcp-namespace-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '不得联网，只读取本地项目。' }],
   } })
@@ -3124,7 +3188,7 @@ test('hard constraints reject shell expression escapes and oversized Code Mode p
   }
   apply(ctx)
   const a = agent()
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'escape-proof-goal', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: '只读检查本地项目，不允许任何修改，也不得联网。' }],
   } })
@@ -3188,6 +3252,7 @@ function partialResearchFixture({ exhausted = true } = {}) {
   c.goalChanged(a, assessTask(goal), { goal, reset: true })
   c.begin(a, 1)
   session.append('xiaoshe/task-generation', { version: 1, generation: c.state(a).taskGeneration, relation: 'new', triggerMessageId: 'partial-research' })
+  session.append('user/message', { id: 'partial-research', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: goal }] })
   const sourceList = `Sources:\n- [上海天气](${partialResearchSource})\n- [今日天气预报](https://weather.example.org/today)`
   c.result(execution(a, 'web_search', { query: '上海今天天气预报' }), evidenceSuccess(sourceList))
   assert.equal(c.summary(a).research.source_count, 2)
@@ -3608,7 +3673,7 @@ test('research recovery advice preserves network routes alongside local work and
   apply(ctx)
   const a = agent()
   const goal = '深入研究上海天气公开来源，然后读取并更新本地报告，最后运行测试验证。'
-  events.get('agent/inbox/inserted')({ agent: a, message: {
+  events.get('agent/inbox/claimed')({ agent: a, message: {
     id: 'research-and-local-work', role: 'user', source: { kind: 'user' },
     content: [{ type: 'text', text: goal }],
   } })

@@ -6,8 +6,7 @@ const ref = (digit = 'a', extra = {}) => ({ attachmentId: `sha256:${digit.repeat
 const image = attachment => ({ type: 'image', attachment })
 const user = (seq, content, source = 'user') => ({ type: 'user/message', seq, time: seq, data: { source: { kind: source }, content } })
 
-test('projection 4 replays text plus ordered durable images and image-only messages', () => {
-  assert.equal(taskTimelineProjection.stateVersion, 4)
+test('projection replays text plus ordered durable images and image-only messages', () => {
   const events = [user(9, [image(ref()), { type: 'text', text: '图片说明' }, image(ref('b'))]), user(10, [image(ref('c'))])]
   const before = structuredClone(events)
   const result = foldTaskTimeline(events)

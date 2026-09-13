@@ -132,3 +132,11 @@ test('private file-proof cold recovery runs after its real JSONL and filesystem 
 test('JSONL mutation regression is an independent integration entry, not a child-process stdout import', () => {
   assert(packageJson.scripts['test:agent:integration'].includes('scripts/verification-jsonl.integration.test.mjs'))
 })
+
+test('real-user failure regressions stay in the standard integration gate', async () => {
+  for (const file of ['schedule.integration.test.mjs', 'schedule-verification.integration.test.mjs', 'research-queue-boundary.integration.test.mjs', 'bridge-client.test.mjs', 'windows-detached-logging.test.mjs']) {
+    assert(packageJson.scripts['test:agent:integration'].includes(`scripts/${file}`), `${file} must remain discoverable`)
+    await access(new URL(`./${file}`, import.meta.url))
+  }
+  assert(packageJson.scripts['test:agent'].includes('scripts/document-preparation.test.mjs'))
+})

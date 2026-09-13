@@ -96,6 +96,54 @@ const DESKTOP_PAYLOAD = {
   actions: {},
 }
 
+test('health deadline aborts hanging reads at five seconds and retry supersedes late responses', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = []
+  let recover = false
+  const provider = new ProductHealthProvider((path, init) => {
+    if (recover) return Promise.resolve(new Response(JSON.stringify(path.includes('heartbeat') ? heartbeatPayload('ready') : DESKTOP_PAYLOAD)))
+    return new Promise(resolve => pending.push({ path, signal: init.signal, resolve }))
+  })
+  t.after(() => provider.dispose())
+  const first = provider.refresh()
+  t.mock.timers.tick(4_999)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(provider.getSnapshot().status, 'loading')
+  assert.ok(pending.every(request => !request.signal.aborted))
+  t.mock.timers.tick(1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(provider.getSnapshot().status, 'error', 'deadline must settle even a transport that ignores abort')
+  assert.ok(pending.every(request => request.signal.aborted), 'timeout must cancel the actual health request signals')
+  assert.deepEqual((await first).errors.map(error => error.kind), ['HEALTH_REQUEST_TIMEOUT', 'HEALTH_REQUEST_TIMEOUT'])
+  recover = true
+  const recovered = await provider.refresh()
+  assert.equal(recovered.status, 'ready')
+  for (const request of pending) request.resolve(new Response(JSON.stringify(request.path.includes('heartbeat') ? heartbeatPayload('ready') : { ...DESKTOP_PAYLOAD, version: 'stale' })))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(provider.getSnapshot().value.desktop.version, '0.2.0')
+  assert.equal(provider.getSnapshot().status, 'ready')
+})
+
+test('health deadline covers a stalled response body and preserves successful sibling diagnostics', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let healthSignal
+  const provider = new ProductHealthProvider(async (path, init) => {
+    if (!path.includes('heartbeat')) return new Response(JSON.stringify(DESKTOP_PAYLOAD))
+    healthSignal = init.signal
+    return new Response(new ReadableStream({ start() {} }))
+  })
+  t.after(() => provider.dispose())
+  const refresh = provider.refresh()
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(5_000)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(provider.getSnapshot().status, 'degraded')
+  assert.equal(healthSignal.aborted, true)
+  const snapshot = await refresh
+  assert.equal(snapshot.value.desktop.product, '小蛇')
+  assert.equal(snapshot.errors[0].kind, 'HEALTH_REQUEST_TIMEOUT')
+})
+
 async function productHealth(heartbeat) {
   const provider = new ProductHealthProvider(async (path) => new Response(JSON.stringify(
     path.includes('heartbeat') ? heartbeat : DESKTOP_PAYLOAD,

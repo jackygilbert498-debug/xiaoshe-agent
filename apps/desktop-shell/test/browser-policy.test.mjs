@@ -15,12 +15,11 @@ test('action observation admission compares literal assertions without convertin
   const valid = { expect_url: 'https://example.org/', expect_text: '保存状态\n\n已保存', expect_element_id: 'e1', expect_value: 'original', expect_scroll_y: 17 }
   assert.equal(browserSnapshotSatisfies(observation, valid), true)
   assert.doesNotThrow(() => assertBrowserVerificationObservation(observation, valid))
-  for (const changed of [{ expect_text: '保存状态\\n\\n已保存' }, { expect_url: 'https://example.org/other' },
-    { expect_element_id: 'e2' }, { expect_value: 'different' }, { expect_scroll_y: 18 }]) {
-    assert.throws(() => assertBrowserVerificationObservation(observation, { ...valid, ...changed }), {
-      code: 'BROWSER_VERIFICATION_ARGUMENT',
-      message: '验证断言与该动作的原始观察不一致；本次尚未独立回读页面，当前基线和原有效期未刷新。这不表示页面动作失败；请依据任务和已有观察修正断言，用同一 after_snapshot_id 重试，不要重做动作。不会自动反转义或改写预期。',
-    })
+  for (const [changed, field] of [[{ expect_text: '保存状态\\n\\n已保存' }, 'expect_text'], [{ expect_url: 'https://example.org/other' }, 'expect_url'],
+    [{ expect_element_id: 'e2' }, 'expect_element_id'], [{ expect_value: 'different' }, 'expect_value'], [{ expect_scroll_y: 18 }, 'expect_scroll_y']]) {
+    assert.throws(() => assertBrowserVerificationObservation(observation, { ...valid, ...changed }), error =>
+      error.code === 'BROWSER_VERIFICATION_ARGUMENT' && error.message.includes(field)
+      && /尚未独立回读页面.*同一 after_snapshot_id.*不要重做动作/u.test(error.message))
   }
   assert.equal(Object.isFrozen(observation), true)
   assert.equal(Object.isFrozen(observation.elements[0]), true)
@@ -38,10 +37,10 @@ test('oversized or malformed action observations stay unavailable rather than be
 })
 test('action reminders name the exact next baseline without claiming verification or inventing save assertions', () => {
   const snapshot = { tab_id: 'tab', snapshot_id: 'fresh', url: 'https://example.org/login', elements: [{ element_id: 'e1', value: 'payload' }] }
-  const opened = withBrowserVerificationHint('open', { url: 'https://example.org/form' }, snapshot)
+  const opened = withBrowserVerificationHint('open', { url: 'https://example.org/form' }, snapshot, product)
   assert.equal(opened.next_verification.status, 'pending_not_verified')
   assert.deepEqual(opened.next_verification.required_assertions, ['expect_url'])
-  assert.deepEqual(opened.next_verification.arguments, { tab_id: 'tab', after_snapshot_id: 'fresh', expect_url: 'https://example.org/form' })
+  assert.deepEqual(opened.next_verification.arguments, { tab_id: 'tab', after_snapshot_id: 'fresh', expect_url: 'https://example.org/login' })
   assert.equal(snapshot.next_verification, undefined)
   const typed = withBrowserVerificationHint('type', { element_id: 'e1', text: 'payload' }, snapshot)
   assert.deepEqual(typed.next_verification.arguments, { tab_id: 'tab', after_snapshot_id: 'fresh', use_action_input: true })
@@ -62,6 +61,42 @@ test('action reminders name the exact next baseline without claiming verificatio
     assert.equal(manual.arguments.use_action_input, undefined)
     assert.deepEqual(manual.required_assertions, ['expect_element_id', 'expect_value'])
   }
+})
+
+test('redirect hints bind the observed legal URL while strict verification still rejects the requested URL', () => {
+  const snapshot = { tab_id: 'tab', snapshot_id: 'fresh', url: 'https://example.org/zh-Hans-CN/news/', text: 'Article title', elements: [] }
+  const hint = withBrowserVerificationHint('open', { url: 'https://example.org/news/' }, snapshot, product).next_verification
+  assert.equal(hint.arguments.expect_url, 'https://example.org/zh-Hans-CN/news/')
+  assert.equal(hint.status, 'pending_not_verified')
+  assert.equal(browserSnapshotSatisfies(snapshot, { expect_url: 'https://example.org/news/' }), false)
+  assert.equal(browserSnapshotSatisfies(snapshot, hint.arguments), true)
+  assert.equal(withBrowserVerificationHint('open', { url: 'https://example.org/news/' }, {
+    ...snapshot, url: 'https://official.example.net/news/',
+  }, product).next_verification.arguments.expect_url, 'https://official.example.net/news/')
+})
+
+test('redirect hints never promote credential, product-control, unsafe or unauthorized local targets', () => {
+  const snapshot = { tab_id: 'tab', snapshot_id: 'fresh' }
+  for (const url of ['https://user:SECRET@example.org/', 'http://localhost:3080/api', 'https://127.0.0.1:3080/',
+    'http://127.0.0.1:8877/', 'http://example.org/', 'file:///secret', 'javascript:alert(1)', 'data:text/html,SECRET',
+    'about:blank', 'https://example.org/' + 'x'.repeat(2048)]) {
+    assert.throws(() => withBrowserVerificationHint('open', { url: 'https://example.org/' }, { ...snapshot, url }, product))
+  }
+  const local = { url: 'http://127.0.0.1:8877/form' }
+  assert.equal(withBrowserVerificationHint('open', local, { ...snapshot, url: 'http://127.0.0.1:8877/done' }, product)
+    .next_verification.arguments.expect_url, 'http://127.0.0.1:8877/done')
+  assert.throws(() => withBrowserVerificationHint('open', local, { ...snapshot, url: 'http://127.0.0.1:8878/done' }, product))
+})
+
+test('observation mismatch diagnostics name all failed fields without leaking page or assertion values', () => {
+  const snapshot = { url: 'https://example.org/?token=PRIVATE_URL', text: 'PRIVATE_BODY', elements: [{ element_id: 'e1', value: 'PRIVATE_VALUE' }], viewport: { scroll_y: 2 } }
+  assert.throws(() => assertBrowserVerificationObservation(snapshot, { expect_url: 'https://different.example/?token=PRIVATE_EXPECTED',
+    expect_text: 'PRIVATE_EXPECTED_TEXT', expect_element_id: 'e1', expect_value: 'PRIVATE_EXPECTED_VALUE', expect_scroll_y: 3 }), error => {
+    assert.equal(error.code, 'BROWSER_VERIFICATION_ARGUMENT')
+    for (const field of ['expect_url', 'expect_text', 'expect_value', 'expect_scroll_y']) assert.ok(error.message.includes(field))
+    assert.doesNotMatch(error.message, /PRIVATE_|https:|example/u)
+    return true
+  })
 })
 test('action-specific assertions cannot be replaced by matching page text', () => {
   const snapshot = { viewport: { scroll_y: 400 }, next_verification: { required_assertions: [] } }

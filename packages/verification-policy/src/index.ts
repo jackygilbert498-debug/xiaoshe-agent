@@ -155,6 +155,12 @@ function classifyToolEffect(toolName: string, args: unknown): {
   // no guest host APIs. Neither its name nor its pass-like result certifies a
   // project gate; namespaced lookalikes do not inherit that execution contract.
   if (toolName === 'pure_js_probe') return { mutation: false }
+  // Official reminders mutate session records, not engineering source. A
+  // later schedule_list must prove the exact record/absence independently.
+  if (toolName === 'schedule_list') return { mutation: false }
+  if (toolName === 'schedule_create' || toolName === 'schedule_delete') {
+    return { mutation: true, change: { kind: 'data', risk: 'low' } }
+  }
   if (/(?:^|[_:.-])pure_js_probe$/iu.test(toolName)) return { mutation: true }
   if (/(?:^|[_:.-])str_replace_editor$/iu.test(toolName)) {
     const command = typeof args === 'object' && args !== null && !Array.isArray(args)
@@ -196,6 +202,9 @@ function classifyToolEffect(toolName: string, args: unknown): {
   if (isCompleteStaticJsonWrite(toolName, args)) {
     return { mutation: true, change: { kind: 'data', risk: 'low' } }
   }
+  if (isPlainDocumentWrite(toolName, args)) {
+    return { mutation: true, change: { kind: 'data', risk: 'low' } }
+  }
   if (/(?:write|edit|delete|remove|move|rename|apply_patch|create_file)/iu.test(toolName)) {
     return { mutation: true, change: { kind: 'code', risk: 'medium' } }
   }
@@ -232,13 +241,43 @@ function isCompleteStaticJsonWrite(toolName: string, args: unknown): boolean {
 }
 
 /**
+ * Only literal whole-file output documents carry a complete expected value.
+ * This shared predicate is eligibility, not permission or proof: the host must
+ * independently bind workspace containment, exact bytes and a later full read.
+ * Executable Markdown, instruction files and build/config inputs stay closed.
+ */
+export function isPlainDocumentWrite(toolName: string, args: unknown): boolean {
+  const input = asRecord(args)
+  if (toolName !== 'write' || input === undefined || typeof input.content !== 'string'
+    || Object.keys(input).some(key => !WHOLE_FILE_WRITE_ARGUMENTS.has(key))
+    || (input.sandbox_permissions !== undefined && typeof input.sandbox_permissions !== 'string')
+    || (input.justification !== undefined && typeof input.justification !== 'string')) return false
+  const target = safeStaticJsonTarget(input.file_path, /\.(?:md|markdown|txt)$/iu, true)
+  if (!target) return false
+  const parts = target.toLowerCase().split('/')
+  if (parts.slice(1, -1).some(part => part.startsWith('.') || ENGINEERING_JSON_DIRECTORIES.has(part))) return false
+  const basename = parts.at(-1) ?? ''
+  if (/^(?:agents|claude|gemini|skill|instructions|copilot-instructions)\.(?:md|markdown|txt)$/u.test(basename)
+    || /^(?:cmakelists|requirements(?:[.-].*)?|constraints(?:[.-].*)?)\.txt$/u.test(basename)) return false
+  // Plain text is deliberately bounded to non-executable prose. Code fences
+  // carrying execution attributes, template blocks, HTML and front matter are
+  // conservative exclusions; mentioning words such as build in prose is safe.
+  const content = input.content
+  return !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(content)
+    && !/^\uFEFF?\s*(?:---|\+\+\+)\s*\r?\n/u.test(content)
+    && !/^\s*(?:import|export)\s/mu.test(content)
+    && !/<(?:[A-Za-z!/?])|\{%|\{\{/u.test(content)
+    && !/^\s*(?:`{3,}|~{3,})[^\r\n]*(?:\{|\b(?:exec|execute|eval|run)\b)/imu.test(content)
+}
+
+/**
  * Return the normalized `output/...json` suffix of a syntactically eligible
  * target. Ordinary absolute paths remain candidates because the live tools use
  * them; the verifier separately proves they resolve below this session's real
  * workspace/output tree. Device/UNC/ADS and traversal spellings stay closed.
  */
-function safeStaticJsonTarget(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.trim() === '' || value.includes('\0')) return undefined
+function safeStaticJsonTarget(value: unknown, extension: RegExp = /\.json$/iu, unambiguousOutput = false): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '' || /[\0\r\n]/u.test(value)) return undefined
   const slashed = value.replace(/\\/gu, '/')
   if (slashed.startsWith('//')) return undefined
   const windowsAbsolute = /^[a-z]:\//iu.test(slashed)
@@ -253,12 +292,15 @@ function safeStaticJsonTarget(value: unknown): string | undefined {
     if (segment === '..') return undefined
     parts.push(segment)
   }
+  // Without a session cwd, multiple absolute output segments are ambiguous:
+  // choosing the last could erase a protected ancestor such as output/src.
+  if (absolute && unambiguousOutput && parts.filter(segment => segment.toLowerCase() === 'output').length !== 1) return undefined
   const outputIndex = absolute
     ? parts.map(segment => segment.toLowerCase()).lastIndexOf('output')
     : parts[0]?.toLowerCase() === 'output' ? 0 : -1
   if (outputIndex < 0 || outputIndex >= parts.length - 1) return undefined
   const normalized = parts.slice(outputIndex).join('/')
-  return normalized.toLowerCase().endsWith('.json') ? normalized : undefined
+  return extension.test(normalized) ? normalized : undefined
 }
 
 function isEngineeringJsonPath(path: string): boolean {

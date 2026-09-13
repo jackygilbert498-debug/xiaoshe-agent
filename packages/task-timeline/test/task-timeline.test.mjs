@@ -5,6 +5,23 @@ import { foldTaskTimeline } from '../lib/index.js'
 
 const event = (type, seq, data) => ({ type, seq, time: seq, data })
 
+for (const code of ['ABORTED', 'ABORTED_BEFORE_DISPATCH']) test(`canonical ${code} is cancelled without hiding a previous true failure`, () => {
+  const result = (seq, callId, error) => event('tool/result', seq, { error, message: { source: { kind: 'tool', callId },
+    content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: 'Error: tool call aborted' }], isError: true }] } })
+  const projection = foldTaskTimeline([
+    event('tool/call', 1, { name: 'pwsh', callId: 'failed' }),
+    result(2, 'failed', { name: 'AbortError', code: 'EXIT_1' }),
+    event('tool/call', 3, { name: 'pwsh', callId: 'stopped' }),
+    result(4, 'stopped', { name: 'AbortError', code }),
+    result(5, 'unknown', { name: 'AbortError', code }),
+  ])
+  assert.equal(projection.items[1].isError, true)
+  assert.equal(projection.items[1].text, '失败 pwsh')
+  assert.equal(projection.items[3].text, '已取消：pwsh')
+  assert.notEqual(projection.items[3].isError, true)
+  assert.equal(projection.items[4].text, '已取消：unknown', 'unmatched identity cannot cancel another call')
+})
+
 test('tool results bind only to an exact call id', () => {
   const projection = foldTaskTimeline([
     event('tool/call', 1, { name: 'delete_file', callId: 'call-real' }),

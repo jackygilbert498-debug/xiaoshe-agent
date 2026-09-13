@@ -38,7 +38,7 @@ function verifiedRecoveryEvents({
   failureBeforeProof = true,
 } = {}) {
   const failureResult = {
-    seq: failureBeforeProof ? 2 : 5,
+    seq: failureBeforeProof ? 3 : 6,
     time: now + (failureBeforeProof ? 20 : 50),
     type: 'tool/result',
     data: {
@@ -53,18 +53,133 @@ function verifiedRecoveryEvents({
   }
   return [
     { seq: 0, time: now, type: 'xiaoshe/task-generation', data: { version: 1, generation: 4, relation: 'new', triggerMessageId: 'user-1' } },
-    { seq: 1, time: now + 10, type: 'tool/call', data: { turn: 3, callId: 'failed', name: failedTool, arguments: {} } },
+    { seq: 1, time: now + 1, type: 'user/message', data: { id: 'user-1', role: 'user', source: { kind: 'user' }, content: [] } },
+    { seq: 2, time: now + 10, type: 'tool/call', data: { turn: 3, callId: 'failed', name: failedTool, arguments: {} } },
     ...(includeFailure ? [failureResult] : []),
-    { seq: 3, time: now + 30, type: 'tool/call', data: { turn: 3, callId: 'proof', name: 'browser_open', arguments: {} } },
-    { seq: 4, time: now + 40, type: 'tool/result', data: { turn: 3, message: { source: { kind: 'tool', callId: 'proof' }, isError: false, content: [{ type: 'text', text: 'body' }] } } },
-    { seq: 6, time: now + 60, type: 'xiaoshe/obligation-state', data: {
+    { seq: 4, time: now + 30, type: 'tool/call', data: { turn: 3, callId: 'proof', name: 'browser_open', arguments: {} } },
+    { seq: 5, time: now + 40, type: 'tool/result', data: { turn: 3, message: { source: { kind: 'tool', callId: 'proof' }, isError: false, content: [{ type: 'text', text: 'body' }] } } },
+    { seq: 7, time: now + 60, type: 'xiaoshe/obligation-state', data: {
       version: 1, generation: 4, turn: 3, kind: 'route-recovery', status: 'satisfied',
       failedFamily: 'web_search', alternativeFamily: 'browser', alternativeTool: 'browser_open',
-      toolContractDigest: digest, presetId: 'standard', proofResultSeq: 4,
+      toolContractDigest: digest, presetId: 'standard', proofResultSeq: 5,
     } },
-    { seq: 7, time: now + 70, type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } },
+    { seq: 8, time: now + 70, type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } },
   ].sort((left, right) => left.seq - right.seq)
 }
+
+function postAdmissionRecoveryEvents(now = Date.now()) {
+  const base = verifiedRecoveryEvents({ now }).slice(2).map(event => ({ ...event, seq: event.seq + 1,
+    data: { ...event.data, ...(event.type === 'xiaoshe/obligation-state' ? { proofResultSeq: 6 } : {}) } }))
+  return [
+    { seq: 0, time: now, type: 'user/message', data: { id: 'user-v2', role: 'user', source: { kind: 'user' }, content: [] } },
+    { seq: 1, time: now + 1, type: 'xiaoshe/task-generation', data: { version: 2, generation: 4, relation: 'new', triggerMessageId: 'user-v2', triggerMessageSeq: 0 } },
+    ...base,
+  ]
+}
+
+test('post-admission recovery learns only from a unique direct message before effects', () => {
+  const events = postAdmissionRecoveryEvents()
+  assert.equal(recoveryObservationsFromSession('one', events, { outcome: 'verified', turn: 3 }).length, 1)
+  for (const kind of ['missing', 'duplicate', 'forged-seq', 'non-user', 'wrong-role', 'late', 'replay', 'v1-late', 'padded-id']) {
+    let input = structuredClone(events)
+    if (kind === 'missing') input.shift()
+    if (kind === 'duplicate') input.push({ ...input[0], seq: 2 })
+    if (kind === 'forged-seq') input[1].data.triggerMessageSeq = 2
+    if (kind === 'non-user') input[0].data.source.kind = 'subagent'
+    if (kind === 'wrong-role') input[0].data.role = 'assistant'
+    if (kind === 'late') input[1].seq = 5
+    if (kind === 'replay') input.splice(2, 0, { ...input[1], seq: 2 })
+    if (kind === 'v1-late') { input[1].data.version = 1; delete input[1].data.triggerMessageSeq }
+    if (kind === 'padded-id') { input[0].data.id = ' user-v2'; input[1].data.triggerMessageId = ' user-v2' }
+    assert.deepEqual(recoveryObservationsFromSession('one', input, { outcome: 'verified', turn: 3 }), [], kind)
+  }
+})
+
+test('orphan legacy declarations neither poison a fresh v2 generation nor certify old same-turn recovery', () => {
+  const orphan = verifiedRecoveryEvents().filter(event => event.type !== 'user/message').map(event => ({ ...event,
+    data: { ...event.data, ...(event.type === 'xiaoshe/task-generation' || event.type === 'xiaoshe/obligation-state' ? { generation: 90 } : {}) } }))
+  const fresh = postAdmissionRecoveryEvents().map(event => ({ ...event, seq: event.seq + 20,
+    data: { ...event.data, ...(event.type === 'xiaoshe/task-generation' ? { triggerMessageSeq: 20 } : {}),
+      ...(event.type === 'xiaoshe/obligation-state' ? { proofResultSeq: 26 } : {}),
+      ...(event.type === 'tool/call' ? { callId: `fresh-${event.data.callId}` } : {}),
+      ...(event.type === 'tool/result' ? { message: { ...event.data.message, source: { ...event.data.message.source, callId: `fresh-${event.data.message.source.callId}` } } } : {}) } }))
+  assert.deepEqual(recoveryObservationsFromSession('orphan-only', orphan, { outcome: 'verified', turn: 3 }), [])
+  const observations = recoveryObservationsFromSession('recovered', [...orphan, ...fresh], { outcome: 'verified', turn: 3 })
+  assert.deepEqual(observations.map(item => item.taskGeneration), [4])
+  const continuation = structuredClone(fresh)
+  continuation[1].data.relation = 'continuation'
+  continuation[1].data.generation = 90
+  continuation.find(event => event.type === 'xiaoshe/obligation-state').data.generation = 90
+  assert.deepEqual(recoveryObservationsFromSession('no-laundering', [...orphan, ...continuation], { outcome: 'verified', turn: 3 }), [])
+})
+
+test('legacy recovery needs a real pre-effect user and allows only an initial pending read before admission', () => {
+  const base = verifiedRecoveryEvents().map(event => ({ ...event, seq: event.seq * 10,
+    data: { ...event.data, ...(event.type === 'xiaoshe/obligation-state' ? { proofResultSeq: 50 } : {}) } }))
+  const initial = { seq: 5, time: 1_005, type: 'xiaoshe/obligation-state', data: {
+    version: 1, generation: 4, turn: 3, kind: 'ordered-read', status: 'pending', primary: 'a.txt', fallback: 'b.txt' } }
+  assert.equal(recoveryObservationsFromSession('initial-read', [...base, initial], { outcome: 'verified', turn: 3 }).length, 1)
+  for (const kind of ['missing', 'duplicate', 'non-user', 'wrong-role', 'late-tool', 'late-answer', 'late-verification', 'late-approval', 'late-end', 'early-satisfied', 'continuation-only']) {
+    let events = structuredClone(base)
+    if (kind === 'missing') events.splice(1, 1)
+    if (kind === 'duplicate') events.push({ ...events[1], seq: 11 })
+    if (kind === 'non-user') events[1].data.source.kind = 'subagent'
+    if (kind === 'wrong-role') events[1].data.role = 'assistant'
+    if (kind === 'continuation-only') events[0].data.relation = 'continuation'
+    const type = { 'late-tool': 'tool/call', 'late-answer': 'assistant/message', 'late-verification': 'verification/result', 'late-approval': 'approval/request', 'late-end': 'turn/end' }[kind]
+    if (type) events.push({ seq: 5, time: 1_005, type, data: {} })
+    if (kind === 'early-satisfied') events.push({ ...initial, data: { ...initial.data, status: 'satisfied' } })
+    assert.deepEqual(recoveryObservationsFromSession(kind, events, { outcome: 'verified', turn: 3 }), [], kind)
+  }
+})
+
+test('a verified same-turn new task cannot promote an earlier valid tasks recovery', () => {
+  const events = [...verifiedRecoveryEvents(),
+    { seq: 20, time: 2_000, type: 'user/message', data: { id: 'new-task', role: 'user', source: { kind: 'user' }, content: [] } },
+    { seq: 21, time: 2_001, type: 'xiaoshe/task-generation', data: { version: 2, generation: 5, relation: 'new', triggerMessageId: 'new-task', triggerMessageSeq: 20 } },
+    { seq: 22, time: 2_002, type: 'tool/call', data: { turn: 3, callId: 'new-read', name: 'read', arguments: {} } },
+    { seq: 23, time: 2_003, type: 'tool/result', data: { turn: 3, message: { source: { kind: 'tool', callId: 'new-read' }, isError: false, content: [{ type: 'text', text: 'new body' }] } } },
+  ]
+  assert.deepEqual(recoveryObservationsFromSession('same-turn', events, { outcome: 'verified', turn: 3 }), [])
+})
+
+test('a legacy marker cannot bind its delayed user across a fresh v2 task boundary', () => {
+  const fresh = postAdmissionRecoveryEvents().map(event => ({ ...event, seq: event.seq + 2,
+    data: { ...event.data, ...(event.type === 'xiaoshe/task-generation' ? { triggerMessageSeq: 2 } : {}),
+      ...(event.type === 'xiaoshe/obligation-state' ? { proofResultSeq: 8 } : {}) } }))
+  const events = [
+    { seq: 0, time: 1000, type: 'xiaoshe/task-generation', data: { version: 1, generation: 90, relation: 'new', triggerMessageId: 'delayed' } },
+    ...fresh.slice(0, 2),
+    { seq: 4, time: 1004, type: 'user/message', data: { id: 'delayed', role: 'user', source: { kind: 'user' }, content: [] } },
+    ...fresh.slice(2).map(event => event.type === 'xiaoshe/obligation-state' ? { ...event, data: { ...event.data, generation: 90 } } : event),
+  ]
+  assert.deepEqual(recoveryObservationsFromSession('boundary', events, { outcome: 'verified', turn: 3 }), [])
+  // Before the delayed user arrives, the fresh task is independently valid;
+  // that later user cannot retroactively reserve an earlier generation number.
+  const withoutDelayed = events.filter(event => event.data?.id !== 'delayed')
+    .map(event => event.type === 'xiaoshe/obligation-state' ? { ...event, data: { ...event.data, generation: 4 } } : event)
+  assert.deepEqual(recoveryObservationsFromSession('boundary', withoutDelayed, { outcome: 'verified', turn: 3 }).map(item => item.taskGeneration), [4])
+})
+
+test('bounded plugin history retains a v2 trigger and never learns a prior task failure as a new task recovery', async () => {
+  const scope = memoryScope({ revision: 0, entries: [] })
+  let listener
+  const service = apply({ sessionProjections: { snapshot: () => ({ values: { completionReceipt: { outcome: 'verified', turn: 3 } } }) },
+    settings: { register: () => scope }, on(_event, callback) { listener = callback; return () => {} }, effect: execute => execute(), provide() {} })
+  const rows = postAdmissionRecoveryEvents()
+  const session = { id: 'bounded-v2', events: [...rows.slice(0, 2),
+    ...Array.from({ length: 600 }, (_, index) => ({ seq: index + 2, time: Date.now(), type: 'context/notice', data: {} })),
+    ...rows.slice(2).map(row => ({ ...row, seq: row.seq + 600, data: { ...row.data, ...(row.type === 'xiaoshe/obligation-state' ? { proofResultSeq: 606 } : {}) } })),
+  ] }
+  listener(session, session.events.at(-1))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(service.rank({ failedFamily: 'web_search', presetId: 'standard', candidates: [{ tool: 'browser_open', family: 'browser', toolContractDigest: digest }] })[0].state, 'candidate')
+  // Place the new task boundary after the old failure and before the proof call.
+  const moved = rows.map(row => ({ ...row, seq: row.seq * 10, data: { ...row.data, ...(row.type === 'xiaoshe/obligation-state' ? { generation: 5, proofResultSeq: 60 } : {}) } }))
+  moved.splice(4, 0, { seq: 41, time: Date.now(), type: 'user/message', data: { id: 'other', role: 'user', source: { kind: 'user' } } },
+    { seq: 42, time: Date.now(), type: 'xiaoshe/task-generation', data: { version: 2, generation: 5, relation: 'new', triggerMessageId: 'other', triggerMessageSeq: 41 } })
+  assert.deepEqual(recoveryObservationsFromSession('different-task', moved, { outcome: 'verified', turn: 3 }), [])
+})
 
 test('one verified episode stays a candidate and two independent episodes become an active tie-break', async () => {
   const scope = memoryScope({ revision: 0, entries: [] })
@@ -305,23 +420,25 @@ test('plugin learns a verified recovery across turns only inside the same task g
   })
   const session = { id: 'cross-turn', events: [
     { seq: 0, time: now, type: 'xiaoshe/task-generation', data: { version: 1, generation: 7, relation: 'new', triggerMessageId: 'user-1' } },
-    { seq: 1, time: now + 10, type: 'tool/call', data: { turn: 1, callId: 'failed', name: 'web_search', arguments: {} } },
-    { seq: 2, time: now + 20, type: 'tool/result', data: { turn: 1, error: failureText, message: { source: { kind: 'tool', callId: 'failed' }, isError: true, content: [{ type: 'text', text: failureText }] } } },
-    { seq: 3, time: now + 30, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    { seq: 1, time: now + 1, type: 'user/message', data: { id: 'user-1', role: 'user', source: { kind: 'user' }, content: [] } },
+    { seq: 2, time: now + 10, type: 'tool/call', data: { turn: 1, callId: 'failed', name: 'web_search', arguments: {} } },
+    { seq: 3, time: now + 20, type: 'tool/result', data: { turn: 1, error: failureText, message: { source: { kind: 'tool', callId: 'failed' }, isError: true, content: [{ type: 'text', text: failureText }] } } },
+    { seq: 4, time: now + 30, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
   ] }
   listener(session, session.events.at(-1))
   await new Promise(resolve => setImmediate(resolve))
 
   session.events.push(
-    { seq: 4, time: now + 40, type: 'xiaoshe/task-generation', data: { version: 1, generation: 7, relation: 'continuation', triggerMessageId: 'user-2' } },
-    { seq: 5, time: now + 50, type: 'tool/call', data: { turn: 2, callId: 'proof', name: 'browser_open', arguments: {} } },
-    { seq: 6, time: now + 60, type: 'tool/result', data: { turn: 2, message: { source: { kind: 'tool', callId: 'proof' }, isError: false, content: [{ type: 'text', text: 'body' }] } } },
-    { seq: 7, time: now + 70, type: 'xiaoshe/obligation-state', data: {
+    { seq: 5, time: now + 40, type: 'xiaoshe/task-generation', data: { version: 1, generation: 7, relation: 'continuation', triggerMessageId: 'user-2' } },
+    { seq: 6, time: now + 41, type: 'user/message', data: { id: 'user-2', role: 'user', source: { kind: 'user' }, content: [] } },
+    { seq: 7, time: now + 50, type: 'tool/call', data: { turn: 2, callId: 'proof', name: 'browser_open', arguments: {} } },
+    { seq: 8, time: now + 60, type: 'tool/result', data: { turn: 2, message: { source: { kind: 'tool', callId: 'proof' }, isError: false, content: [{ type: 'text', text: 'body' }] } } },
+    { seq: 9, time: now + 70, type: 'xiaoshe/obligation-state', data: {
       version: 1, generation: 7, turn: 2, kind: 'route-recovery', status: 'satisfied',
       failedFamily: 'web_search', alternativeFamily: 'browser', alternativeTool: 'browser_open',
-      toolContractDigest: digest, presetId: 'standard', proofResultSeq: 6,
+      toolContractDigest: digest, presetId: 'standard', proofResultSeq: 8,
     } },
-    { seq: 8, time: now + 80, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+    { seq: 10, time: now + 80, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
   )
   receipt = { outcome: 'verified', turn: 2 }
   listener(session, session.events.at(-1))
@@ -333,9 +450,10 @@ test('plugin learns a verified recovery across turns only inside the same task g
   })[0].state, 'candidate')
 
   const crossGeneration = [
-    ...session.events.slice(0, 4),
-    { seq: 4, time: 2_040, type: 'xiaoshe/task-generation', data: { version: 1, generation: 8, relation: 'new', triggerMessageId: 'user-3' } },
-    ...session.events.slice(5).map(event => ({ ...event, data: { ...event.data, ...(event.data?.generation === 7 ? { generation: 8 } : {}) } })),
+    ...session.events.slice(0, 5),
+    { seq: 5, time: 2_040, type: 'xiaoshe/task-generation', data: { version: 1, generation: 8, relation: 'new', triggerMessageId: 'user-3' } },
+    { seq: 6, time: 2_041, type: 'user/message', data: { id: 'user-3', role: 'user', source: { kind: 'user' }, content: [] } },
+    ...session.events.slice(7).map(event => ({ ...event, data: { ...event.data, ...(event.data?.generation === 7 ? { generation: 8 } : {}) } })),
   ]
   assert.deepEqual(recoveryObservationsFromSession('cross-generation', crossGeneration, receipt), [])
 })
@@ -348,7 +466,7 @@ test('only a verified receipt with a real proof result promotes a satisfied reco
     outcome: 'verified-recovery', at: new Date(1_060).toISOString(),
   }])
   assert.deepEqual(recoveryObservationsFromSession('session-secret', events, { outcome: 'partial', turn: 3 }), [])
-  assert.deepEqual(recoveryObservationsFromSession('session-secret', events.filter(event => event.seq !== 4), { outcome: 'verified', turn: 3 }), [])
+  assert.deepEqual(recoveryObservationsFromSession('session-secret', events.filter(event => event.seq !== 5), { outcome: 'verified', turn: 3 }), [])
   assert.deepEqual(recoveryObservationsFromSession('session-secret', verifiedRecoveryEvents({ includeFailure: false }), { outcome: 'verified', turn: 3 }), [])
   assert.deepEqual(recoveryObservationsFromSession('session-secret', verifiedRecoveryEvents({ failedTool: 'read_image' }), { outcome: 'verified', turn: 3 }), [])
   assert.deepEqual(recoveryObservationsFromSession('session-secret', verifiedRecoveryEvents({ failureBeforeProof: false }), { outcome: 'verified', turn: 3 }), [])
@@ -373,6 +491,7 @@ test('str_replace_editor view is correlated as filesystem_read experience', () =
 test('a bounded recovery failure is retained as failure experience without promoting success', () => {
   const events = [
     { seq: 0, time: 1_990, type: 'xiaoshe/task-generation', data: { version: 1, generation: 2, relation: 'new', triggerMessageId: 'user-1' } },
+    { seq: 1, time: 1_991, type: 'user/message', data: { id: 'user-1', role: 'user', source: { kind: 'user' }, content: [] } },
     { seq: 4, time: 2_000, type: 'xiaoshe/obligation-state', data: {
     version: 1, generation: 2, turn: 1, kind: 'route-recovery', status: 'blocked',
     failedFamily: 'web_search', alternativeFamily: 'browser', alternativeTool: 'browser_open',

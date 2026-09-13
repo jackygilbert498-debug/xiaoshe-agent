@@ -11,8 +11,8 @@ import {
 import { posix as path } from 'node:path'
 import { createHash } from 'node:crypto'
 
-export type ReceiptOutcome = 'running' | 'completed' | 'verified' | 'partial' | 'blocked' | 'failed' | 'not_run' | 'release_held'
-export type ReceiptToolStatus = 'running' | 'succeeded' | 'failed' | 'needs_verification'
+export type ReceiptOutcome = 'running' | 'completed' | 'verified' | 'partial' | 'blocked' | 'failed' | 'cancelled' | 'not_run' | 'release_held'
+export type ReceiptToolStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_verification'
 
 export interface ReceiptEvidence { readonly path: string }
 export interface ReceiptTool {
@@ -85,9 +85,11 @@ interface MutationVerificationState {
   readonly targets: readonly string[]
 }
 interface TaskGenerationIdentity {
+  readonly version: 1 | 2
   readonly generation: number
   readonly relation: 'new' | 'continuation'
   readonly triggerMessageId: string
+  readonly triggerMessageSeq?: number
 }
 interface OrderedReadObligation extends OrderedReadReceiptObligation {
   readonly status: 'pending' | 'blocked'
@@ -137,6 +139,12 @@ interface ResearchFetchEvidence {
   readonly citedAtSeq?: number
 }
 interface ProjectionState {
+  readonly userMessages: Readonly<Record<string, { readonly seq: number; readonly direct: boolean; readonly duplicate: boolean; readonly claimed: boolean }>>
+  readonly lastBusinessSeq: number
+  readonly lastTaskTriggerSeq: number
+  readonly lastEventSeq: number
+  readonly lastUnsafeSeq: number
+  readonly pendingMessageId?: string
   /** Pairing proof only: raw nested arguments never enter cached receipt state. */
   readonly nestedCalls: Readonly<Record<string, { root: string; parent: string; argsDigest: string }>>
   readonly receipt: CompletionReceipt | null
@@ -144,6 +152,7 @@ interface ProjectionState {
   readonly receiptGeneration: number | null
   readonly latestTaskGeneration: number | null
   readonly taskIdentities: Readonly<Record<string, TaskGenerationIdentity>>
+  readonly legacyPendingReads: Readonly<Record<string, OrderedReadObligationFact>>
   readonly obligations: Readonly<Record<string, ReceiptObligation>>
   readonly mutations: Readonly<Record<string, MutationVerificationState>>
   /** Stable argument-aware family only; raw tool arguments never enter projection state. */
@@ -159,7 +168,7 @@ interface ProjectionDefinition {
   readonly schema: { parse(value: unknown): CompletionReceipt | null }
   readonly stateSchema: { parse(value: unknown): ProjectionState }
   readonly wire: { readonly viewSchema: { parse(value: unknown): CompletionReceipt | null }; view(state: ProjectionState): CompletionReceipt | null }
-  readonly stateVersion: 21
+  readonly stateVersion: 24
   init(): ProjectionState
   apply(state: ProjectionState, event: SessionFact): ProjectionState
   view(state: ProjectionState): CompletionReceipt | null
@@ -194,20 +203,26 @@ export function createCompletionReceiptProjection(policy: VerificationPolicy): P
     key: 'completionReceipt',
     schema: { parse: parseCompletionReceipt },
     stateSchema: { parse: parseProjectionState },
-    wire: { viewSchema: { parse: parseCompletionReceipt }, view: state => state.receipt },
+    wire: { viewSchema: { parse: parseCompletionReceipt }, view: state => state.pendingMessageId === undefined ? state.receipt : null },
     // v19 adds canonical call-start order and stricter verification semantics.
     // Rebuild v18 cached verdicts from Session Log instead of retaining a green
     // outcome that the new causal rule would reject.
     // Replay old checkpoints so classifier uncertainty is not retained as
     // fabricated verification debt after an upgrade.
     // v21 replays nested PTC calls and rejects mismatched legacy result identities.
-    stateVersion: 21,
+    // v22 binds post-admission identities and preserves pending source/sequence
+    // guards across cached tails; old checkpoints must replay from the log.
+    // v23 does not let an unadmitted legacy marker reserve a generation.
+    // v24 replays canonical ToolRuntime aborts instead of retaining failed verdicts.
+    stateVersion: 24,
     init: () => ({
+      userMessages: {}, lastBusinessSeq: -1, lastTaskTriggerSeq: -1, lastEventSeq: -1, lastUnsafeSeq: -1,
       nestedCalls: {},
       receipt: null,
       receiptGeneration: null,
       latestTaskGeneration: null,
       taskIdentities: {},
+      legacyPendingReads: {},
       obligations: {},
       mutations: {},
       toolFamilies: {},
@@ -217,7 +232,7 @@ export function createCompletionReceiptProjection(policy: VerificationPolicy): P
       researchFetches: {},
     }),
     apply: (state, event) => applyEvent(policy, state, event),
-    view: state => state.receipt,
+    view: state => state.pendingMessageId === undefined ? state.receipt : null,
   }
 }
 
@@ -225,7 +240,7 @@ export const completionReceiptProjection = createCompletionReceiptProjection(cre
 
 function startTurn(state: ProjectionState, pending: PendingTurn, generation: number | null): ProjectionState {
   const obligations = obligationsForGeneration(state.obligations, generation)
-  const { pendingTurn: _pendingTurn, ...base } = state
+  const { pendingTurn: _pendingTurn, pendingMessageId: _pendingMessageId, ...base } = state
   return {
     ...base,
     receipt: {
@@ -265,7 +280,7 @@ function continueTurn(state: ProjectionState, pending: PendingTurn): ProjectionS
   const obligations = obligationsForGeneration(state.obligations, state.receiptGeneration)
   const retainedUnverified = receipt.unverified
     .filter(item => !derivedVerificationDebt(item) && !obligationDebtText(item))
-  const { pendingTurn: _pendingTurn, ...base } = state
+  const { pendingTurn: _pendingTurn, pendingMessageId: _pendingMessageId, ...base } = state
   return {
     ...base,
     receipt: {
@@ -316,11 +331,17 @@ function parseProjectionState(value: unknown): ProjectionState {
   const state = record(value)
   const fail = (): never => { throw new TypeError('invalid completion receipt checkpoint') }
   if (state === undefined) return fail()
-  const maps = ['nestedCalls', 'taskIdentities', 'obligations', 'mutations', 'toolFamilies', 'recoverableFailures', 'routeRecoveredFailures', 'researchSearches', 'researchFetches'] as const
-  const fields = new Set<string>([...maps, 'receipt', 'pendingTurn', 'receiptGeneration', 'latestTaskGeneration'])
+  const maps = ['userMessages', 'nestedCalls', 'taskIdentities', 'legacyPendingReads', 'obligations', 'mutations', 'toolFamilies', 'recoverableFailures', 'routeRecoveredFailures', 'researchSearches', 'researchFetches'] as const
+  const fields = new Set<string>([...maps, 'receipt', 'pendingTurn', 'pendingMessageId', 'lastBusinessSeq', 'lastTaskTriggerSeq', 'lastEventSeq', 'lastUnsafeSeq', 'receiptGeneration', 'latestTaskGeneration'])
   if (Object.keys(state).some(key => !fields.has(key))) return fail()
   for (const key of maps) if (record(state[key]) === undefined) return fail()
   const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  for (const key of ['lastBusinessSeq', 'lastTaskTriggerSeq', 'lastEventSeq', 'lastUnsafeSeq']) if (state[key] !== -1 && !integer(state[key])) return fail()
+  if (state.pendingMessageId !== undefined && text(state.pendingMessageId) === undefined) return fail()
+  for (const entry of Object.values(state.userMessages as RowMap)) {
+    const row = record(entry)
+    if (row === undefined || !integer(row.seq) || typeof row.direct !== 'boolean' || typeof row.duplicate !== 'boolean' || typeof row.claimed !== 'boolean') return fail()
+  }
   for (const key of ['receiptGeneration', 'latestTaskGeneration']) if (state[key] !== null && !integer(state[key])) return fail()
   if (state.pendingTurn !== undefined) {
     const pending = record(state.pendingTurn)
@@ -332,7 +353,12 @@ function parseProjectionState(value: unknown): ProjectionState {
   }
   for (const entry of Object.values(state.taskIdentities as RowMap)) {
     const row = record(entry)
-    if (row === undefined || !integer(row.generation) || !['new', 'continuation'].includes(String(row.relation)) || text(row.triggerMessageId) === undefined) return fail()
+    if (row === undefined || taskGenerationIdentity(row) === undefined) return fail()
+  }
+  for (const entry of Object.values(state.legacyPendingReads as RowMap)) {
+    const row = record(entry)
+    const fact = row === undefined ? undefined : orderedReadObligation({ ...row, version: 1 })
+    if (fact === undefined || fact.status !== 'pending') return fail()
   }
   if (receiptObligationsFrom(Object.values(state.obligations as RowMap)) === undefined) return fail()
   for (const entry of Object.values(state.mutations as RowMap)) {
@@ -372,23 +398,30 @@ function activatesPendingTurn(type: string): boolean {
     || type === 'turn/end'
 }
 
+function taskIdentityEvidence(type: string): boolean {
+  return type.startsWith('tool/') || type.startsWith('assistant/') || type === 'verification/result'
+    || type.startsWith('approval/') || type === 'xiaoshe/obligation-state' || type.startsWith('turn/')
+}
+
 function taskGenerationIdentity(data: Record<string, unknown> | undefined): TaskGenerationIdentity | undefined {
-  if (data === undefined || data.version !== 1
-    || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId'].includes(key))) {
+  if (data === undefined || (data.version !== 1 && data.version !== 2)
+    || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId', ...(data.version === 2 ? ['triggerMessageSeq'] : [])].includes(key))) {
     return undefined
   }
   const generation = integer(data.generation)
   const triggerMessageId = boundedText(data.triggerMessageId, 512)
   if (generation === undefined || triggerMessageId === undefined
     || (data.relation !== 'new' && data.relation !== 'continuation')) return undefined
-  return { generation, relation: data.relation, triggerMessageId }
+  const triggerMessageSeq = data.version === 2 ? integer(data.triggerMessageSeq) : undefined
+  if (data.version === 2 && (triggerMessageSeq === undefined || triggerMessageId !== data.triggerMessageId)) return undefined
+  return { version: data.version, generation, relation: data.relation, triggerMessageId, ...(triggerMessageSeq === undefined ? {} : { triggerMessageSeq }) }
 }
 
 function validTaskGenerationTransition(
   latest: number | null,
   identity: TaskGenerationIdentity,
 ): boolean {
-  if (latest === null) return true
+  if (latest === null) return identity.relation === 'new'
   return identity.relation === 'new'
     ? identity.generation > latest
     : identity.generation === latest
@@ -613,21 +646,50 @@ function belongsToPendingTurn(data: Record<string, unknown> | undefined, pending
 }
 
 function applyEvent(policy: VerificationPolicy, state: ProjectionState, event: SessionFact): ProjectionState {
+  // V1 snapshots historically allowed synthetic sequence ties. Keep replaying
+  // them, but never use a tied/reordered interval to authenticate a v2 trigger.
+  if (!Number.isSafeInteger(event.seq) || event.seq < 0) return state
+  state = { ...state, lastEventSeq: Math.max(state.lastEventSeq, event.seq),
+    lastUnsafeSeq: event.seq <= state.lastEventSeq ? Math.max(state.lastUnsafeSeq, state.lastEventSeq) : state.lastUnsafeSeq }
   const data = record(event.data)
   if (event.type === 'xiaoshe/task-generation') {
     const identity = taskGenerationIdentity(data)
+    const trigger = identity === undefined ? undefined : state.userMessages[identity.triggerMessageId]
     if (identity === undefined || state.taskIdentities[identity.triggerMessageId] !== undefined
       || !validTaskGenerationTransition(state.latestTaskGeneration, identity)) return state
+    if (identity.version === 1 && trigger !== undefined) return state
+    if (identity.version === 2 && (trigger === undefined || !trigger.direct || trigger.duplicate || trigger.claimed
+      || trigger.seq !== identity.triggerMessageSeq || event.seq <= trigger.seq
+      || trigger.seq <= state.lastBusinessSeq || trigger.seq <= state.lastTaskTriggerSeq || trigger.seq <= state.lastUnsafeSeq)) return state
     const taskIdentities = appendBoundedRecord(
-      state.taskIdentities,
+      Object.fromEntries(Object.entries(state.taskIdentities).filter(([, value]) => value.version === 2)),
       identity.triggerMessageId,
       identity,
       128,
     )
-    return { ...state, latestTaskGeneration: identity.generation, taskIdentities }
+    // A v1 marker precedes admission. Queue edits/deletes can leave it orphaned,
+    // so its number is not authoritative until the matching direct user arrives.
+    const next = { ...state, latestTaskGeneration: identity.version === 2 ? identity.generation : state.latestTaskGeneration, taskIdentities,
+      ...(identity.version === 2 ? { taskIdentities: Object.fromEntries(Object.entries(taskIdentities).filter(([, value]) => value.version === 2)),
+        legacyPendingReads: {}, lastTaskTriggerSeq: trigger!.seq, userMessages: { ...state.userMessages, [identity.triggerMessageId]: { ...trigger!, claimed: true } } } : {}) }
+    return identity.version === 2 && state.pendingMessageId === identity.triggerMessageId ? resolvePendingTurn(next, identity) : next
+  }
+
+  if (taskIdentityEvidence(event.type)) state = { ...state, lastBusinessSeq: event.seq }
+
+  // Legacy admission may have an initial pending read and turn/start between
+  // marker and user. No tool effect or successful proof may precede that user.
+  const initialRead = event.type === 'xiaoshe/obligation-state' ? orderedReadObligation(data) : undefined
+  if (taskIdentityEvidence(event.type) && event.type !== 'turn/start' && initialRead?.status !== 'pending') {
+    state = { ...state, legacyPendingReads: {}, taskIdentities: Object.fromEntries(
+      Object.entries(state.taskIdentities).filter(([, identity]) => identity.version !== 1)) }
   }
 
   if (event.type === 'xiaoshe/obligation-state') {
+    const pendingIdentity = initialRead?.status !== 'pending' ? undefined : Object.values(state.taskIdentities)
+      .find(identity => identity.version === 1 && identity.generation === initialRead.generation)
+    if (pendingIdentity !== undefined) return { ...state, legacyPendingReads: appendBoundedRecord(
+      state.legacyPendingReads, pendingIdentity.triggerMessageId, initialRead!, 128) }
     if (data?.kind === 'route-recovery') {
       const route = routeRecoveryFact(data)
       return route === undefined || route.generation !== state.latestTaskGeneration
@@ -651,20 +713,44 @@ function applyEvent(policy: VerificationPolicy, state: ProjectionState, event: S
   }
 
   if (event.type === 'user/message') {
-    const directUser = record(data?.source)?.kind === 'user'
+    const directUser = record(data?.source)?.kind === 'user' && data?.role === 'user'
     const messageId = text(data?.id)
-    const identity = !directUser || messageId === undefined ? undefined : state.taskIdentities[messageId]
+    if (messageId !== undefined) {
+      const existing = state.userMessages[messageId]
+      state = { ...state, userMessages: { ...state.userMessages, [messageId]: {
+        seq: existing?.seq ?? event.seq, direct: directUser, duplicate: existing !== undefined, claimed: existing?.claimed ?? false,
+      } } }
+    }
+    const candidate = !directUser || messageId === undefined ? undefined : state.taskIdentities[messageId]
+    // Only v1 is consumed by a later user event; v2 was already consumed at its
+    // exact committed source sequence and cannot authorize another admission.
+    const identity = candidate?.version === 1 && state.userMessages[messageId!]?.duplicate !== true
+      && validTaskGenerationTransition(state.latestTaskGeneration, candidate) ? candidate : undefined
     let taskIdentities = state.taskIdentities
     if (identity !== undefined) {
       const { [identity.triggerMessageId]: _consumed, ...remaining } = state.taskIdentities
       taskIdentities = remaining
+      state = { ...state, latestTaskGeneration: identity.generation, lastTaskTriggerSeq: event.seq, userMessages: { ...state.userMessages, [identity.triggerMessageId]: { ...state.userMessages[identity.triggerMessageId]!, claimed: true } } }
+      const pendingRead = state.legacyPendingReads[identity.triggerMessageId]
+      const { [identity.triggerMessageId]: _read, ...legacyPendingReads } = state.legacyPendingReads
+      state = { ...state, legacyPendingReads }
+      if (pendingRead !== undefined) state = applyObligationState(state, pendingRead, event.seq)
+    }
+    if (directUser) {
+      // A legacy pre-admission marker belongs to the next actual input only;
+      // queue entries cannot remain armed across another direct task boundary.
+      taskIdentities = Object.fromEntries(Object.entries(taskIdentities).filter(([, value]) => value.version === 2))
+      state = { ...state, taskIdentities, legacyPendingReads: {} }
     }
     if (state.pendingTurn !== undefined && identity !== undefined) {
       return resolvePendingTurn({ ...state, taskIdentities }, identity)
     }
     // A direct user message without the trusted identity fact is a hard task
     // boundary. Malformed/missing protocol data therefore fails closed.
-    if (state.pendingTurn !== undefined && directUser) return resolvePendingTurn(state)
+    if (directUser && messageId !== undefined && identity === undefined) {
+      const pendingTurn = state.pendingTurn ?? (state.receipt === null ? undefined : { turn: state.receipt.turn, startedAt: event.time, sourceSeq: event.seq })
+      return { ...state, ...(pendingTurn === undefined ? {} : { pendingTurn }), pendingMessageId: messageId }
+    }
     if (!directUser || state.receipt?.outcome !== 'running') return state
     if (identity?.relation === 'continuation' && state.receiptGeneration === identity.generation) {
       return { ...state, taskIdentities }
@@ -786,6 +872,9 @@ function applyEvent(policy: VerificationPolicy, state: ProjectionState, event: S
     const tool = receipt.tools.find(candidate => candidate.callId === callId)
     if (tool === undefined) return state
     const meta = record(data?.meta)
+    // These are first-party ToolRuntime codes, not model-facing text or a
+    // process exit signal. Cancellation never counts as successful evidence.
+    const cancelled = ['ABORTED', 'ABORTED_BEFORE_DISPATCH'].includes(String(record(data?.error)?.code))
     const failed = data?.error !== undefined || message?.isError === true || hasErrorContent(message?.content)
       || shellProcessFailed(tool.name, meta, message?.content)
     const evidence = evidenceFrom(meta)
@@ -830,12 +919,14 @@ function applyEvent(policy: VerificationPolicy, state: ProjectionState, event: S
       : activeState.researchFetches
     return update(activeState, receipt, event.seq, {
       tools: receipt.tools.map(candidate => candidate.callId === callId
-        ? { ...candidate, status: failed ? 'failed' : 'succeeded', evidence, resultSeq: event.seq }
+        ? { ...candidate, status: cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded', evidence, resultSeq: event.seq }
         : candidate),
       requirements: declaredChange === undefined
         ? receipt.requirements
         : mergeRequirements(receipt.requirements, declaredRequirements),
-      unverified: failed
+      unverified: cancelled
+        ? appendUnique(receipt.unverified, `工具 ${tool.name} 已取消，执行影响未验证`)
+        : failed
         ? appendUnique(receipt.unverified, `工具 ${tool.name} 执行失败`)
         : (currentMutation?.requirements.length ?? 0) > 0 || declaredChange !== undefined
           ? appendUnique(receipt.unverified, missingTrustedEvidence(tool.name))
@@ -976,7 +1067,9 @@ function applyEvent(policy: VerificationPolicy, state: ProjectionState, event: S
     ? 'blocked'
     : kind === 'error' || hasTerminalToolFailure || verificationOutcome === 'failed'
       ? 'failed'
-      : kind === 'not-run'
+      : kind === 'aborted' && record(reason?.reason)?.kind === 'user' && unrecoveredFailureNames.size === 0
+        ? 'cancelled'
+        : kind === 'not-run'
         ? 'not_run'
         : verificationOutcome === 'blocked'
           ? 'blocked'
@@ -1571,7 +1664,7 @@ function validateCommonReceipt(candidate: Record<string, unknown>): void {
 }
 
 function isOutcome(value: unknown): value is ReceiptOutcome {
-  return typeof value === 'string' && ['running', 'completed', 'verified', 'partial', 'blocked', 'failed', 'not_run', 'release_held'].includes(value)
+  return typeof value === 'string' && ['running', 'completed', 'verified', 'partial', 'blocked', 'failed', 'cancelled', 'not_run', 'release_held'].includes(value)
 }
 
 function appendUnique(values: readonly string[], value: string): readonly string[] {

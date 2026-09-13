@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readSessionEvents } from '../session-events.js'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { isPlainDocumentWrite } from '../../packages/verification-policy/lib/index.js'
 import type { PreToolDecision } from '../types.js'
 import type { ResumeCheckpoint, ResumeCheckpointEvidence } from './agent-reliability.js'
 import {
@@ -903,6 +904,8 @@ async function redirectUnverifiedCompletion(
         ...actions,
         '请按完整调用 ID 和实际工具名对应原动作，不要按 call_00/call_01 前缀猜测。浏览器基线若已被后续动作替换，保留待验边界；不能重复保存或用新的查看点击冒充原动作验证。',
         '请立即使用当前已注册的独立回读、测试或观察工具验证这些修改。不要信任写入动作自身的返回或元数据。',
+        ...(current.some(item => item.call.name === 'schedule_create' || item.call.name === 'schedule_delete')
+          ? ['提醒记录的 functional-probe 使用 schedule_list 回读当前会话：创建后核对同一 ID、内容、到期时间和单次/重复规则，取消后核对该 ID 已不在列表。只证明记录已创建或已取消，不代表未来提醒已经执行或送达；不需要代码构建。'] : []),
         ...(current.some(item => item.call.capture.jsonlProof?.kind === 'mutation')
           ? ['JSONL 数据修改的 functional-probe 可用原生 read 回读同一文件完成：宿主独立比较整份文件与本次精确编辑产生的预期内容，不只依据 grep 或抽样。缺少修改前基线、文件过大或文件身份发生不明变化时保留实际证据缺口；不要求代码构建。'] : []),
         '若验证失败则继续修正；若没有可用路线、没有新证据或无法完成验证，停止尝试并在下一条回复中明确写“部分完成，尚待验证”，列出缺失门禁，绝不能再无条件声称已完成。',
@@ -1031,7 +1034,7 @@ function verificationRouteAvailable(agent: AgentLike, gate: VerificationGate): b
   if (gate === 'windows-evidence') return names.has('screen_verify')
   if (gate === 'functional-probe') {
     return [...FILE_READ_TOOLS].some(name => names.has(name))
-      || names.has('xiaoshe_memory_list') || names.has('pwsh') || names.has('bash')
+      || names.has('xiaoshe_memory_list') || names.has('schedule_list') || names.has('pwsh') || names.has('bash')
   }
   return false
 }
@@ -1215,22 +1218,87 @@ function taskGenerationHistory(events: readonly SessionEvent[]): TaskGenerationH
   const facts: Array<{ seq: number; generation: number }> = []
   let current: number | undefined
   let previousSeq = -1
+  let previousTriggerSeq = -1
+  let lastUnsafeSeq = -1
+  const anchors: Array<{ inputSeq: number; markerSeq: number }> = []
+  const acceptedInputSeqs = new Set<number>()
+  const markerCounts = new Map<string, number>()
+  for (const event of generationEvents) {
+    const id = nonEmptyString(record(event.data)?.triggerMessageId)
+    if (id !== undefined) markerCounts.set(id, (markerCounts.get(id) ?? 0) + 1)
+  }
   for (const event of generationEvents) {
     const data = record(event.data)
     const generation = nonNegativeInteger(data?.generation)
     const relation = nonEmptyString(data?.relation)
     const triggerMessageId = nonEmptyString(data?.triggerMessageId)
-    if (event.seq <= previousSeq || data?.version !== 1 || generation === undefined
+    const committed = data?.version === 2 && committedGenerationMessage(events, event)
+    const legacy = data?.version === 1 && legacyGenerationMessage(events, event)
+    if (event.seq <= previousSeq || (!legacy && !committed) || generation === undefined
       || (relation !== 'new' && relation !== 'continuation') || triggerMessageId === undefined
+      || markerCounts.get(triggerMessageId) !== 1
+      || (data?.version === 2 && (data.triggerMessageSeq as number) <= previousTriggerSeq)
+      || (data?.version === 2 && current === undefined && relation === 'continuation')
       || (current !== undefined && relation === 'continuation' && generation !== current)
       || (current !== undefined && relation === 'new' && generation <= current)) {
-      return { protocol: 'invalid', facts: [] }
+      lastUnsafeSeq = Math.max(lastUnsafeSeq, event.seq)
+      previousSeq = event.seq
+      continue
     }
     facts.push({ seq: event.seq, generation })
     current = generation
     previousSeq = event.seq
+    previousTriggerSeq = events.find(candidate => candidate.type === 'user/message' && record(candidate.data)?.id === triggerMessageId)!.seq
+    acceptedInputSeqs.add(previousTriggerSeq)
+    if (data?.version === 2 && relation === 'new') anchors.push({ inputSeq: data.triggerMessageSeq as number, markerSeq: event.seq })
   }
-  return { protocol: 'valid', facts }
+  // A direct input without its own valid admission cannot borrow the previous
+  // task's identity, including an old orphan's trigger arriving after a new task.
+  const firstInputSeq = Math.min(generationEvents[0]!.seq, ...acceptedInputSeqs)
+  for (const event of events) {
+    const message = record(event.data)
+    if (event.seq >= firstInputSeq && event.type === 'user/message' && message?.role === 'user'
+      && record(message.source)?.kind === 'user' && Array.isArray(message.content)
+      && !acceptedInputSeqs.has(event.seq)) lastUnsafeSeq = Math.max(lastUnsafeSeq, event.seq)
+  }
+  if (lastUnsafeSeq < 0) return { protocol: 'valid', facts }
+  const anchor = anchors.find(candidate => candidate.inputSeq > lastUnsafeSeq)
+  // New work may recover from an old orphan, but its verifiers cannot prove
+  // mutations whose task identity belonged to the quarantined prefix.
+  return anchor === undefined ? { protocol: 'invalid', facts: [] }
+    : { protocol: 'valid', facts: facts.filter(fact => fact.seq >= anchor.markerSeq) }
+}
+
+/** V1 stays pre-admission and may carry only its initial pending debt before the input. */
+function legacyGenerationMessage(events: readonly SessionEvent[], marker: SessionEvent): boolean {
+  const data = record(marker.data)
+  if (data?.version !== 1 || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId'].includes(key))) return false
+  const matches = events.filter(event => event.type === 'user/message' && record(event.data)?.id === data.triggerMessageId)
+  const input = matches[0], message = record(input?.data)
+  if (matches.length !== 1 || input === undefined || input.seq <= marker.seq
+    || message?.role !== 'user' || record(message.source)?.kind !== 'user' || !Array.isArray(message.content)) return false
+  return !events.some(event => event.seq > marker.seq && event.seq < input.seq
+    && (/^(?:tool\/|assistant\/|approval\/)/u.test(event.type)
+      || event.type === 'verification/result' || event.type === 'turn/end' || event.type === 'xiaoshe/task-generation'
+      || (event.type === 'user/message' && record(record(event.data)?.source)?.kind === 'user')))
+}
+
+/** A post-commit identity may refer only to one real direct input before any effects. */
+function committedGenerationMessage(events: readonly SessionEvent[], marker: SessionEvent): boolean {
+  const data = record(marker.data)
+  const seq = nonNegativeInteger(data?.triggerMessageSeq)
+  if (data?.version !== 2 || seq === undefined || !Number.isSafeInteger(marker.seq) || marker.seq <= seq
+    || typeof data.triggerMessageId !== 'string' || data.triggerMessageId.trim() !== data.triggerMessageId
+    || data.triggerMessageId.length === 0 || data.triggerMessageId.length > 512
+    || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId', 'triggerMessageSeq'].includes(key))) return false
+  const messages = events.filter(event => event.type === 'user/message' && record(event.data)?.id === data.triggerMessageId)
+  if (messages.length !== 1 || messages[0]?.seq !== seq || events.filter(event => event.seq === seq).length !== 1
+    || events.filter(event => event.seq === marker.seq).length !== 1) return false
+  const message = record(messages[0].data)
+  if (message?.role !== 'user' || record(message.source)?.kind !== 'user' || !Array.isArray(message.content)) return false
+  return !events.some(event => event.seq > seq && event.seq < marker.seq
+    && (/^(?:tool\/|assistant\/|turn\/|approval\/)/u.test(event.type)
+      || event.type === 'verification/result' || event.type === 'xiaoshe/obligation-state'))
 }
 
 function durableGeneration(
@@ -1448,6 +1516,7 @@ function verificationCandidates(
   if (verifier.name === 'screen_verify') return windowsCandidates(verifier)
   if (verifier.name === 'browser_verify') return browserCandidates(verifier, calls)
   if (verifier.name === 'xiaoshe_memory_list') return memoryCandidates(verifier)
+  if (verifier.name === 'schedule_list') return scheduleCandidates(verifier)
   if (FILE_READ_TOOLS.has(verifier.name)) return fileReadbackCandidates(verifier, session, calls)
   return []
 }
@@ -1500,7 +1569,8 @@ function fileReadbackCandidates(
     || currentProof.content !== verifier.capture.fileProof.content) return []
   const actual = currentProof.content
   const parsed = parseJsonDocument(actual)
-  if (!parsed.ok) return []
+  const document = isPlainDocumentWrite('write', { file_path: target, content: actual })
+  if (!parsed.ok && !document) return []
   return [{
     gate: 'functional-probe',
     status: 'passed',
@@ -1512,14 +1582,14 @@ function fileReadbackCandidates(
       'truncated=false',
       `target_key_sha256=${digest(currentProof.targetKey)}`,
       `content_sha256=${digest(actual)}`,
-      `json_shape_sha256=${digest(JSON.stringify(jsonTypeShape(parsed.value)))}`,
+      ...(parsed.ok ? [`json_shape_sha256=${digest(JSON.stringify(jsonTypeShape(parsed.value)))}`] : ['format=plain-document']),
     ]),
     matches: mutation => exactStaticJsonReadbackMatches(
       mutation,
       verifier,
       currentProof,
       target,
-      parsed.value,
+      parsed.ok ? parsed.value : undefined,
       calls,
       session.header.cwd,
     ),
@@ -1544,6 +1614,7 @@ function exactStaticJsonReadbackMatches(
     || !sameOutputIdentity(writeProof.identity, readProof.identity) || verifier.resultSeq <= mutation.resultSeq
     || !latestStaticJsonWrite(mutation, mutationTarget, calls, sessionCwd)) return false
   const parsed = parseJsonDocument(expected)
+  if (isPlainDocumentWrite(mutation.name, mutation.arguments)) return expected === readProof.content
   return parsed.ok && sameJsonValue(parsed.value, actualJson)
     && sameJsonValue(jsonTypeShape(parsed.value), jsonTypeShape(actualJson))
 }
@@ -1566,14 +1637,15 @@ function writeProofBinding(session: SessionLike, call: DurableCall): WriteProofB
   const parsed = content === undefined ? { ok: false as const } : parseJsonDocument(content)
   const id = session.header.id
   const createdAt = session.header.createdAt
-  if (call.name !== 'write' || call.failed || call.capture.isError || !parsed.ok
+  const document = isPlainDocumentWrite(call.name, call.arguments)
+  if (call.name !== 'write' || call.failed || call.capture.isError || (!parsed.ok && !document)
     || content === undefined || call.generationProtocol !== 'valid' || call.taskGeneration === undefined
     || id === undefined || createdAt === undefined || !Number.isFinite(createdAt)) return undefined
   return {
     sessionId: id, sessionCreatedAt: createdAt, generation: call.taskGeneration,
     callId: call.callId, callSeq: call.callSeq, resultSeq: call.resultSeq,
     argumentsSha256: digest(JSON.stringify(call.arguments)), contentSha256: digest(content),
-    shapeSha256: digest(JSON.stringify(jsonTypeShape(parsed.value))),
+    shapeSha256: digest(parsed.ok ? JSON.stringify(jsonTypeShape(parsed.value)) : 'plain-document'),
   }
 }
 
@@ -2090,6 +2162,65 @@ function boundedString(value: unknown, max: number, allowEmpty: boolean): string
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+/** Admit only complete official session-local views, never success prose or error unions. */
+function scheduleView(value: unknown): Record<string, unknown> | undefined {
+  const view = record(value)
+  if (view === undefined || !/^schedule-[1-9]\d*$/u.test(nonEmptyString(view.id) ?? '')
+    || typeof view.prompt !== 'string' || view.prompt.trim() === '' || view.prompt !== view.prompt.trim()
+    || view.deliveryMode !== 'session-local' || !['scheduled', 'overdue'].includes(String(view.state))
+    || typeof view.scheduledAt !== 'string' || !Number.isFinite(Date.parse(view.scheduledAt))
+    || new Date(view.scheduledAt).toISOString() !== view.scheduledAt) return undefined
+  const positive = (value: unknown, min: number): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= min
+  if (view.kind === 'after' ? !positive(view.afterSeconds, 1)
+    : view.kind === 'every' ? !positive(view.everySeconds, 300) : view.kind !== 'at') return undefined
+  const fields = new Set(['id', 'kind', 'prompt', 'scheduledAt', 'state', 'deliveryMode',
+    ...(view.kind === 'after' ? ['afterSeconds'] : view.kind === 'every' ? ['everySeconds'] : [])])
+  return Object.keys(view).every(key => fields.has(key)) ? view : undefined
+}
+
+/** Creation proof certifies registration; it makes no claim about future dispatch or receipt. */
+function scheduleCandidates(verifier: DurableCall): Candidate[] {
+  if (verifier.failed || verifier.capture.isError || !Array.isArray(verifier.capture.value)
+    || Object.keys(record(verifier.arguments) ?? { invalid: true }).length !== 0) return []
+  const views = verifier.capture.value.map(scheduleView)
+  if (views.some(view => view === undefined)) return []
+  const entries = views as Record<string, unknown>[]
+  if (new Set(entries.map(entry => entry.id)).size !== entries.length) return []
+  return [{
+    gate: 'functional-probe', status: 'passed',
+    evidence: evidence([`verifier=${verifier.callId}`, 'tool=schedule_list', 'scope=session-local',
+      'proof=reminder-record-state', `snapshot_sha256=${digest(JSON.stringify(entries))}`]),
+    matches: (mutation, session) => scheduleReadbackMatches(mutation, entries, session),
+  }]
+}
+
+/** Bind the list to an actual in-call schedule event, independently of the mutation's own result. */
+function scheduleReadbackMatches(mutation: DurableCall, entries: readonly Record<string, unknown>[], session: SessionLike): boolean {
+  const args = record(mutation.arguments), result = record(mutation.capture.value)
+  if (args === undefined || result === undefined) return false
+  const changes = readSessionEvents(session).filter(event => event.type === 'schedule/change'
+    && event.seq > mutation.callSeq && event.seq < mutation.resultSeq).map(event => record(event.data))
+  if (mutation.name === 'schedule_delete') {
+    const id = nonEmptyString(args.id)
+    if (id === undefined || result.id !== id || entries.some(entry => entry.id === id)) return false
+    if (result.deleted === false) return result.code === 'schedule_not_found'
+    return result.deleted === true && result.code === undefined
+      && changes.some(change => change?.version === 1 && change.operation === 'delete' && change.id === id)
+  }
+  if (mutation.name !== 'schedule_create') return false
+  const created = scheduleView(result)
+  if (created === undefined || typeof args.prompt !== 'string' || created.prompt !== args.prompt.trim()
+    || [args.after_seconds, args.at, args.every_seconds].filter(value => value !== undefined).length !== 1) return false
+  if (created.kind === 'after' ? args.after_seconds !== created.afterSeconds
+    : created.kind === 'every' ? args.every_seconds !== created.everySeconds : args.at === undefined) return false
+  // The canonical create event is produced by DSH only after validating delay,
+  // RFC3339/IANA targets, and selectors. Do not reimplement its timezone rules.
+  const sameRecord = (view: Record<string, unknown> | undefined): boolean => view !== undefined
+    && ['id', 'kind', 'prompt', 'scheduledAt', 'afterSeconds', 'everySeconds'].every(key => view[key] === created[key])
+  return changes.some(change => change?.version === 1 && change.operation === 'create' && sameRecord(record(change.schedule)))
+    && entries.some(sameRecord)
 }
 
 function memoryCandidates(verifier: DurableCall): Candidate[] {

@@ -275,12 +275,13 @@ export function recoveryObservationsFromSession(
       .filter(event => nonNegativeInteger(event.seq))
       .sort((left, right) => left.seq - right.seq)
     const observations: ExperienceObservation[] = []
-    const calls = toolCallsById(ordered)
+    const validGenerations = validTaskGenerations(ordered)
+    const calls = toolCallsById(ordered, validGenerations)
     let activeGeneration: number | undefined
 
     for (const event of ordered) {
-      if (validTaskGenerationFact(event)) {
-        activeGeneration = record(event.data)!.generation as number
+      if (event.type === 'xiaoshe/task-generation' || event.type === 'user/message') {
+        activeGeneration = generationAfterEvent(event, activeGeneration, validGenerations)
         continue
       }
       if (event.type !== 'xiaoshe/obligation-state') continue
@@ -325,7 +326,9 @@ export function recoveryObservationsFromSession(
         observations.push({ ...common, outcome: 'verified-recovery' })
       }
     }
-    return observations
+    // A later direct input in the same DSH turn cannot certify observations from
+    // the earlier task, even when its generation marker looked well formed.
+    return observations.filter(observation => observation.taskGeneration === activeGeneration)
   } catch {
     return []
   }
@@ -365,13 +368,12 @@ export function apply(ctx: {
     recoverInvalidStored: true,
   })
   const service = createAgentExperienceService(scope)
-  const cursors = new WeakMap<object, { nextIndex: number; lastSeq: number | undefined; generation?: SessionFactLike }>()
   ctx.effect(() => ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return
     try {
       const snapshot = ctx.sessionProjections.snapshot(session)
       const receipt = parseCompletionReceipt(snapshot.values.completionReceipt)
-      const observations = incrementalRecoveryObservations(cursors, session, receipt)
+      const observations = boundedRecoveryObservations(session, receipt)
       // Settings persistence is outside the Session Log commit path. Keep its
       // bounded write queue ordered, but never let an optional projection veto
       // or delay a committed session event.
@@ -384,44 +386,45 @@ export function apply(ctx: {
   return service
 }
 
-function incrementalRecoveryObservations(
-  cursors: WeakMap<object, { nextIndex: number; lastSeq: number | undefined; generation?: SessionFactLike }>,
+function boundedRecoveryObservations(
   session: { readonly id: string; snapshotEvents?(): readonly SessionFactLike[]; readonly events?: readonly SessionFactLike[] },
   receipt: CompletionReceiptLike | undefined,
 ): ExperienceObservation[] {
   // Prefer the canonical v3 log; a snapshot failure must not learn stale history.
   const events = session.snapshotEvents ? session.snapshotEvents() : session.events ?? []
-  const previous = cursors.get(session)
-  const prefixIntact = previous !== undefined
-    && previous.nextIndex <= events.length
-    && (previous.nextIndex === 0 || events[previous.nextIndex - 1]?.seq === previous.lastSeq)
-  const start = prefixIntact ? previous.nextIndex : 0
-  const appended = events.slice(start)
-  let generation = prefixIntact ? previous.generation : undefined
-  for (const fact of appended) {
-    if (fact.type === 'xiaoshe/task-generation' && validTaskGenerationFact(fact)) generation = fact
-  }
-  const last = events.at(-1)
-  cursors.set(session, { nextIndex: events.length, lastSeq: last?.seq, ...(generation ? { generation } : {}) })
+  const validGenerations = validTaskGenerations(events)
   if (!receipt) return []
-  const generationValue = record(generation?.data)?.generation
   let activeGeneration: number | undefined
   let generationStart = -1
   for (let index = 0; index < events.length; index += 1) {
     const fact = events[index]!
-    if (!validTaskGenerationFact(fact)) continue
-    const nextGeneration = record(fact.data)!.generation as number
-    if (nextGeneration !== activeGeneration) generationStart = index
+    const nextGeneration = generationAfterEvent(fact, activeGeneration, validGenerations)
+    if (validGenerations.has(fact) && (generationStart < 0 || record(events[generationStart]?.data)?.generation !== nextGeneration)) generationStart = index
     activeGeneration = nextGeneration
   }
-  if (generationStart < 0 || activeGeneration !== generationValue) return []
+  if (generationStart < 0 || activeGeneration === undefined) return []
   const generationEvents = events.slice(generationStart)
-  // Cross-turn evidence is useful, but optional experience must remain bounded.
-  // Keep the generation identity plus the latest facts and fail closed when an
-  // older failure falls outside this window.
-  const input = generationEvents.length <= 512
-    ? generationEvents
-    : [generationEvents[0]!, ...generationEvents.slice(-511)]
+  // Keep each retained v2 marker's actual user fact. Removing the trigger would
+  // either lose valid learning or tempt consumers to trust an unbound identity.
+  let tail = generationEvents.slice(-510)
+  let input: SessionFactLike[] = []
+  while (true) {
+    const kept = new Set([generationEvents[0]!, ...tail])
+    for (const event of kept) {
+      const data = record(event.data)
+      if (validGenerations.has(event)) {
+        const trigger = events.find(candidate => candidate.type === 'user/message'
+          && (data?.version === 2 ? candidate.seq === data.triggerMessageSeq : record(candidate.data)?.id === data?.triggerMessageId))
+        if (trigger) kept.add(trigger)
+      }
+    }
+    input = [...kept].sort((a, b) => a.seq - b.seq)
+    if (input.length <= 512) break
+    tail = tail.slice(1)
+  }
+  // Full-log rejection must survive bounded slicing (e.g. a duplicate trigger
+  // omitted from the tail must not turn an invalid marker into a valid one).
+  input = input.map(event => event.type === 'xiaoshe/task-generation' && !validGenerations.has(event) ? { ...event, data: null } : event)
   return recoveryObservationsFromSession(session.id, input, receipt)
 }
 
@@ -588,13 +591,13 @@ interface ProofToolCall {
   readonly family: string
 }
 
-function toolCallsById(events: readonly SessionFactLike[]): ReadonlyMap<string, ProofToolCall> {
+function toolCallsById(events: readonly SessionFactLike[], validGenerations: ReadonlySet<SessionFactLike>): ReadonlyMap<string, ProofToolCall> {
   const calls = new Map<string, ProofToolCall>()
   let generation: number | undefined
   for (const event of events) {
     const data = record(event.data)
-    if (event.type === 'xiaoshe/task-generation' && validTaskGenerationFact(event)) {
-      generation = data!.generation as number
+    if (event.type === 'xiaoshe/task-generation' || event.type === 'user/message') {
+      generation = generationAfterEvent(event, generation, validGenerations)
       continue
     }
     if (event.type !== 'tool/call' || generation === undefined) continue
@@ -666,12 +669,69 @@ function toolArgumentRecord(value: unknown): Record<string, unknown> | undefined
   }
 }
 
-function validTaskGenerationFact(event: SessionFactLike): boolean {
+/** Bind post-admission identity to one real user event before any task evidence. */
+function validTaskGenerations(events: readonly SessionFactLike[]): ReadonlySet<SessionFactLike> {
+  const valid = new Set<SessionFactLike>(), claimed = new Set<string>()
+  const users = new Map<string, SessionFactLike[]>(), seqCounts = new Map<number, number>()
+  for (const event of events) {
+    seqCounts.set(event.seq, (seqCounts.get(event.seq) ?? 0) + 1)
+    const data = record(event.data)
+    if (event.type === 'user/message' && typeof data?.id === 'string') users.set(data.id, [...(users.get(data.id) ?? []), event])
+  }
+  let latest: number | undefined, lastTriggerSeq = -1
+  for (const event of events) {
+    const data = record(event.data)
+    if (event.type !== 'xiaoshe/task-generation' || (data?.version !== 1 && data?.version !== 2)
+      || !nonNegativeInteger(data.generation) || !['new', 'continuation'].includes(String(data.relation))
+      || typeof data.triggerMessageId !== 'string' || !data.triggerMessageId || data.triggerMessageId.length > 512
+      || (data.version === 2 && data.triggerMessageId.trim() !== data.triggerMessageId)
+      || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId', ...(data.version === 2 ? ['triggerMessageSeq'] : [])].includes(key))
+      || claimed.has(data.triggerMessageId)
+      || (latest === undefined && data.relation !== 'new')
+      || (latest !== undefined && (data.relation === 'new' ? data.generation <= latest : data.generation !== latest))) continue
+    const matches = users.get(data.triggerMessageId) ?? []
+    if (data.version === 1) {
+      const trigger = matches[0], message = record(trigger?.data)
+      // Legacy producers wrote before admission, including for queue entries
+      // later removed. An orphan is not a task and cannot reserve its number.
+      if (matches.length !== 1 || !trigger || message?.role !== 'user' || record(message.source)?.kind !== 'user'
+        || trigger.seq <= event.seq || trigger.seq <= lastTriggerSeq
+        || events.some(other => other.seq > event.seq && other.seq < trigger.seq
+          && (other.type === 'xiaoshe/task-generation'
+            || (other.type === 'user/message' && record(record(other.data)?.source)?.kind === 'user')
+            || (isTaskEvidence(other.type) && other.type !== 'turn/start'
+              && !(other.type === 'xiaoshe/obligation-state' && record(other.data)?.kind === 'ordered-read'
+                && record(other.data)?.status === 'pending'))))) continue
+      lastTriggerSeq = trigger.seq
+    }
+    if (data.version === 2) {
+      const trigger = matches[0], message = record(trigger?.data)
+      if (matches.length !== 1 || !trigger || message?.role !== 'user' || record(message.source)?.kind !== 'user'
+        || !nonNegativeInteger(data.triggerMessageSeq) || trigger.seq !== data.triggerMessageSeq
+        || seqCounts.get(trigger.seq) !== 1 || seqCounts.get(event.seq) !== 1
+        || event.seq <= trigger.seq || trigger.seq <= lastTriggerSeq
+        || events.some(other => other.seq > trigger.seq && other.seq < event.seq && isTaskEvidence(other.type))) continue
+      lastTriggerSeq = trigger.seq
+    }
+    valid.add(event); claimed.add(data.triggerMessageId); latest = data.generation
+  }
+  return valid
+}
+
+function isTaskEvidence(type: string): boolean {
+  return type.startsWith('tool/') || type.startsWith('assistant/') || type === 'verification/result'
+    || type.startsWith('approval/') || type === 'xiaoshe/obligation-state' || type.startsWith('turn/')
+}
+
+/** Unmarked direct inputs are task boundaries even when they share a DSH turn. */
+function generationAfterEvent(event: SessionFactLike, current: number | undefined, valid: ReadonlySet<SessionFactLike>): number | undefined {
   const data = record(event.data)
-  return event.type === 'xiaoshe/task-generation' && data?.version === 1
-    && nonNegativeInteger(data.generation)
-    && (data.relation === 'new' || data.relation === 'continuation')
-    && typeof data.triggerMessageId === 'string' && data.triggerMessageId.length > 0
+  if (event.type === 'xiaoshe/task-generation') return valid.has(event) ? data!.generation as number : undefined
+  if (event.type === 'user/message' && record(data?.source)?.kind === 'user') {
+    const preceding = [...valid].find(marker => record(marker.data)?.version === 1 && record(marker.data)?.triggerMessageId === data?.id && marker.seq < event.seq)
+    return preceding ? record(preceding.data)!.generation as number : undefined
+  }
+  return current
 }
 
 function validateStoredEntry(value: unknown): StoredEntry {

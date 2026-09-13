@@ -25,7 +25,7 @@ function harness(t, events = []) {
   new SystemPrompt(ctx, { includeHarnessIdentity: false }); new ToolRuntime(ctx); apply(ctx)
   const session = { events, append(type, data) {
     const event = { seq: events.length, type, data: structuredClone(data), time: events.length + 1 }
-    events.push(event); return event
+    events.push(event); ctx.emit('session/event', session, event); return event
   } }
   const steers = [], cancellations = []
   const agent = { id: randomUUID(), session, steer: message => steers.push(message), cancel: cause => cancellations.push(cause) }
@@ -57,8 +57,9 @@ function harness(t, events = []) {
   })
   const send = text => {
     const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
     session.append('user/message', message)
+    ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   }
   const call = async (name, args, signal = new AbortController().signal) => {
     const callId = randomUUID()

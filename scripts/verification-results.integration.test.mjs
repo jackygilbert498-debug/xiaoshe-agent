@@ -19,7 +19,8 @@ import { SessionProjectionRegistry } from '../runtime/DSH/packages/session/sessi
 import { createVerificationPolicy } from '../packages/verification-policy/lib/index.js'
 import { completionReceiptProjection, foldCompletionReceipt } from '../packages/completion-receipt/lib/index.js'
 import { createMemoryService, createMemoryToolDefinitions } from '../packages/memory/lib/index.js'
-import { apply, classifyVerificationCommand } from '../dist/plugins/verification-results.js'
+const { apply, classifyVerificationCommand } = await import(process.env.XIAOSHE_TEST_SOURCE === '1'
+  ? '../src/plugins/verification-results.ts' : '../dist/plugins/verification-results.js')
 import { apply as applyAgentReliability } from '../dist/plugins/agent-reliability.js'
 import { apply as applyIsolatedBrowser } from '../dist/plugins/isolated-browser.js'
 import { browserOrigin, createBrowserEndpoint, browserFault } from './isolated-browser-protocol.mjs'
@@ -41,6 +42,14 @@ after(async () => {
 // Keep the shared verification fixture absolute on every supported host. The
 // tools are mocked here, so the directory only anchors workspace containment.
 const fixtureWorkspace = join(tmpdir(), 'xiaoshe-verification-workspace')
+
+// Legacy fixtures must include the real direct input their pre-admission marker
+// claims; an orphan declaration cannot serve as verification authority.
+function appendLegacyTask(session, identity) {
+  session.append('xiaoshe/task-generation', identity)
+  session.append('user/message', { id: identity.triggerMessageId, role: 'user', source: { kind: 'user' },
+    content: [{ type: 'text', text: `Task input ${identity.triggerMessageId}` }] }, { surfaceOp: 'append' })
+}
 
 const objectOutput = {
   schema: { type: 'object', properties: {}, additionalProperties: true },
@@ -449,6 +458,63 @@ test('a rendered bare-string read cannot close a static JSON write', async t => 
   const receipt = foldCompletionReceipt(fixture.session.snapshotEvents())
   assert.deepEqual(receipt.requirements, ['functional-probe'])
   assert.equal(receipt.outcome, 'partial', JSON.stringify(receipt, null, 2))
+})
+
+test('ordinary Markdown write closes only with a subsequent exact host-observed full read', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaoshe-document-readback-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const content = '# 对比结果\nA=185，B=200，差额=15。'
+  const fixture = harness(t, [
+    { name: 'write', async execute(args) { return wholeFileWrite(root, args) } },
+    { name: 'read', output: structuredReadOutput, async execute(args) { return wholeFileRead(root, args) } },
+  ], { completionGuard: true, cwd: root })
+  await toolCall(fixture, 'document-write', 'write', { file_path: 'output/acceptance/comparison.md', content })
+  const pending = fixture.ctx.xiaosheVerificationProgress.reconcile(fixture.agent)
+  assert.deepEqual(pending.missingGates, ['functional-probe'])
+  assert.equal(pending.status, 'pending')
+  await toolCall(fixture, 'document-read', 'read', { file_path: 'output/acceptance/comparison.md' })
+  await stopTurn(fixture)
+  assert.deepEqual(verificationEvents(fixture.session).map(event => [event.data.mutationCallId, event.data.verifierCallId, event.data.gate]),
+    [['document-write', 'document-read', 'functional-probe']])
+  assert.equal(fixture.steers.length, 0)
+  assert.equal(foldCompletionReceipt(fixture.session.snapshotEvents()).outcome, 'verified')
+})
+
+test('document proof rejects missing, stale, partial, foreign and fabricated readback', async t => {
+  for (const scenario of ['missing read', 'changed bytes', 'wrong target', 'ranged read', 'fabricated write', 'outside workspace', 'executable document']) {
+    await t.test(scenario, async t => {
+      const root = await mkdtemp(join(tmpdir(), 'xiaoshe-document-boundary-'))
+      t.after(() => rm(root, { recursive: true, force: true }))
+      const workspace = join(root, 'workspace')
+      await mkdir(workspace)
+      const target = scenario === 'outside workspace' ? join(root, 'output/result.md') : 'output/result.md'
+      const content = scenario === 'executable document' ? '<script>run()</script>' : '# Report\n185 + 15 = 200'
+      const fixture = harness(t, [
+        { name: 'write', async execute(args) {
+          if (scenario === 'fabricated write') return { path: fixturePath(workspace, args.file_path), operation: 'create', before: null, after: args.content }
+          return wholeFileWrite(workspace, args)
+        } },
+        { name: 'read', output: structuredReadOutput, async execute(args) { return wholeFileRead(workspace, args) } },
+      ], { cwd: workspace })
+      await toolCall(fixture, 'document-write', 'write', { file_path: target, content })
+      if (scenario === 'fabricated write') {
+        await mkdir(join(workspace, 'output'), { recursive: true })
+        await writeFile(fixturePath(workspace, target), content)
+      }
+      if (scenario === 'changed bytes') await writeFile(fixturePath(workspace, target), '# Replaced\n185 + 15 = 200')
+      if (scenario === 'wrong target') await writeFile(join(workspace, 'output/other.md'), content)
+      if (scenario !== 'missing read') await toolCall(fixture, 'document-read', 'read', {
+        file_path: scenario === 'wrong target' ? 'output/other.md' : target,
+        ...(scenario === 'ranged read' ? { limit: 1 } : {}),
+      })
+      await stopTurn(fixture)
+      assert.deepEqual(verificationEvents(fixture.session), [])
+      const receipt = foldCompletionReceipt(fixture.session.snapshotEvents())
+      assert.equal(receipt.outcome, 'partial')
+      assert.deepEqual(receipt.requirements, scenario === 'executable document'
+        ? ['typecheck', 'test', 'build'] : ['functional-probe'])
+    })
+  }
 })
 
 test('the real first-party structured read contract closes exact JSON with full typed line coverage', async t => {
@@ -1518,7 +1584,7 @@ test('browser open requires URL proof and a later complete assertion can close t
       }
     } },
   ], { completionGuard: true })
-  fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'open-goal' })
+  appendLegacyTask(fixture.session, { version: 1, generation: 1, relation: 'new', triggerMessageId: 'open-goal' })
   await toolCall(fixture, 'open-mutation', 'browser_open', { url: action.url })
   const progress = fixture.ctx.get('xiaosheVerificationProgress', false)
   const complete = { tab_id: action.tab_id, after_snapshot_id: action.snapshot_id,
@@ -1566,7 +1632,7 @@ test('browser scroll needs its exact observed position rather than text or a dif
       }
     } },
   ], { completionGuard: true })
-  fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'scroll-goal' })
+  appendLegacyTask(fixture.session, { version: 1, generation: 1, relation: 'new', triggerMessageId: 'scroll-goal' })
   await toolCall(fixture, 'scroll-mutation', 'browser_scroll', {
     tab_id: action.tab_id, snapshot_id: 'before', delta_y: 480,
   })
@@ -1697,12 +1763,12 @@ for (const variation of ['valid', 'changed-dom', 'changed-action-snapshot', 'for
               ...(variation === 'duplicate-current-element' ? [{ element_id: 'e1', value: input }] : [])] } }
       } },
     ])
-    fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'input-goal' })
+    appendLegacyTask(fixture.session, { version: 1, generation: 1, relation: 'new', triggerMessageId: 'input-goal' })
     const typeArgs = { tab_id: action.tab_id, snapshot_id: 'before', element_id: 'e1', text: input, replace: true }
     await toolCall(fixture, 'original-input', typeName, typeArgs)
     if (variation === 'intervening-snapshot') await toolCall(fixture, 'intermediate', 'browser_snapshot', { tab_id: action.tab_id })
     if (variation === 'duplicate-baseline') await toolCall(fixture, 'second-input', typeName, typeArgs)
-    if (variation === 'new-generation') fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 2, relation: 'new', triggerMessageId: 'another-goal' })
+    if (variation === 'new-generation') appendLegacyTask(fixture.session, { version: 1, generation: 2, relation: 'new', triggerMessageId: 'another-goal' })
     const args = { tab_id: action.tab_id, after_snapshot_id: action.snapshot_id, use_action_input: true,
       expect_url: action.url, expect_text: 'Draft' }
     if (variation === 'false-flag') args.use_action_input = false
@@ -2690,6 +2756,89 @@ test('a fully verified current generation is not redirected at turn-stopping', a
   assert.equal(foldCompletionReceipt(fixture.session.snapshotEvents()).outcome, 'verified')
 })
 
+test('a fresh strict V2 task quarantines legacy orphan identities without certifying old mutations', async t => {
+  for (const kind of ['new', 'continuation', 'late-legacy-input']) await t.test(kind, async t => {
+    const continuation = kind === 'continuation'
+    const fixture = harness(t, [
+      { name: 'write', async execute() { return { changed: true } } },
+      { name: 'pwsh', async execute(args) { return shellResult(0, args.command === 'node --test' ? '# tests 1\n# pass 1\n# fail 0' : `${args.command}: passed`) } },
+    ])
+    const previous = createUserMessage({ content: [{ type: 'text', text: 'Fix old source.' }], source: { kind: 'user' } })
+    fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: previous.id })
+    fixture.session.append('user/message', previous, { surfaceOp: 'append' })
+    await toolCallAt(fixture, 1, 'old-mutation', 'write', { file_path: 'src/old.ts', content: 'old' })
+    fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 90, relation: 'new', triggerMessageId: 'removed-inbox-message' })
+    const next = createUserMessage({ content: [{ type: 'text', text: continuation ? 'Continue.' : 'A new independent source task.' }], source: { kind: 'user' } })
+    const trigger = fixture.session.append('user/message', next, { surfaceOp: 'append' })
+    fixture.session.append('xiaoshe/task-generation', { version: 2, generation: continuation ? 1 : 2,
+      relation: continuation ? 'continuation' : 'new', triggerMessageId: next.id, triggerMessageSeq: trigger.seq })
+    if (kind === 'late-legacy-input') fixture.session.append('user/message', {
+      ...createUserMessage({ content: [{ type: 'text', text: 'An unrelated late input.' }], source: { kind: 'user' } }), id: 'removed-inbox-message',
+    }, { surfaceOp: 'append' })
+    await toolCallAt(fixture, 1, 'new-mutation', 'write', { file_path: 'src/new.ts', content: 'new' })
+    for (const [id, command] of [['types', 'tsc --noEmit'], ['tests', 'node --test'], ['build', 'tsc -p tsconfig.build.json']]) {
+      await toolCallAt(fixture, 1, `new-${id}`, 'pwsh', { command, workdir: fixtureWorkspace })
+    }
+    await stopTurnAt(fixture, 1)
+    assert.deepEqual(verificationEvents(fixture.session).map(event => [event.data.mutationCallId, event.data.gate]),
+      kind === 'new' ? [['new-mutation', 'typecheck'], ['new-mutation', 'test'], ['new-mutation', 'build']] : [])
+  })
+})
+
+test('a V2 continuation without an established task cannot certify a mutation', async t => {
+    const fixture = harness(t, [
+      { name: 'write', async execute() { return { changed: true } } },
+      { name: 'pwsh', async execute(args) { return shellResult(0, args.command === 'node --test' ? '# tests 1\n# pass 1\n# fail 0' : `${args.command}: passed`) } },
+    ])
+    const input = createUserMessage({ content: [{ type: 'text', text: 'Continue verification.' }], source: { kind: 'user' } })
+    const trigger = fixture.session.append('user/message', input, { surfaceOp: 'append' })
+    fixture.session.append('xiaoshe/task-generation', {
+      version: 2, generation: 1, relation: 'continuation', triggerMessageId: input.id, triggerMessageSeq: trigger.seq,
+    })
+    await toolCallAt(fixture, 1, 'unanchored-write', 'write', { file_path: 'src/unanchored.ts', content: 'changed' })
+    for (const [id, command] of [['types', 'tsc --noEmit'], ['tests', 'node --test'], ['build', 'tsc -p tsconfig.build.json']]) {
+      await toolCallAt(fixture, 1, `unanchored-${id}`, 'pwsh', { command, workdir: fixtureWorkspace })
+    }
+    await stopTurnAt(fixture, 1)
+    assert.deepEqual(verificationEvents(fixture.session), [])
+})
+
+test('post-commit identities bind cross-turn verification only to their exact direct input', async t => {
+  for (const kind of ['valid', 'wrong-id', 'wrong-seq', 'non-user', 'replay', 'late-tool', 'old-obligation', 'padded-id', 'v1-postposed']) {
+    await t.test(kind, async t => {
+      const fixture = harness(t, [
+        { name: 'write', async execute() { return { changed: true } } },
+        { name: 'pwsh', async execute(args) {
+          return shellResult(0, args.command === 'node --test' ? '# tests 1\n# pass 1\n# fail 0' : `${args.command}: passed`)
+        } },
+      ])
+      const first = createUserMessage({ content: [{ type: 'text', text: 'Fix the project and verify it.' }], source: { kind: 'user' } })
+      const accepted = fixture.session.append('user/message', first, { surfaceOp: 'append' })
+      fixture.session.append('xiaoshe/task-generation', { version: 2, generation: 1, relation: 'new', triggerMessageId: first.id, triggerMessageSeq: accepted.seq })
+      await toolCallAt(fixture, 1, 'bound-write', 'write', { file_path: 'src/bound.ts', content: 'changed' })
+      await stopTurnAt(fixture, 1)
+      fixture.session.append('turn/start', { turn: 2 })
+      fixture.session.append('step/start', { turn: 2, step: 1 })
+      let continued = createUserMessage({ content: [{ type: 'text', text: 'Continue verification.' }], source: { kind: kind === 'non-user' ? 'plugin' : 'user', ...(kind === 'non-user' ? { plugin: 'isolated-fixture' } : {}) } })
+      if (kind === 'padded-id') continued = { ...continued, id: ` ${continued.id}` }
+      const trigger = fixture.session.append('user/message', continued, { surfaceOp: 'append' })
+      if (kind === 'late-tool') await toolCallAt(fixture, 2, 'before-marker', 'pwsh', { command: 'tsc --noEmit', workdir: fixtureWorkspace })
+      if (kind === 'old-obligation') fixture.session.append('xiaoshe/obligation-state', { version: 1, generation: 1, turn: 2,
+        kind: 'ordered-read', status: 'pending', primary: 'before.txt', fallback: 'after.txt' })
+      fixture.session.append('xiaoshe/task-generation', {
+        version: kind === 'v1-postposed' ? 1 : 2, generation: 1, relation: 'continuation',
+        triggerMessageId: kind === 'wrong-id' ? 'missing' : kind === 'replay' ? first.id : continued.id,
+        ...(kind === 'v1-postposed' ? {} : { triggerMessageSeq: kind === 'wrong-seq' ? trigger.seq - 1 : kind === 'replay' ? accepted.seq : trigger.seq }),
+      })
+      for (const [suffix, command] of [['types', 'tsc --noEmit'], ['test', 'node --test'], ['build', 'tsc -p tsconfig.build.json']]) {
+        await toolCallAt(fixture, 2, `bound-${suffix}`, 'pwsh', { command, workdir: fixtureWorkspace })
+      }
+      await stopTurnAt(fixture, 2)
+      assert.deepEqual(verificationEvents(fixture.session).map(event => event.data.gate), kind === 'valid' ? ['typecheck', 'test', 'build'] : [])
+    })
+  }
+})
+
 test('durable task generations bind verifiers to the mutation goal they can close', async t => {
   async function runCase(t, nextFact) {
     const fixture = harness(t, [
@@ -2700,7 +2849,7 @@ test('durable task generations bind verifiers to the mutation goal they can clos
           : `${args.command}: passed`)
       } },
     ])
-    fixture.session.append('xiaoshe/task-generation', {
+    appendLegacyTask(fixture.session, {
       version: 1, generation: 1, relation: 'new', triggerMessageId: 'goal-1',
     })
     await toolCallAt(fixture, 1, 'generation-write', 'write', {
@@ -2709,7 +2858,7 @@ test('durable task generations bind verifiers to the mutation goal they can clos
     await stopTurnAt(fixture, 1)
     fixture.session.append('turn/start', { turn: 2 })
     fixture.session.append('step/start', { turn: 2, step: 1 })
-    fixture.session.append('xiaoshe/task-generation', nextFact)
+    appendLegacyTask(fixture.session, nextFact)
     await toolCallAt(fixture, 2, 'generation-types', 'pwsh', {
       command: 'tsc --noEmit', workdir: fixtureWorkspace,
     })
@@ -3014,8 +3163,9 @@ async function jsonTransferFixture(t, { prepare = true, read = true, goal = JSON
   })
   fixture.send = text => {
     const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
     session.append('user/message', message, { surfaceOp: 'append' })
+    ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   }
   let ordinal = 0
   fixture.current = undefined
@@ -3063,9 +3213,9 @@ async function jsonTransferFixture(t, { prepare = true, read = true, goal = JSON
   // Only the remote desktop endpoint is an explicit local fixture; no GUI,
   // model, or public network participates in these integration tests.
   await ctx.plugin({ name: 'json-transfer-isolated-browser', inject: ['tools', 'systemPrompt'], apply: applyIsolatedBrowser })
-  fixture.send(goal)
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
+  fixture.send(goal)
   if (store) await ctx.parallel('session/flush', session)
   if (prepare) {
     for (const [id, name, args] of [
@@ -3727,7 +3877,7 @@ test('conflicting task admission or closed turn invalidates the entire verificat
     { name: 'write', async execute() { return { changed: true } } },
     { name: 'pwsh', async execute() { return shellResult(0, '# tests 1\n# pass 1\n# fail 0\n') } },
   ], { completionGuard: true })
-  fixture.session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'progress-user' })
+  appendLegacyTask(fixture.session, { version: 1, generation: 1, relation: 'new', triggerMessageId: 'progress-user' })
   const service = fixture.ctx.get('xiaosheVerificationProgress', false)
   await toolCall(fixture, 'conflict-old', 'write', { file_path: 'src/example.ts', content: 'changed' })
   await toolCall(fixture, 'conflict-gates', 'pwsh', { command: 'tsc --noEmit && node --test && tsc -p tsconfig.build.json' })

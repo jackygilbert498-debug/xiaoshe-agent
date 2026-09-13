@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { saveSessionLog, loadSessionLog } from './helpers/session-persistence.mjs'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -13,7 +16,8 @@ import { createScope, scopeTarget } from '../runtime/DSH/packages/core/scope/lib
 import { installModelSelection } from '../runtime/DSH/packages/core/agent/lib/index.js'
 import JsonlSessionPersistence from '../runtime/DSH/packages/session/session-persistence-jsonl/lib/index.js'
 import { createMemoryService, createMemoryToolDefinitions } from '../packages/memory/lib/index.js'
-import { apply, TASK_CONTRACT } from '../dist/plugins/agent-reliability.js'
+const { apply, TASK_CONTRACT } = await import(process.env.XIAOSHE_TEST_SOURCE === '1'
+  ? '../src/plugins/agent-reliability.ts' : '../dist/plugins/agent-reliability.js')
 import { apply as applyVerification } from '../dist/plugins/verification-results.js'
 import { createVerificationPolicy } from '../packages/verification-policy/lib/index.js'
 import { foldCompletionReceipt } from '../packages/completion-receipt/lib/index.js'
@@ -23,6 +27,7 @@ import { batchPrompt } from '../apps/desktop-shell/src/batch-acceptance.mjs'
 import { VISION_QUESTION } from './acceptance/vision-fixture.mjs'
 import { applyWriteTool } from '../runtime/DSH/packages/fs/tool-fs/src/write.ts'
 import { apply as applyIsolatedBrowser } from '../dist/plugins/isolated-browser.js'
+import { resolvePwshPath } from '../runtime/DSH/packages/shell/pwsh-local/src/resolve.ts'
 
 // Capture product-owned definitions without invoking a filesystem/browser
 // backend. Tests below execute through real ToolRuntime with isolated bodies.
@@ -118,7 +123,7 @@ test('explicit resume prerequisite remains disclosed under a complete preset and
   const config = { workspaceRoot: '/owned/work', fixtureUrl: 'http://127.0.0.1:40000/owned/' }
   for (const phase of ['seed', 'resume']) {
     const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: batchPrompt({ ...config, phase }) }] })
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
     session.append('user/message', message, { surfaceOp: 'append' })
   }
   const disposeComplete = ctx.systemPrompt.section({ name: 'complete-resume', order: 0, text: 'Minimal persona.', complete: true })
@@ -142,7 +147,7 @@ test('whole-document transfer is disclosed at the finalized boundary without pro
   t.after(() => ctx.fiber.dispose())
   ctx.tools.register({ ...productWriteDefinition, output, async execute() { throw new Error('disclosure never dispatches write') } })
   const goal = '先读取 input.jsonl，逐行提取字段并转换为 JSON。只能新增 output/delivery.json。把已核对的完整 JSON 填入网页表单。'
-  const send = (text, source = { kind: 'user' }) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = (text, source = { kind: 'user' }) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ source, content: [{ type: 'text', text }] }),
   })
   const removeComplete = ctx.systemPrompt.section({ name: 'complete-persona', order: 0, text: 'complete only', complete: true })
@@ -223,7 +228,7 @@ test('real missing read obeys the direct human stop condition without hiding too
     async execute(args) { dispatched.push([name, args]); return {} },
   })
   const goal = materialPrompt({ scenario: 'missing_input', workspaceRoot: root, fixtureUrl: 'http://127.0.0.1:49411/owned/' })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent,
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent,
     message: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: goal }] }) })
   const before = ctx.tools.schemas(agent).map(row => row.name)
   const result = await call(ctx, agent, 'read', { file_path: join(root, 'missing.jsonl') })
@@ -284,7 +289,7 @@ test('required-input stop replays typed call/result evidence and only direct use
   })
   cold.emit(scopeTarget(agent, agent), 'agent/session-start', { agent, source: 'resume' })
   assert.match((await call(cold, agent, 'read', { file_path: 'backup.csv' })).error.message, /停止条件优先/u)
-  const send = text => cold.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent,
+  const send = text => cold.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent,
     message: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }) })
   send('继续。')
   assert.match((await call(cold, agent, 'read', { file_path: 'backup.csv' })).error.message, /停止条件优先/u)
@@ -305,7 +310,7 @@ test('per-item batch failure and a plugin stop marker cannot manufacture a task-
   const goal = batchPrompt({ phase: 'resume', workspaceRoot: '/workspace', fixtureUrl: 'http://127.0.0.1:49411/batch/' }).split('\n').slice(1).join('\n')
   for (const [text, source] of [[goal, { kind: 'user' }],
     ['先读取 input-3.jsonl。所需输入解析失败时停止。', { kind: 'plugin', plugin: 'untrusted-fixture' }]]) {
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent,
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent,
       message: createUserMessage({ source, content: [{ type: 'text', text }] }) })
   }
   assert.equal((await call(ctx, agent, 'read', { file_path: 'input-3.jsonl' })).isError, true)
@@ -324,15 +329,16 @@ function rawJsonStoppingHarness(t) {
   const user = (goal, turn = 1) => {
     session.append('turn/start', { turn })
     const message = createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } })
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
     session.append('user/message', message, { surfaceOp: 'append' })
+    ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   }
   const answer = (text, turn = 1) => session.append('assistant/message', { stream: [], turn, step: 1,
     message: createAssistantMessage({ source: { kind: 'model', provider: 'offline-test', model: 'deterministic-fixture' }, content: [{ type: 'text', text }] }),
   }, { surfaceOp: 'append' })
   const deliverSteer = () => {
     const message = steers.at(-1)
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
     session.append('user/message', message, { surfaceOp: 'append' })
   }
   const stop = (turn = 1) => ctx.serial(scopeTarget(agent, agent), 'agent/turn-stopping', { agent, turn, signal: new AbortController().signal })
@@ -415,8 +421,9 @@ test('two format corrections survive actual JSONL cold reload and cannot become 
 
   session.append('turn/start', { turn: 2 })
   const continued = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '继续。' }] })
-  cold.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: continued })
+  cold.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: continued })
   session.append('user/message', continued, { surfaceOp: 'append' })
+  cold.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   session.append('assistant/message', { stream: [], turn: 2, step: 1, message: createAssistantMessage({
     source: { kind: 'model', provider: 'offline-test', model: 'deterministic-fixture' }, content: [{ type: 'text', text: 'Again, explanation: {}' }],
   }) }, { surfaceOp: 'append' })
@@ -472,7 +479,7 @@ test('real prompt assembly shares model selection and keeps recovery through con
   installModelSelection(scope.ctx, selected)
   ctx.tools.register({ name: 'broken', description: 'Test only', parameters: { type: 'object', properties: {} }, output,
     async execute() { throw new Error('timeout') } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '告诉我当前模型和运行状态' }], source: { kind: 'user' },
   }) })
   ctx.emit('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
@@ -490,12 +497,12 @@ test('real prompt assembly shares model selection and keeps recovery through con
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   assert.match(renderContextSnapshot(assembled), /最近工具失败/)
   ctx.emit('session/event', agent.session, { type: 'turn/start', data: { turn: 2 } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '继续' }], source: { kind: 'user' },
   }) })
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   assert.match(renderContextSnapshot(assembled), /最近工具失败/)
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '可以，改成处理另一个文件' }], source: { kind: 'user' },
   }) })
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -559,7 +566,7 @@ test('direct goal changes reset route experience while exact continuation keeps 
     output,
     async execute() { return {} },
   })
-  const sendGoal = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const sendGoal = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent,
     message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
@@ -590,7 +597,7 @@ test('natural confirmations and a task-local offline adjustment preserve same-ta
     parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }, output,
     async execute() { return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -627,7 +634,7 @@ test('real pre-execution policy keeps specialist choice advisory instead of fabr
     async execute() { return {} },
   })
   const message = createUserMessage({ content: [{ type: 'text', text: '搜索今天的最新消息' }], source: { kind: 'user' } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   const first = await call(ctx, agent, 'pwsh', { cmd: 'curl https://example.com' })
   assert.equal(first.isError, false)
   assert.equal(shellAttempts, 1)
@@ -654,7 +661,7 @@ test('real DSH complex guidance blocks a write until plan and evidence exist', a
   const message = createUserMessage({
     content: [{ type: 'text', text: '全面检查现有项目，定位根因、修改实现并运行测试验证' }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   const first = await call(ctx, agent, 'write', { path: 'result.ts' })
   assert.equal(first.isError, true)
   assert.equal(writes, 0)
@@ -675,7 +682,7 @@ test('real prompt gives code execution guidance before tools and removes it afte
     name, description, parameters: { type: 'object', properties: {}, additionalProperties: true }, output,
     async execute() { if (name === 'pwsh') shellCalls++; if (name === 'web_fetch') fetchCalls++; return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   send('修复当前项目的现有实现，运行测试并验证结果。')
@@ -715,7 +722,7 @@ test('pure JS probe guidance appears only with registered applicable capability 
     parameters: { type: 'object', properties: {}, additionalProperties: true }, output,
     async execute() { return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   const assemble = () => ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -772,7 +779,7 @@ test('canonical verification progress reaches the same real prompt assembly befo
     meta: { cwd: join(tmpdir(), 'xiaoshe-prompt-progress-workspace') },
   })
   const agent = { id: 'prompt-progress', session, ctx }
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   send('把 src/first.ts 修改为指定值。')
@@ -853,7 +860,7 @@ test('an exact static file delivery writes directly, keeps its path boundary, an
   ]) ctx.tools.register({
     name, description, parameters: { type: 'object', properties, additionalProperties: false }, output, execute,
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: goal }], source: { kind: 'user' },
   }) })
 
@@ -905,7 +912,7 @@ async function localDataHarness(t, sourceFile = 'records.jsonl') {
     parameters: { type: 'object', properties: { command: { type: 'string' } } }, output,
     async execute() { writes.push('bash'); return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   const plan = () => call(ctx, agent, 'todo_write', { todos: [{ content: 'Read source, transform, write and read back', status: 'in_progress' }] })
@@ -957,11 +964,11 @@ test('cold task replay discloses a satisfied plan, then a genuinely new data goa
   assert.match(renderPrompt(await ctx.systemPrompt.assemble({ scope: agent, agent })), /plan_required=false.*plan_recorded=true/su)
   const next = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text:
     '这是另一项新任务：读取 fresh.jsonl，逐行提取 quantity；只能新增 output/fresh.json，写完后回读核对。' }] })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: next })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: next })
   assert.match(renderPrompt(await ctx.systemPrompt.assemble({ scope: agent, agent })), /plan_required=true.*plan_recorded=false/su)
   const browserGoal = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text:
     '这是另一项新任务：先打开当前网页，填写两个字段并提交，然后检查保存结果。' }] })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: browserGoal })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: browserGoal })
   const browserAssembly = await ctx.systemPrompt.assemble({ scope: agent, agent })
   assert.ok(!browserAssembly.sections.some(section => section.name === 'xiaoshe:planning-prerequisite'), 'old data-task prerequisite is not carried into browser work')
 })
@@ -1056,10 +1063,11 @@ test('actual batch seed and continuation survive real JSONL cold reload without 
   const goal = batchPrompt({ ...config, phase: 'seed' })
   const message = createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } })
   session.append('turn/start', { turn: 1 })
-  // Real inbox insertion emits the task identity before the durable user
-  // message. Keep this causal order so cold replay cannot accept forged facts.
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  // Match the official driver: a claim selects prompt constraints, then the
+  // committed user message is bound at stream-start before any tools execute.
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   session.append('user/message', message, { surfaceOp: 'append' })
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   const executeRecorded = async (name, args) => {
     const callId = crypto.randomUUID()
     const source = session.append('tool/call', { turn: 1, step: 1, callId, name, arguments: JSON.stringify(args) })
@@ -1100,8 +1108,9 @@ test('actual batch seed and continuation survive real JSONL cold reload without 
   restored.tools.register({ name: 'todo_write', description: 'Record task preparation.', parameters: { type: 'object', properties: { todos: { type: 'array' } }, required: ['todos'] }, output, async execute() { return {} } })
   restored.emit(scopeTarget(resumed, resumed), 'agent/session-start', { agent: resumed, source: 'resume' })
   const continuation = createUserMessage({ content: [{ type: 'text', text: batchPrompt({ ...config, phase: 'resume' }) }], source: { kind: 'user' } })
-  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/inserted', { agent: resumed, message: continuation })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/claimed', { agent: resumed, message: continuation })
   resumedSession.append('user/message', continuation, { surfaceOp: 'append' })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/assistant-stream', { agent: resumed, frame: { type: 'start' } })
   assert.deepEqual(resumedSession.snapshotEvents().filter(event => event.type === 'xiaoshe/task-generation').map(event => [event.data.generation, event.data.relation]), [[1, 'new'], [1, 'continuation']])
   const replayEvents = resumedSession.snapshotEvents().map(event => structuredClone(event))
   const info = (await call(restored, resumed, 'xiaoshe_runtime_info')).value
@@ -1130,8 +1139,9 @@ test('actual batch seed and continuation survive real JSONL cold reload without 
   assert.equal((await call(cold, coldAgent, 'read', { file_path: 'input-3.jsonl' })).isError, true)
   assert.equal((await call(cold, coldAgent, 'write', { file_path: 'output/item-3.json', content: '{"items":[{"amount":3}]}' })).isError, true, 'cold replay restores the checkpoint definition, never its live proof')
   const conflicting = createUserMessage({ content: [{ type: 'text', text: batchPrompt({ ...config, phase: 'resume' }).replaceAll('output/item-3.json', 'output/conflict.json') }], source: { kind: 'user' } })
-  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/inserted', { agent: resumed, message: conflicting })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/claimed', { agent: resumed, message: conflicting })
   resumedSession.append('user/message', conflicting, { surfaceOp: 'append' })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/assistant-stream', { agent: resumed, frame: { type: 'start' } })
   assert.deepEqual(resumedSession.snapshotEvents().filter(event => event.type === 'xiaoshe/task-generation').map(event => [event.data.generation, event.data.relation]), [[1, 'new'], [1, 'continuation'], [1, 'continuation']])
   const conflictWrite = await call(restored, resumed, 'write', { file_path: 'output/conflict.json', content: '{}' })
   assert.equal(conflictWrite.isError, true)
@@ -1139,8 +1149,9 @@ test('actual batch seed and continuation survive real JSONL cold reload without 
   assert.equal((await call(restored, resumed, 'xiaoshe_runtime_info')).value.execution.preflight.plan_recorded, true, 'a conflicting supplement blocks action without discarding the original task state')
   const newGoal = batchDataGoal(pairs.map(([source, target]) => [source, target.replace('.json', '-next.json')]))
   const nextMessage = createUserMessage({ content: [{ type: 'text', text: newGoal }], source: { kind: 'user' } })
-  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/inserted', { agent: resumed, message: nextMessage })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/inbox/claimed', { agent: resumed, message: nextMessage })
   resumedSession.append('user/message', nextMessage, { surfaceOp: 'append' })
+  restored.emit(scopeTarget(resumed, resumed), 'agent/assistant-stream', { agent: resumed, frame: { type: 'start' } })
   await call(restored, resumed, 'todo_write', { todos: [{ content: 'Prepare the new task', status: 'in_progress' }] })
   assert.equal((await call(restored, resumed, 'write', { file_path: 'output/item-2-next.json', content: '{}' })).isError, true, 'a new task must read its sources afresh')
   await call(restored, resumed, 'read', { file_path: 'input-2.jsonl' })
@@ -1429,7 +1440,7 @@ test('initial material request exposes complete product schemas and keeps them a
     async execute(args) { bodies.push({ name, args }); return {} },
   })
   const goal = materialPrompt({ scenario: 'normal', workspaceRoot: agent.session.header.cwd, fixtureUrl: 'http://127.0.0.1:45678/owned/' })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } }) })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } }) })
   // Observed f07cc9c2 request/header seq11: registration was not enough;
   // these nine visible names omitted both file and browser protocol nodes.
   const failedHeaderNames = ['ask_user_question', 'browser_click', 'browser_close', 'exit_plan_mode', 'screen_verify', 'todo_write', 'web_fetch', 'xiaoshe_capability_plan', 'xiaoshe_runtime_info']
@@ -1494,7 +1505,7 @@ test('real DSH admits an evidence-complete edit and its explicitly requested ver
       '完成后依次单独运行 `npm run typecheck`、`npm run test` 和 `npm run build`。',
     ].join('\n') }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
 
   const editArgs = { file_path: 'C:\\work\\src\\normalize.mjs', old_string: 'before', new_string: 'after' }
   assert.equal((await call(ctx, agent, 'edit', editArgs)).isError, true)
@@ -1529,7 +1540,7 @@ test('large real tool catalog keeps all policy-eligible tools regardless of rele
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
 
   const message = createUserMessage({ content: [{ type: 'text', text: '读取项目文件并告诉我配置值' }], source: { kind: 'user' } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   const assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   const names = assembled.tools.map(tool => tool.name)
   assert.ok(names.includes('read'))
@@ -1559,7 +1570,7 @@ test('real prompt surface enforces no-shell no-network read-only constraints', a
     ['browser_open', 'Open a remote web page.'], ['browser_snapshot', 'Read the current browser page.'],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取 C:\\work\\a.txt 和 C:\\work\\b.txt；只读，不得执行 pwsh 或 shell，不得联网，不得写入。' }],
     source: { kind: 'user' },
   }) })
@@ -1586,7 +1597,7 @@ test('real pre-execution policy blocks a forbidden effect without consuming the 
     async execute() { readAttempts++; return {} } })
   ctx.tools.register({ name: 'browser_open', description: 'Open a remote URL.', parameters: { type: 'object', properties: {} }, output,
     async execute() { networkAttempts++; return {} } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '只读取本地资料，不得执行 shell，也不得联网。' }], source: { kind: 'user' },
   }) })
 
@@ -1612,7 +1623,7 @@ test('real registry treats no-modification wording as read-only', async t => {
     async execute() { reads++; return {} } })
   ctx.tools.register({ name: 'write', description: 'Write a file.', parameters: { type: 'object', properties: { path: { type: 'string' } } }, output,
     async execute() { writes++; return {} } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '不允许进行任何修改，只读取现有文件。' }], source: { kind: 'user' },
   }) })
   const assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -1635,7 +1646,7 @@ test('common Chinese hard constraints and remote file mutations fail closed befo
     parameters: { type: 'object', properties: {}, additionalProperties: true }, output,
     async execute() { attempts[key]++; return {} },
   })
-  const send = (agent, text) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = (agent, text) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -1668,7 +1679,7 @@ test('a public-repository search ban follows URL semantics without blocking a kn
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, output,
     async execute() { attempts.fetch++; return {} },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '不要搜索 GitHub 或公开项目，只检查本地实现。' }], source: { kind: 'user' },
   }) })
 
@@ -1700,7 +1711,7 @@ test('real registry denies local MCP and PowerShell write effects before side ef
       return {}
     },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '只读检查 C:\\work\\existing.txt，不允许进行任何修改。' }], source: { kind: 'user' },
   }) })
 
@@ -1709,6 +1720,40 @@ test('real registry denies local MCP and PowerShell write effects before side ef
   assert.equal((await call(ctx, agent, 'mcp__filesystem__read_text_file', { path: 'C:\\work\\existing.txt' })).isError, false)
   assert.equal((await call(ctx, agent, 'pwsh', { command: 'Get-Content -LiteralPath "C:\\work\\existing.txt"' })).isError, false)
   assert.deepEqual(attempts, { read: 1, mcpWrite: 0, shellRead: 1, shellWrite: 0 })
+})
+
+test('real registry permits an offline checksum pipeline that reads actual Windows files', { skip: process.platform !== 'win32' }, async t => {
+  const ctx = harness(t), root = await mkdtemp(join(tmpdir(), 'xs-offline-hash-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const inputs = [join(root, 'a.md'), join(root, '资料 (10).md')]
+  const contents = ['fictional input A\n', 'fictional input B\n']
+  await Promise.all(inputs.map((path, index) => writeFile(path, contents[index])))
+  let launches = 0
+  ctx.tools.register({
+    name: 'pwsh', description: 'Execute a PowerShell command.',
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+    output: { schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      render: (_args, value) => [{ type: 'text', text: value.text }] },
+    async execute(args) {
+      launches++
+      const { stdout } = await promisify(execFile)(resolvePwshPath(), ['-NoProfile', '-NonInteractive', '-Command', args.command],
+        { windowsHide: true, timeout: 10000, encoding: 'utf8' })
+      return { text: stdout }
+    },
+  })
+  const agent = { id: 'offline-real-hash', session: { header: { cwd: root } } }
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: '只读核对本地文件，不得联网，不允许修改文件。' }],
+  }) })
+  const command = `Get-FileHash ${inputs.map(path => `'${path.replaceAll("'", "''")}'`).join(',')} -Algorithm SHA256 | Select-Object -Property Hash,Path | Format-List`
+  const result = await call(ctx, agent, 'pwsh', { command })
+  assert.equal(result.isError, false, JSON.stringify(result))
+  for (const [index, path] of inputs.entries()) {
+    assert.ok(result.value.text.includes(createHash('sha256').update(contents[index]).digest('hex').toUpperCase()))
+    assert.equal(await readFile(path, 'utf8'), contents[index])
+  }
+  assert.equal((await call(ctx, agent, 'pwsh', { command: command + ' | Invoke-Expression' })).isError, true)
+  assert.equal(launches, 1, 'unsafe extra stages must never reach the process')
 })
 
 test('real registry enforces operation and path constraints before any side effect', async t => {
@@ -1726,7 +1771,7 @@ test('real registry enforces operation and path constraints before any side effe
     async execute() { attempts[key]++; return {} },
   })
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '打开并读取页面，但不得点击，严禁填写，不允许提交。只允许修改 C:\\work\\src\\main.ts；不得修改测试或目录外文件。' }],
     source: { kind: 'user' },
   }) })
@@ -1782,7 +1827,7 @@ test('real registry admits only the exact Chinese creation target and verifies a
       output: { schema: { type: 'object', properties: { text: { type: 'string' } } }, render: () => [] },
       async execute(args) { return { text: await readFile(resolve(cwd, args.file_path), 'utf8') } },
     })
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
       content: [{ type: 'text', text: goal }], source: { kind: 'user' },
     }) })
     const content = JSON.stringify({ case: index, value: '真实落盘与回读' })
@@ -1811,13 +1856,13 @@ test('vague goals and advisory queries keep the full eligible registry reachable
   ctx.tools.register({ name: 'read', description: 'Read a file.', parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
   ctx.tools.register({ name: 'mcp__rare__special_operation', description: 'Perform a rare specialist operation.', parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '帮我处理一下这个' }], source: { kind: 'user' },
   }) })
   let assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   assert.equal(assembled.tools.length, 32)
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取文件，然后调用 mcp__rare__special_operation' }], source: { kind: 'user' },
   }) })
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -1844,7 +1889,7 @@ test('scoped file tools need no discovery unlock and still respect external mask
     parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
   // Independent permission policy must survive temporary task-mask suspension.
   scope.ctx.tools.restrict({ deny: ['write'] })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '你的每个会话工具还不同？' }], source: { kind: 'user' },
   }) })
   await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -1889,7 +1934,7 @@ test('scoped capability reporting counts the pre-mask catalog without claiming e
   scope.ctx.tools.guard(execution => execution.name === 'read' && execution.arguments.file_path !== 'allowed.jsonl'
     ? 'Independent file policy rejected this path' : undefined)
   ctx.emit('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '你好，请简单介绍自己。' }], source: { kind: 'user' },
   }) })
   await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -1943,7 +1988,7 @@ test('capability observations exclude unmatched and late calls across both turn 
   ctx.tools.register({ name: 'read', description: 'Read a local file.',
     parameters: { type: 'object', properties: { file_path: { type: 'string' } } }, output,
     async execute() { entered(); await new Promise(resolve => { release = resolve }); return {} } })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   ctx.emit('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
@@ -1972,7 +2017,7 @@ test('vision reporting does not promote a different tool or an earlier turn into
     async execute() { return {} },
   })
   ctx.emit('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取目标图片并说明可验证的能力。' }], source: { kind: 'user' },
   }) })
   assert.equal((await call(ctx, agent, 'read_image', { path: 'one.png' })).isError, false)
@@ -2001,7 +2046,7 @@ test('actual admitted attachment is described before the first durable message a
     mediaType: 'image/png', bytes: 5334, width: 600, height: 400, name: 'image.png' } }
   const message = createUserMessage({ source: { kind: 'user' }, content: [image, { type: 'text', text: VISION_QUESTION }] })
   session.append('turn/start', { turn: 1 })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   assert.equal(session.snapshotEvents().filter(event => event.type === 'user/message').length, 0, 'the first assembly precedes durable user/message append')
   const assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   const facts = renderContextSnapshot(assembled)
@@ -2029,7 +2074,7 @@ test('actual admitted attachment is described before the first durable message a
   assert.equal(info.vision.attachment_input.engine_readiness, 'not_observed_here')
   assert.equal(info.vision.readiness, 'not_probed')
   assert.deepEqual(info.vision.observed_visual_tools, [])
-  cold.emit(scopeTarget(resumed, resumed), 'agent/inbox/inserted', { agent: resumed, message: createUserMessage({
+  cold.emit(scopeTarget(resumed, resumed), 'agent/inbox/claimed', { agent: resumed, message: createUserMessage({
     source: { kind: 'user' }, content: [{ type: 'text', text: '改做：写一句问候。' }],
   }) })
   info = (await call(cold, resumed, 'xiaoshe_runtime_info')).value
@@ -2047,7 +2092,7 @@ test('image-only direct input gets accurate receipt guidance while fake bridge l
   ]) {
     const ctx = harness(t)
     const agent = { id: crypto.randomUUID(), ctx, session: {} }
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage(input) })
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage(input) })
     const facts = renderContextSnapshot(await ctx.systemPrompt.assemble({ scope: agent, agent }))
     assert.equal(facts.includes('当前直接用户任务已收到图片附件'), input.received)
     const info = (await call(ctx, agent, 'xiaoshe_runtime_info')).value
@@ -2066,7 +2111,7 @@ test('native capability reporting preserves a separate assembly filter instead o
     const assembled = await next()
     return { ...assembled, tools: assembled.tools.filter(tool => tool.name !== 'read') }
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取本地文件。' }], source: { kind: 'user' },
   }) })
   const assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -2088,7 +2133,7 @@ test('large explicit tool requests use the same advisory full-catalog policy', a
   const message = createUserMessage({
     content: [{ type: 'text', text: `依次使用 ${names.slice(0, 20).join(' ')} 完成处理` }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   const assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   assert.equal(assembled.tools.length, 52)
   const info = await call(ctx, agent, 'xiaoshe_runtime_info')
@@ -2106,7 +2151,7 @@ test('failed family expands a different route on the following prompt surface', 
     ['search_web', 'Search the internet.', async () => { throw new Error('timed out') }],
     ['browser_open', 'Open a web page in the authorized browser.', async () => ({})],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: { query: { type: 'string' } } }, output, execute })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '搜索今天的最新消息' }], source: { kind: 'user' },
   }) })
   let assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -2129,7 +2174,7 @@ test('multiple timeouts keep registered searches and independent browser routes 
     ['browser_open', 'Open a web page in the authorized browser.', async () => ({})],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: { query: { type: 'string' } } }, output, execute })
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '搜索今天的最新消息，优先使用 web_search' }], source: { kind: 'user' },
   }) })
   await call(ctx, agent, 'xiaoshe_capability_plan', { goal: '搜索今天的最新消息' })
@@ -2155,7 +2200,7 @@ test('primary-route failures retain the catalog and disclose uncertainty without
     ['screen_list_windows', 'List desktop window titles without reading their contents.', async () => ({})],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: { path: { type: 'string' } } }, output, execute })
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取 C:\\Temp\\acceptance.png 里的文字，只根据图片回答，不要猜。' }], source: { kind: 'user' },
   }) })
   assert.equal((await call(ctx, agent, 'modlens_read_image', { path: 'C:\\Temp\\acceptance.png' })).isError, true)
@@ -2188,7 +2233,7 @@ test('complex image task failures do not withdraw planning or advisory tools', a
 
   const goal = '全面分析 C:\\Temp\\acceptance.png 里的界面问题，先制定方案再逐项检查，只根据图片回答，不要猜。'
   assert.equal((await import('../dist/plugins/agent-reliability.js')).assessTask(goal).needs_plan, true)
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: goal }], source: { kind: 'user' },
   }) })
   assert.equal((await call(ctx, agent, 'modlens_read_image', { path: 'C:\\Temp\\acceptance.png' })).isError, true)
@@ -2210,7 +2255,7 @@ test('capability planning stays revision-bounded without withdrawing earlier too
     name: 'evidence_probe', description: 'Produce a new non-advisory observation.',
     parameters: { type: 'object', properties: {} }, output, async execute() { return {} },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '使用 mcp__service12__action 完成专用处理' }], source: { kind: 'user' },
   }) })
 
@@ -2246,7 +2291,7 @@ test('a successful same-family fallback removes stale prompt failure while keepi
     name: 'read_image', description: 'Read image with the chat model.',
     parameters: { type: 'object', properties: { path: { type: 'string' } } }, output, async execute() { return {} },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取这张图片' }], source: { kind: 'user' },
   }) })
   assert.equal((await call(ctx, agent, 'modlens_read_image', { path: 'C:\\images\\sample.png' })).isError, true)
@@ -2265,13 +2310,13 @@ test('a successful same-family fallback removes stale prompt failure while keepi
 test('ordinary tasks do not receive visual troubleshooting context', async t => {
   const ctx = harness(t); const agent = { id: 'conditional-context', session: {} }
   ctx.tools.register({ name: 'read', description: 'Read a file.', parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取项目文件' }], source: { kind: 'user' },
   }) })
   let snapshot = renderContextSnapshot(await ctx.systemPrompt.assemble({ scope: agent, agent }))
   assert.doesNotMatch(snapshot, /ModLens|视觉引擎|重新配模型/)
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '读取这张截图里的文字' }], source: { kind: 'user' },
   }) })
   snapshot = renderContextSnapshot(await ctx.systemPrompt.assemble({ scope: agent, agent }))
@@ -2370,7 +2415,7 @@ test('real DSH complex delivery keeps separate test and readback requirements', 
   const message = createUserMessage({
     content: [{ type: 'text', text: '全面检查当前代码，修复实现，运行测试并回读验证结果' }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
   await call(ctx, agent, 'todo_write', { todos: [{ content: 'fix', status: 'in_progress' }] })
   await call(ctx, agent, 'read', { path: 'src/source.ts' })
   await call(ctx, agent, 'write', { path: 'src/result.ts' })
@@ -2400,14 +2445,14 @@ test('real prompt assembly replaces the task route snapshot without retaining th
     async execute() { return {} },
   })
   const direct = createUserMessage({ content: [{ type: 'text', text: '搜索今天的最新消息，PRIVATE-TOKEN' }], source: { kind: 'user' } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: direct })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: direct })
   let assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   let snapshot = renderContextSnapshot(assembled)
   assert.match(snapshot, /可靠来源/)
   assert.doesNotMatch(snapshot, /PRIVATE-TOKEN/)
 
   const changed = createUserMessage({ content: [{ type: 'text', text: '读取项目文件' }], source: { kind: 'user' } })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: changed })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: changed })
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   snapshot = renderContextSnapshot(assembled)
   assert.doesNotMatch(snapshot, /可靠来源|web_search/)
@@ -2543,6 +2588,28 @@ test('resume treats durable task generations as authoritative and rejects cross-
   ])
 })
 
+test('resume accepts only exact post-commit identities before business evidence', async t => {
+  for (const kind of ['valid', 'wrong-id', 'wrong-seq', 'duplicate-user', 'duplicate-seq', 'non-user', 'padded-id', 'late-tool', 'old-obligation', 'v1-postposed', 'continuation-without-task']) {
+    await t.test(kind, async t => {
+      const ctx = harness(t)
+      const message = { id: kind === 'padded-id' ? ' accepted-user' : 'accepted-user', role: 'user',
+        source: { kind: kind === 'non-user' ? 'plugin' : 'user' }, content: [{ type: 'text', text: 'Please say hello.' }] }
+      const prefix = [loggedEvent(0, 'turn/start', { turn: 1 }), loggedEvent(1, 'user/message', message)]
+      if (kind === 'duplicate-user') prefix.push(loggedEvent(2, 'user/message', message))
+      if (kind === 'duplicate-seq') prefix.push(loggedEvent(1, 'context/notice', {}))
+      if (kind === 'late-tool') prefix.push(loggedEvent(2, 'tool/call', { turn: 1, step: 1, callId: 'late', name: 'read', arguments: '{}' }))
+      if (kind === 'old-obligation') prefix.push(loggedEvent(2, 'xiaoshe/obligation-state', { version: 1, generation: 17, turn: 1,
+        kind: 'ordered-read', status: 'pending', primary: 'first.txt', fallback: 'next.txt' }))
+      const identity = loggedEvent(3, 'xiaoshe/task-generation', { version: kind === 'v1-postposed' ? 1 : 2,
+        generation: 17, relation: kind === 'continuation-without-task' ? 'continuation' : 'new', triggerMessageId: kind === 'wrong-id' ? 'missing' : message.id,
+        ...(kind === 'v1-postposed' ? {} : { triggerMessageSeq: kind === 'wrong-seq' ? 0 : 1 }) })
+      const agent = { id: crypto.randomUUID(), session: { events: [...prefix, identity] } }
+      ctx.emit(scopeTarget(agent, agent), 'agent/session-start', { agent, source: 'resume' })
+      assert.equal(ctx.xiaosheAgentReliability.snapshot(agent).taskGeneration, kind === 'valid' ? 17 : kind === 'non-user' ? 0 : kind === 'duplicate-user' ? 2 : 1)
+    })
+  }
+})
+
 test('resume fails closed for malformed or stale task-generation facts', async t => {
   const cases = [
     {
@@ -2627,7 +2694,7 @@ test('explicitly revoking offline mode restores search while a later task-local 
     parameters: { type: 'object', properties: { query: { type: 'string' } } }, output,
     async execute() { return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -2664,7 +2731,7 @@ test('quoted offline settings and past consequences do not disable live web capa
   })
   const inspect = async (id, text) => {
     const agent = { id, session: {} }
-    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+    ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
       agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
     })
     const info = await call(ctx, agent, 'xiaoshe_runtime_info')
@@ -2711,7 +2778,7 @@ test('a same-task supplement can revoke an earlier public-repository search ban'
     parameters: { type: 'object', properties: { query: { type: 'string' } } }, output,
     async execute() { return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -2735,7 +2802,7 @@ test('same-task supplements can lift read-only and click restrictions while late
     name, description, parameters: { type: 'object', properties: {}, additionalProperties: true }, output,
     async execute() { return {} },
   })
-  const send = (agent, text) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = (agent, text) => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -2830,7 +2897,7 @@ test('an additive-looking topic switch drops stale constraints while a true supp
   for (const [name, description] of [
     ['read', 'Read local files.'], ['write', 'Write local files.'], ['web_search', 'Search current information.'],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: {} }, output, async execute() { return {} } })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
 
@@ -2847,7 +2914,7 @@ test('an additive-looking topic switch drops stale constraints while a true supp
   assert.match(info.value.execution.path_constraints.allowed[0], /^path#[a-f0-9]{12}$/u)
 
   const overlapAgent = { id: 'continuation-generic-overlap', session: {} }
-  const sendOverlap = text => ctx.emit(scopeTarget(overlapAgent, overlapAgent), 'agent/inbox/inserted', {
+  const sendOverlap = text => ctx.emit(scopeTarget(overlapAgent, overlapAgent), 'agent/inbox/claimed', {
     agent: overlapAgent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   sendOverlap('全程离线检查旧项目，不得联网。')
@@ -2863,7 +2930,7 @@ test('explicit new tasks reset stale route state but preserve independent verifi
     ['write', 'Write a local file.', async () => ({})],
     ['web_search', 'Search current information.', async () => { throw new Error('request timeout') }],
   ]) ctx.tools.register({ name, description, parameters: { type: 'object', properties: {} }, output, execute })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   send('写入 result.ts')
@@ -2888,7 +2955,7 @@ test('Enter and Return press effects cannot bypass submit constraints or complex
     name, description: 'Press a key.',
     parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] }, output, execute,
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   send('只观察这个表单，不得提交。')
@@ -2950,7 +3017,7 @@ test('historical verification debt survives a task switch without blocking the n
     name, description, parameters: { type: 'object', properties: {}, additionalProperties: true }, output,
     async execute() { return {} },
   })
-  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  const send = text => ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   })
   send('修改 src/a.ts')
@@ -3010,7 +3077,7 @@ test('research with sources but unavailable bodies retains candidate evidence an
   assert.match(prompt, /https:\/\/weather\.example\.com\/shanghai/)
   assert.match(prompt, /未能读取.*正文|正文.*未能读取/)
 
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     content: [{ type: 'text', text: '改做：读取当前项目 README。' }], source: { kind: 'user' },
   }) })
   assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -3087,7 +3154,7 @@ test('turn stopping resumes an omitted primary read before accepting its fallbac
     `改为读取 ${fallback} 并仅报告其中的恢复证据。`,
     '禁止写文件、禁止 shell、禁止联网。',
   ].join('\n')
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } }),
   })
   ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
@@ -3140,7 +3207,7 @@ test('turn stopping emits an aborted completion fact after bounded ordered-read 
     cancel: cause => cancellations.push(cause),
   }
   const goal = '先读取 C:\\sources\\missing.md。失败后，改为读取 C:\\sources\\fallback.md。'
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', {
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', {
     agent, message: createUserMessage({ content: [{ type: 'text', text: goal }], source: { kind: 'user' } }),
   })
   ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
@@ -3176,6 +3243,7 @@ test('direct goals persist strict task generations and ordered-read obligation t
     append(type, data) {
       const event = { seq: events.length, time: events.length + 1, type, data }
       events.push(event)
+      ctx.emit('session/event', session, event)
       return event
     },
   }
@@ -3195,12 +3263,16 @@ test('direct goals persist strict task generations and ordered-read obligation t
     content: [{ type: 'text', text: `先读取 ${primary}。失败后，改为读取 ${fallback}。` }],
     source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
+  assert.deepEqual(events, [], 'a claim alone is not a durable input identity')
+  session.append('user/message', message)
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
 
   assert.deepEqual(events.map(event => ({ type: event.type, data: event.data })), [
+    { type: 'user/message', data: message },
     {
       type: 'xiaoshe/task-generation',
-      data: { version: 1, generation: 1, relation: 'new', triggerMessageId: message.id },
+      data: { version: 2, generation: 1, relation: 'new', triggerMessageId: message.id, triggerMessageSeq: 0 },
     },
     {
       type: 'xiaoshe/obligation-state',
@@ -3233,17 +3305,21 @@ test('direct goals persist strict task generations and ordered-read obligation t
   const continuation = createUserMessage({
     id: 'direct-goal-2', content: [{ type: 'text', text: '继续' }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: continuation })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: continuation })
+  const continuationEvent = session.append('user/message', continuation)
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   assert.deepEqual(events.at(-1)?.data, {
-    version: 1, generation: 1, relation: 'continuation', triggerMessageId: continuation.id,
+    version: 2, generation: 1, relation: 'continuation', triggerMessageId: continuation.id, triggerMessageSeq: continuationEvent.seq,
   })
 
   const replacement = createUserMessage({
     id: 'direct-goal-3', content: [{ type: 'text', text: '读取另一个独立文件。' }], source: { kind: 'user' },
   })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: replacement })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: replacement })
+  const replacementEvent = session.append('user/message', replacement)
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   assert.deepEqual(events.at(-1)?.data, {
-    version: 1, generation: 2, relation: 'new', triggerMessageId: replacement.id,
+    version: 2, generation: 2, relation: 'new', triggerMessageId: replacement.id, triggerMessageSeq: replacementEvent.seq,
   })
 })
 
@@ -3470,7 +3546,7 @@ test('real capability planning consumes optional experience only for matching re
     },
   }
   const agent = { id: 'experience-ranking', session, ctx }
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message: createUserMessage({
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message: createUserMessage({
     id: 'experience-goal', content: [{ type: 'text', text: '搜索当前公开资料。' }], source: { kind: 'user' },
   }) })
   ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
@@ -3511,9 +3587,10 @@ async function localPathResearchStopFixture(t, goalForPaths) {
     async execute() { network.push(name); assert.fail('this component must never dispatch a network route') },
   })
   const goal = goalForPaths(files), message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: goal }] })
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent, message })
-  session.append('user/message', message, { surfaceOp: 'append' })
   session.append('turn/start', { turn: 1 })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   for (let i = 0; i < files.length; i++) {
     const result = await call(ctx, agent, 'read', { file_path: files[i] })
     assert.equal(result.isError, false, files[i]); assert.equal(result.value.text, contents[i], 'full actual file contents must return')

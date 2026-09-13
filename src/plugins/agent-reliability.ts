@@ -6,6 +6,7 @@ import { posix as path } from 'node:path'
 import type { JsonValue, PreToolDecision } from '../types.js'
 import { assessTask as assessTaskBase } from './task-deliberation.js'
 import type { TaskAssessment } from './task-deliberation.js'
+import { isPlainDocumentWrite } from '../../packages/verification-policy/lib/index.js'
 
 export type { TaskAssessment, TaskAmbiguity, TaskComplexity, TaskDecision, TaskStrategy } from './task-deliberation.js'
 
@@ -151,15 +152,18 @@ interface InputStopRule {
   failure?: InputStopKind
 }
 interface TaskGenerationEvent {
-  readonly version: 1
+  readonly version: 1 | 2
   readonly generation: number
   readonly relation: 'new' | 'continuation'
   readonly triggerMessageId: string
+  readonly triggerMessageSeq?: number
 }
 interface ReplayedTaskGenerations {
   readonly protocol: 'absent' | 'valid' | 'invalid'
   readonly identities: ReadonlyMap<string, TaskGenerationEvent>
   readonly requiredMessageIds: ReadonlySet<string>
+  /** Evidence before a fresh trusted V2 task cannot cross a quarantined prefix. */
+  readonly trustedFromSeq?: number
 }
 interface OrderedReadObligationEvent {
   readonly version: 1
@@ -318,10 +322,11 @@ interface Host {
   }
   provide?(name: 'xiaosheAgentReliability', value: AgentReliabilitySnapshotService): unknown
   on(event: 'agent/request', listener: (payload: { agent: Agent; turn: number }, next: () => Promise<{ provider: string; model: string }>) => Promise<{ provider: string; model: string }>): unknown
-  on(event: 'agent/inbox/inserted', listener: (payload: { agent: Agent; message: MessageLike }) => void): unknown
+  on(event: 'agent/inbox/claimed', listener: (payload: { agent: Agent; message: MessageLike }) => void): unknown
+  on(event: 'agent/assistant-stream', listener: (payload: { agent: Agent; frame: { type: string } }) => void): unknown
   on(event: 'agent/session-start', listener: (payload: { agent: Agent; source: 'startup' | 'resume' | 'clear' | 'compact' }) => void): unknown
   on(event: 'agent/disposed', listener: (payload: { agent: Agent }) => void): unknown
-  on(event: 'session/event', listener: (session: object, event: { type: string; data: { turn?: number } }) => void): unknown
+  on(event: 'session/event', listener: (session: object, event: SessionEventLike) => void): unknown
   on(event: 'tools/pre-execute', listener: (execution: Execution, next: () => Promise<PreToolDecision>) => Promise<PreToolDecision>): unknown
   on(event: 'tools/result', listener: (execution: Execution, result: Result) => void): unknown
   on(event: 'agent/turn-stopping', listener: (payload: { readonly agent: Agent; readonly turn: number; readonly signal: AbortSignal }) => Promise<void> | void): unknown
@@ -517,6 +522,7 @@ function replayResearchResult(data: unknown, callId: string): Result | undefined
 
 function researchEvidenceSequences(agent: Agent, state: State): ResearchEvidenceSequences {
   const targetGeneration = state.taskGeneration
+  const generationHistory = replayTaskGenerations(readSessionEvents(agent.session))
   const calls = new Map<string, { name: string; args: unknown; generation: number; turn: number; seq: number; url?: string }>()
   const durableBodies = new Map<string, { generation: number; turn: number; url?: string }>()
   const sourceResultSeqs: number[] = []
@@ -540,7 +546,7 @@ function researchEvidenceSequences(agent: Agent, state: State): ResearchEvidence
     const data = replayRecord(event.data)
     const seq = Number.isSafeInteger(event.seq) ? event.seq as number : undefined
     if (event.type === 'xiaoshe/task-generation') {
-      const generation = data?.version === 1 && Number.isSafeInteger(data.generation)
+      const generation = data !== undefined && supportedTaskGeneration(event, generationHistory) && Number.isSafeInteger(data.generation)
         && (data.relation === 'new' || data.relation === 'continuation')
         ? data.generation as number
         : undefined
@@ -631,9 +637,10 @@ function sourceOnlyPartialBoundaryReady(text: string, readButNotCurrent = false)
 function researchPartialAnswerReady(agent: Agent, state: State): boolean {
   let activeGeneration = 0
   let latest = ''
+  const generationHistory = replayTaskGenerations(readSessionEvents(agent.session))
   for (const event of readSessionEvents(agent.session)) {
     const data = replayRecord(event.data)
-    if (event.type === 'xiaoshe/task-generation' && data?.version === 1 && Number.isSafeInteger(data.generation)
+    if (event.type === 'xiaoshe/task-generation' && data !== undefined && supportedTaskGeneration(event, generationHistory) && Number.isSafeInteger(data.generation)
       && (data.relation === 'new' || data.relation === 'continuation')) {
       activeGeneration = data.generation as number
     } else if (event.type === 'assistant/message' && activeGeneration === state.taskGeneration) {
@@ -1901,6 +1908,40 @@ const DIRECT_CODE_WRITE = /\b(?:Deno\.(?:writeTextFile|writeFile|remove|rename|m
 const DIRECT_CODE_NETWORK = /\b(?:fetch|WebSocket|XMLHttpRequest|EventSource|axios)\s*[.(]|\b(?:node:)?(?:http|https|net|dns)\b|\b(?:HttpClient|WebClient)\b/u
 const SHELL_CONTROL_OR_REDIRECTION = /[\r\n;&|`]|\$\(|(?:^|[^<>=])>{1,2}(?![=>])/u
 
+/** Recognize a literal local checksum probe, including display-only pipelines.
+ * A pipe is not itself a network effect. This small grammar admits only file
+ * operands and fixed hash fields, never scripts, remote paths, or extra commands.
+ * Real filesystem access still goes through the host's normal authorization. */
+function localFileHashProbe(command: string): boolean {
+  // PowerShell also treats curly quotes as delimiters. Reject unsupported
+  // quoting so a quoted UNC path cannot be mistaken for a local bare operand.
+  if (/[\r\n;&`$[\]{}<>\u2018-\u201f]/u.test(command)) return false
+  const stages = command.split('|').map(part => part.trim())
+  if (stages.length > 3) return false
+  const head = /^(?:Microsoft\.PowerShell\.Utility\\)?Get-FileHash\s+(.+)$/iu.exec(stages.shift()!)?.[1]
+  if (!head) return false
+  let paths = head.replace(/\s+-Algorithm\s+(?:SHA1|SHA256|SHA384|SHA512|MD5)\s*$/iu, '').trim()
+    .replace(/^-(?:LiteralPath|Path)\s+/iu, '')
+  let count = 0
+  while (paths) {
+    const operand = /^(?:'([^']+)'|"([^"]+)"|([^\s,"']+))\s*(,|$)/u.exec(paths)
+    if (!operand || ++count > 32) return false
+    // Parentheses are literal in quoted Windows paths (e.g. "Folder (10)"),
+    // but outside quotes they introduce PowerShell expression syntax.
+    if (operand[3] !== undefined && /[()]/u.test(operand[3])) return false
+    const path = operand[1] ?? operand[2] ?? operand[3]!
+    const normalized = path.replace(/\\/gu, '/')
+    if (!path.trim() || /^-|^[\\/]{2}|[?*]/u.test(path)
+      || normalized.replace(/^[a-z]:\//iu, '').includes(':')) return false
+    paths = paths.slice(operand[0].length).trim()
+    if (operand[4] === ',' && !paths) return false
+  }
+  if (count === 0) return false
+  if (stages[0] && /^(?:Microsoft\.PowerShell\.Utility\\)?Select-Object\s+(?:-Property\s+)?(?:Hash|Path|Algorithm)(?:\s*,\s*(?:Hash|Path|Algorithm))*$/iu.test(stages[0])) stages.shift()
+  if (stages[0] && /^(?:Microsoft\.PowerShell\.Utility\\)?Format-(?:List|Table)(?:\s+(?:-Property\s+)?(?:Hash|Path|Algorithm)(?:\s*,\s*(?:Hash|Path|Algorithm))*)?$/iu.test(stages[0])) stages.shift()
+  return stages.length === 0
+}
+
 /**
  * Hard user constraints need a proof of harmlessness, not an ever-growing
  * blacklist. Keep this deliberately small: commands outside this local,
@@ -1909,7 +1950,9 @@ const SHELL_CONTROL_OR_REDIRECTION = /[\r\n;&|`]|\$\(|(?:^|[^<>=])>{1,2}(?![=>])
  */
 function demonstrablyLocalReadOnlyShell(command: string): boolean {
   const value = command.trim()
-  if (!value || value.length > 8_192 || SHELL_CONTROL_OR_REDIRECTION.test(value)
+  if (!value || value.length > 8_192) return false
+  if (/^(?:Microsoft\.PowerShell\.Utility\\)?Get-FileHash\b/iu.test(value)) return localFileHashProbe(value)
+  if (SHELL_CONTROL_OR_REDIRECTION.test(value)
     || /[$()[\]{}]/u.test(value)
     || /(?:^|\s)(?:--pre(?:=|\s)|--pre-glob(?:=|\s)|--exec(?:-batch)?(?:=|\s)|-x(?:=|\s)|-X(?:=|\s))/iu.test(value)) return false
   if (/^git\s+(?:status|diff|log|show|rev-parse|ls-files|branch)\b/iu.test(value)
@@ -1953,8 +1996,11 @@ function shellConstraintDenial(
   if (explicitVerifier && !writeRestricted && !networkRestricted) return undefined
   if (demonstrablyLocalReadOnlyShell(command)) return undefined
   if (pathRestricted && shellWriteEffect(command).detected && !writeRestricted && !networkRestricted) return undefined
-  if (writeRestricted) return '该终端命令的副作用无法证明为只读；在“不得修改”的硬约束下已保守拒绝执行。'
-  if (networkRestricted) return '该终端命令无法证明只访问本地；在“不得联网”的硬约束下已保守拒绝执行。'
+  const localHashHint = /\bGet-FileHash\b/iu.test(command)
+    ? " 若仅核对文件哈希，请直接用 Get-FileHash -LiteralPath '本地文件路径' -Algorithm SHA256 | Format-List Path,Hash；路径可含空格和括号，多个字面量路径用逗号分隔。避免变量、循环和自写哈希实现；仍须遵守当前文件权限。"
+    : ''
+  if (writeRestricted) return '该终端命令的副作用无法证明为只读；在“不得修改”的硬约束下已保守拒绝执行。' + localHashHint
+  if (networkRestricted) return '该终端命令无法证明只访问本地；在“不得联网”的硬约束下已保守拒绝执行。' + localHashHint
   return '当前任务路径约束下无法证明该终端命令的副作用边界；已保守拒绝执行。这不是 shell 沙箱拒绝，提升或添加 sandbox_permissions/justification 无效；请改用用户明确要求的独立验证命令或类型化工具。'
 }
 
@@ -3071,6 +3117,15 @@ function localTargetEvidence(state: State, execution: Execution): boolean {
   if (execution.name === 'apply_patch' && effect.unresolved) return false
   const targets = effect.targets.map(value => evidencePath(execution, value))
   if (targets.length === 0) return state.evidencePaths.size > 0
+  // New output prose is derived from the inputs, not from a nonexistent
+  // destination implementation. Successful reads in this task are preparation;
+  // filenames returned by search alone are not. This is not write authority:
+  // user/path guards still apply, and verification still requires full readback.
+  const workspaceRoot = executionWorkspaceRoot(execution)
+  if (workspaceRoot && !workspaceRoot.startsWith('//') && !effect.unresolved && targets.length === 1
+    && targets[0]!.startsWith(`${workspaceRoot.replace(/\/$/u, '')}/output/`)
+    && isPlainDocumentWrite(execution.name, execution.arguments)
+    && !existingMutationTarget(execution, targets[0]!) && state.readEvidencePaths.size > 0) return true
   return targets.every(target => {
     if (state.evidencePaths.has(target)) return true
     if (existingMutationTarget(execution, target)) return false
@@ -3758,6 +3813,16 @@ export class RecoveryController {
   private readonly states = new WeakMap<Agent, State>()
   resetForReplay(agent: Agent): void {
     this.states.delete(agent)
+  }
+  /** An inbox claim is provisional until the driver commits its accepted messages. */
+  checkpointGoal(agent: Agent): State { return structuredClone(this.state(agent)) }
+  restoreGoal(agent: Agent, checkpoint: State): void {
+    // Request/turn observability belongs to the live driver, not the proposed
+    // task. Admission may have advanced both after the checkpoint was taken.
+    const { turn, model } = this.state(agent)
+    checkpoint.turn = turn
+    checkpoint.model = model
+    this.states.set(agent, checkpoint)
   }
   state(agent: Agent): State {
     let state = this.states.get(agent)
@@ -4660,16 +4725,21 @@ export class RecoveryController {
     }
   }
 
-  persistDirectGoal(agent: Agent, relation: 'new' | 'continuation', triggerMessageId: string): void {
+  persistDirectGoal(agent: Agent, relation: 'new' | 'continuation', triggerMessageId: string, triggerMessageSeq: number): void {
     const state = this.state(agent)
     const append = agent.session?.append
     if (typeof append !== 'function' || triggerMessageId.trim() === '') return
     append.call(agent.session, 'xiaoshe/task-generation', {
-      version: 1,
+      version: 2,
       generation: state.taskGeneration,
       relation,
       triggerMessageId,
+      triggerMessageSeq,
     })
+  }
+
+  /** All accepted batch identities must precede the final active task's debt. */
+  persistInputObligations(agent: Agent): void {
     this.persistOrderedReadStates(agent)
   }
 
@@ -4874,9 +4944,10 @@ export class RecoveryController {
     const state = this.state(agent)
     if (!requiresRawJsonFinal(state.researchGoal)) return undefined
     let generation = 0, turn = 0, finalText: string | undefined, durableCorrections = 0, sawAssistant = false
+    const generationHistory = replayTaskGenerations(readSessionEvents(agent.session))
     for (const event of readSessionEvents(agent.session)) {
       const data = replayRecord(event.data)
-      if (event.type === 'xiaoshe/task-generation' && data?.version === 1 && Number.isSafeInteger(data.generation)) generation = data.generation as number
+      if (event.type === 'xiaoshe/task-generation' && supportedTaskGeneration(event, generationHistory) && Number.isSafeInteger(data?.generation)) generation = data!.generation as number
       if (event.type === 'turn/start' && Number.isSafeInteger(data?.turn)) turn = data!.turn as number
       if (generation !== state.taskGeneration) continue
       if (event.type === 'user/message') {
@@ -5358,17 +5429,45 @@ function replayUserMessage(value: unknown): MessageLike | undefined {
 function replayTaskGeneration(value: unknown): TaskGenerationEvent | undefined {
   const data = replayRecord(value)
   const triggerMessageId = typeof data?.triggerMessageId === 'string' ? data.triggerMessageId.trim() : undefined
-  if (!data || data.version !== 1
-    || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId'].includes(key))
+  if (!data || (data.version !== 1 && data.version !== 2)
+    || Object.keys(data).some(key => !['version', 'generation', 'relation', 'triggerMessageId',
+      ...(data.version === 2 ? ['triggerMessageSeq'] : [])].includes(key))
     || !Number.isSafeInteger(data.generation) || (data.generation as number) < 0
     || (data.relation !== 'new' && data.relation !== 'continuation')
+    || (data.version === 2 && (!Number.isSafeInteger(data.triggerMessageSeq) || (data.triggerMessageSeq as number) < 0))
+    || (data.version === 2 && triggerMessageId !== data.triggerMessageId)
     || triggerMessageId === undefined || triggerMessageId === '' || triggerMessageId.length > 512) return undefined
   return {
-    version: 1,
+    version: data.version,
     generation: data.generation as number,
     relation: data.relation,
     triggerMessageId,
+    ...(data.version === 2 ? { triggerMessageSeq: data.triggerMessageSeq as number } : {}),
   }
+}
+
+/** V2 binds a committed direct input before any effect/answer can use its generation. */
+function committedTaskInputPrecedes(identity: TaskGenerationEvent, marker: SessionEventLike, events: readonly SessionEventLike[]): boolean {
+  if (identity.version !== 2 || !Number.isSafeInteger(marker.seq)) return false
+  const matches = events.filter(event => event.type === 'user/message'
+    && replayRecord(event.data)?.id === identity.triggerMessageId)
+  if (matches.length !== 1) return false
+  const message = matches[0]!
+  if (message.seq !== identity.triggerMessageSeq || (message.seq as number) >= (marker.seq as number)
+    || events.filter(event => event.seq === message.seq).length !== 1
+    || events.filter(event => event.seq === marker.seq).length !== 1
+    || !replayUserMessage(message.data)) return false
+  return !events.some(event => (event.seq as number) > (message.seq as number) && (event.seq as number) < (marker.seq as number)
+    && (/^(?:tool\/|assistant\/|turn\/|approval\/)/u.test(event.type)
+      || event.type === 'verification/result' || event.type === 'xiaoshe/obligation-state'))
+}
+
+function supportedTaskGeneration(event: SessionEventLike, history: ReplayedTaskGenerations): boolean {
+  const data = replayRecord(event.data)
+  if (history.trustedFromSeq !== undefined && (event.seq === undefined || event.seq < history.trustedFromSeq)) return false
+  if (data?.version !== 1 && data?.version !== 2) return false
+  return history.protocol === 'valid' && typeof data.triggerMessageId === 'string'
+    && history.identities.get(data.triggerMessageId)?.version === data.version
 }
 
 function replayTaskGenerations(events: readonly SessionEventLike[]): ReplayedTaskGenerations {
@@ -5390,42 +5489,71 @@ function replayTaskGenerations(events: readonly SessionEventLike[]): ReplayedTas
 
   const identities = new Map<string, TaskGenerationEvent>()
   const taintedMessageIds = new Set<string>()
+  const markerCounts = new Map<string, number>()
+  for (const event of events) {
+    const data = replayRecord(event.data)
+    if (event.type === 'xiaoshe/task-generation' && typeof data?.triggerMessageId === 'string') {
+      markerCounts.set(data.triggerMessageId, (markerCounts.get(data.triggerMessageId) ?? 0) + 1)
+    }
+  }
+  const freshAnchors: Array<{ inputIndex: number; seq: number }> = []
   let latestGeneration: number | undefined
-  let invalid = false
+  let previousTriggerSeq = -1
+  let lastUnsafeIndex = -1
   for (let index = firstGenerationIndex; index < events.length; index += 1) {
     const event = events[index]
     if (event?.type !== 'xiaoshe/task-generation') continue
     const identity = replayTaskGeneration(event.data)
     if (!identity) {
-      invalid = true
+      lastUnsafeIndex = Math.max(lastUnsafeIndex, index)
       continue
     }
     const messageIndex = messageIndexes.get(identity.triggerMessageId)
     const validTransition = latestGeneration === undefined
-      || (identity.relation === 'new'
+      ? identity.version === 1 || identity.relation === 'new'
+      : (identity.relation === 'new'
         ? identity.generation > latestGeneration
         : identity.generation === latestGeneration)
-    if (messageIndex === undefined || messageIndex <= index || duplicateMessages.has(identity.triggerMessageId)
-      || identities.has(identity.triggerMessageId) || !validTransition) {
-      invalid = true
+    const correctOrder = identity.version === 1 ? messageIndex !== undefined && messageIndex > index
+      && !events.slice(index + 1, messageIndex).some(candidate => /^(?:tool\/|assistant\/|approval\/)/u.test(candidate.type)
+        || candidate.type === 'verification/result' || candidate.type === 'turn/end'
+        || candidate.type === 'xiaoshe/task-generation'
+        || (candidate.type === 'user/message' && replayUserMessage(candidate.data) !== undefined))
+      : messageIndex !== undefined && messageIndex < index && (identity.triggerMessageSeq as number) > previousTriggerSeq
+        && committedTaskInputPrecedes(identity, event, events)
+    if (!correctOrder || duplicateMessages.has(identity.triggerMessageId)
+      || markerCounts.get(identity.triggerMessageId) !== 1 || !validTransition) {
+      lastUnsafeIndex = Math.max(lastUnsafeIndex, index, messageIndex ?? -1)
       taintedMessageIds.add(identity.triggerMessageId)
       identities.delete(identity.triggerMessageId)
       continue
     }
     identities.set(identity.triggerMessageId, identity)
     latestGeneration = identity.generation
+    const triggerSeq = messageIndex === undefined ? undefined : events[messageIndex]?.seq
+    if (Number.isSafeInteger(triggerSeq)) previousTriggerSeq = triggerSeq as number
+    if (identity.version === 2 && identity.relation === 'new' && messageIndex !== undefined) {
+      freshAnchors.push({ inputIndex: messageIndex, seq: identity.triggerMessageSeq as number })
+    }
   }
 
   const requiredMessageIds = new Set<string>(taintedMessageIds)
+  const firstInputIndex = Math.min(firstGenerationIndex,
+    ...[...identities.keys()].map(id => messageIndexes.get(id) ?? firstGenerationIndex))
   for (const [messageId, index] of messageIndexes) {
-    if (index < firstGenerationIndex) continue
+    if (index < firstInputIndex) continue
     requiredMessageIds.add(messageId)
-    if (!identities.has(messageId)) invalid = true
+    if (!identities.has(messageId)) lastUnsafeIndex = Math.max(lastUnsafeIndex, index)
   }
+  // Preserve trustworthy prefix identities for the counter/constraints, but
+  // only a fresh exact V2 input can open a new evidence interval after damage.
+  // A continuation may retain old debt; it never launders the damaged prefix.
+  const anchor = lastUnsafeIndex < 0 ? undefined : freshAnchors.find(candidate => candidate.inputIndex > lastUnsafeIndex)
   return {
-    protocol: invalid ? 'invalid' : 'valid',
-    identities: invalid ? new Map() : identities,
+    protocol: lastUnsafeIndex >= 0 && anchor === undefined ? 'invalid' : 'valid',
+    identities,
     requiredMessageIds,
+    ...(anchor === undefined ? {} : { trustedFromSeq: anchor.seq }),
   }
 }
 
@@ -5466,6 +5594,12 @@ export function apply(ctx: Host): void {
   // through DSH runtime context, whose projection supersedes older snapshots.
   // This prevents historical route hints from accumulating in model history.
   const latestUserGoals = new WeakMap<Agent, string>()
+  const sessionAgents = new WeakMap<object, Agent>()
+  const proposedInputs = new WeakMap<Agent, {
+    readonly checkpoint: State
+    readonly previousGoal: string | undefined
+    readonly committed: Array<{ message: MessageLike; seq: number }>
+  }>()
   const toolRestrictions = new WeakMap<Agent, () => void>()
   const toolRestrictionFilters = new WeakMap<Agent, TaskToolRestriction>()
   const toolGuards = new WeakMap<Agent, () => void>()
@@ -5580,8 +5714,8 @@ export function apply(ctx: Host): void {
     toolRestrictions.delete(agent)
     toolRestrictionFilters.delete(agent)
   }
-  const restoreAgent = (agent: Agent): void => {
-    if (replayedAgents.has(agent)) return
+  const restoreAgent = (agent: Agent, force = false): void => {
+    if (!force && replayedAgents.has(agent)) return
     replayedAgents.add(agent)
     const events = readSessionEvents(agent.session)
     if (!Array.isArray(events)) return
@@ -5667,6 +5801,8 @@ export function apply(ctx: Host): void {
         continue
       }
       if (event.type === 'verification/result') {
+        if (taskGenerations.protocol === 'invalid' || (taskGenerations.trustedFromSeq !== undefined
+          && (event.seq === undefined || event.seq < taskGenerations.trustedFromSeq))) continue
         if (!data || typeof data.mutationCallId !== 'string' || typeof data.verifierCallId !== 'string'
           || typeof data.gate !== 'string' || typeof data.status !== 'string') continue
         // Cold replay follows the same causal rule as producer and receipt:
@@ -5689,7 +5825,8 @@ export function apply(ctx: Host): void {
         // Obligation generations are meaningful only when their companion task
         // identity protocol is intact. A tainted log must not restore a blocked
         // or satisfied state merely because a local fallback number collides.
-        if (taskGenerations.protocol !== 'invalid') {
+        if (taskGenerations.protocol !== 'invalid' && (taskGenerations.trustedFromSeq === undefined
+          || (event.seq !== undefined && event.seq >= taskGenerations.trustedFromSeq))) {
           recovery.restoreOrderedReadObligation(agent, event.data)
           recovery.restoreResearchObligation(agent, event.data)
           recovery.restoreRouteRecovery(agent, event.data, Number.isSafeInteger(event.seq) ? event.seq as number : undefined)
@@ -5698,16 +5835,9 @@ export function apply(ctx: Host): void {
     }
     if (latestGoal) refreshToolScope(agent, latestGoal)
   }
-  ctx.on('agent/session-start', ({ agent, source }) => {
-    if (source === 'resume') restoreAgent(agent)
-  })
-  ctx.on('session/event', (session, event) => {
-    if (event.type === 'turn/start' && typeof event.data.turn === 'number') turns.set(session, event.data.turn)
-  })
-  ctx.on('agent/inbox/inserted', ({ agent, message }) => {
-    if (message.source.kind !== 'user') return
+  const activateDirectInput = (agent: Agent, message: MessageLike): 'new' | 'continuation' | undefined => {
     const goal = directUserGoal([message])
-    if (goal === undefined) { recovery.recordUserImageInput(agent, message); return }
+    if (goal === undefined) { recovery.recordUserImageInput(agent, message); return undefined }
     const previous = latestUserGoals.get(agent)
     const continued = continuationGoal(goal, previous)
     const effectiveGoal = continued && previous ? mergeContinuationGoal(previous, goal) : goal
@@ -5721,15 +5851,96 @@ export function apply(ctx: Host): void {
       pathConstraints: constrainedPaths(effectiveGoal),
     })
     recovery.recordUserImageInput(agent, message)
-    // This log-only generation fact is written immediately after recognizing
-    // a direct human goal and before that inbox item can issue any tool call.
-    // Downstream receipts can therefore reject late evidence from an older
-    // task without repeating this plugin's natural-language heuristics.
-    recovery.persistDirectGoal(agent, continued ? 'continuation' : 'new', message.id)
     latestUserGoals.set(agent, effectiveGoal)
     refreshToolScope(agent, effectiveGoal)
+    return continued ? 'continuation' : 'new'
+  }
+  /** Commit only the driver's actual accepted batch; rejected/replaced claims leave no identity. */
+  const settleProposedInput = (agent: Agent): void => {
+    const proposal = proposedInputs.get(agent)
+    if (proposal === undefined) return
+    proposedInputs.delete(agent)
+    recovery.restoreGoal(agent, proposal.checkpoint)
+    if (proposal.previousGoal === undefined) latestUserGoals.delete(agent)
+    else latestUserGoals.set(agent, proposal.previousGoal)
+    try {
+      // A pre-step hook can duplicate/reorder messages. Validate the accepted
+      // batch against the authoritative log before publishing any identities.
+      const history = agent.session ? readSessionEvents(agent.session) : []
+      let previousSeq = -1
+      for (const { message, seq } of proposal.committed) {
+        if (directUserGoal([message]) === undefined) continue
+        const matches = history.filter(event => event.type === 'user/message' && replayRecord(event.data)?.id === message.id)
+        if (message.id.length === 0 || message.id.length > 512 || message.id.trim() !== message.id
+          || matches.length !== 1 || matches[0]?.seq !== seq || seq <= previousSeq
+          || history.filter(event => event.seq === seq).length !== 1
+          || history.some(event => (event.seq as number) > seq
+            && (/^(?:tool\/|assistant\/|turn\/|approval\/)/u.test(event.type)
+              || event.type === 'verification/result' || event.type === 'xiaoshe/obligation-state'))) {
+          throw new Error('accepted direct input lacks a unique pre-effect session binding')
+        }
+        previousSeq = seq
+      }
+      for (const { message, seq } of proposal.committed) {
+        const relation = activateDirectInput(agent, message)
+        if (relation !== undefined) recovery.persistDirectGoal(agent, relation, message.id, seq)
+      }
+      if (proposal.committed.length > 0) recovery.persistInputObligations(agent)
+      refreshToolScope(agent, latestUserGoals.get(agent) ?? '')
+    } catch (cause: unknown) {
+      // Session event observers contain errors. Cancellation must therefore be
+      // explicit, and the synchronous stream boundary must also abort admission.
+      agent.cancel?.({ kind: 'hook', reason: 'xiaoshe:direct-input-commit-failed' })
+      // An accepted user event cannot be un-appended. Rebuild the conservative
+      // state a cold reader will see instead of retaining a half-published batch.
+      restoreAgent(agent, true)
+      throw cause
+    }
+  }
+  ctx.on('agent/session-start', ({ agent, source }) => {
+    if (agent.session) sessionAgents.set(agent.session, agent)
+    if (source === 'resume') restoreAgent(agent)
   })
-  ctx.on('agent/disposed', ({ agent }) => { disposeToolScope(agent) })
+  ctx.on('session/event', (session, event) => {
+    const data = replayRecord(event.data)
+    if (event.type === 'turn/start' && typeof data?.turn === 'number') turns.set(session, data.turn)
+    const agent = sessionAgents.get(session)
+    const proposal = agent && proposedInputs.get(agent)
+    if (!agent || !proposal) return
+    if (event.type === 'user/message') {
+      const message = replayUserMessage(event.data)
+      if (message && Number.isSafeInteger(event.seq) && (event.seq as number) >= 0) {
+        proposal.committed.push({ message, seq: event.seq as number })
+      }
+      // append() forbids reentrant writes. The real stream-start seam below
+      // flushes synchronously before model chunks/tools; this covers an error
+      // after message commit but before a stream can be opened.
+      queueMicrotask(() => {
+        if (proposedInputs.get(agent) !== proposal) return
+        try { settleProposedInput(agent) } catch { /* cancellation was issued at the failing commit */ }
+      })
+    } else if (event.type === 'turn/end' && proposal.committed.length === 0) {
+      settleProposedInput(agent)
+    }
+  })
+  // Insertion also fires for queued edits. Claiming selects prompt constraints,
+  // but pre-step rejection, rewriting and prepareCall cancellation remain possible.
+  ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+    if (message.source.kind !== 'user') return
+    if (agent.session) sessionAgents.set(agent.session, agent)
+    if (!proposedInputs.has(agent)) proposedInputs.set(agent, {
+      checkpoint: recovery.checkpointGoal(agent), previousGoal: latestUserGoals.get(agent), committed: [],
+    })
+    activateDirectInput(agent, message)
+  })
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    if (frame.type === 'start') settleProposedInput(agent)
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    proposedInputs.delete(agent)
+    if (agent.session) sessionAgents.delete(agent.session)
+    disposeToolScope(agent)
+  })
   ctx.effect(() => ctx.systemPrompt.section({ name: 'xiaoshe:task-contract', order: 5, text: TASK_CONTRACT }))
   ctx.effect(() => ctx.systemPrompt.context({
     // Current measured facts follow recalled memory (order 40); an old

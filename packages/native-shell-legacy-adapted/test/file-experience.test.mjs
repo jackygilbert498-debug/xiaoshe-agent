@@ -4,7 +4,7 @@ import test from 'node:test'
 import ts from 'typescript'
 
 const source = await readFile(new URL('../src/client/index.ts', import.meta.url), 'utf8')
-const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
+const compiled = ts.transpileModule(`${source}\nexport { createFilePreviewComponent, renderWorkSurfaceDock }`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
 const app = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 
 test('ordinary attachment admission enforces individual, count and combined limits without rejecting empty files', () => {
@@ -66,4 +66,56 @@ test('preview validates owner and byte receipt and revokes owned Blob URLs', asy
   assert.equal(changes.at(-1).status, 'error')
   assert.equal(changes.at(-1).url, undefined)
   bad.dispose()
+})
+
+test('document download preserves exact bytes and releases prior URLs on reload and disposal', async () => {
+  let state
+  const data = new TextEncoder().encode('<script>opener.bad=1</script>\n中文')
+  const resource = app.createFilePreviewResource({ sessionId: 's', path: 'a.html', onChange: value => { state = value },
+    read: async () => ({ ok: true, value: { sessionId: 's', path: 'a.html', name: 'a.html', data, bytes: data.length, mediaType: 'text/html', version: 'v' } }) })
+  await resource.load()
+  assert.deepEqual(new Uint8Array(await (await fetch(state.url)).arrayBuffer()), data)
+  const oldUrl = state.url
+  await resource.load()
+  await assert.rejects(fetch(oldUrl))
+  const { url } = state
+  assert.deepEqual(new Uint8Array(await (await fetch(url)).arrayBuffer()), data)
+  resource.dispose()
+  await assert.rejects(fetch(url))
+})
+
+test('ready file reader offers a download and in-shell fullscreen but no blocked Blob navigation', async () => {
+  const e = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) })
+  const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)]
+  let loaded, effect, cleanup
+  const ref = { current: undefined }
+  const react = { createElement: e, useState: initial => [loaded ?? initial, value => { loaded = value }],
+    useRef: () => ref, useEffect: callback => { effect ??= callback } }
+  const data = new TextEncoder().encode('完整文件\nsecond line')
+  const surface = { id: 'file', sessionId: 's', source: 'a.txt', title: 'a.txt', type: 'file', status: 'ready',
+    capabilities: { refresh: true, copySource: true, externalOpen: false, interactive: false },
+    view: { kind: 'text', lines: [], truncated: false, totalLines: 0 } }
+  const Reader = app.createFilePreviewComponent(react, async () => ({ ok: true,
+    value: { sessionId: 's', path: 'a.txt', name: 'a.txt', data, bytes: data.length, mediaType: 'text/plain', version: 'v' } }), 'MarkdownText')
+  Reader({ surface, reloadKey: 0 })
+  cleanup = effect()
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    const reader = Reader({ surface, reloadKey: 0 })
+    assert.equal(reader.props['data-file-state'], 'ready')
+    const links = nodes(reader).filter(node => node.type === 'a')
+    assert.equal(links.length, 1, 'file actions must not expose a Blob navigation denied by the desktop host')
+    assert.equal(links[0].props.download, 'a.txt')
+    assert.deepEqual(new Uint8Array(await (await fetch(links[0].props.href)).arrayBuffer()), data)
+    let fullscreen = false
+    const dock = app.renderWorkSurfaceDock(e, { open: true, active: surface, items: [surface], hiddenCount: 0,
+      preference: { pinnedIds: [], mode: 'watch' }, renderContent: () => reader,
+      onFullscreen: () => { fullscreen = true } })
+    const expand = nodes(dock).find(node => node.type === 'button' && node.children.includes('全屏阅读'))
+    assert.ok(expand)
+    expand.props.onClick()
+    assert.equal(fullscreen, true)
+    cleanup(); cleanup = undefined
+    await assert.rejects(fetch(links[0].props.href))
+  } finally { cleanup?.() }
 })

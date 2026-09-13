@@ -95,9 +95,14 @@ async function runColdChild(root, phase, scenario) {
   }
   const facts = () => session.events.filter(event => event.type === 'verification/result'
     && event.data.mutationCallId === 'seed-write')
+  const appendLegacyTask = identity => {
+    session.append('xiaoshe/task-generation', identity)
+    session.append('user/message', { id: identity.triggerMessageId, role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: identity.relation === 'new' ? 'Create and verify the output.' : 'Continue verification.' }] }, { surfaceOp: 'append' })
+  }
   try {
     if (phase === 'seed') {
-      session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'new', triggerMessageId: 'goal-1' })
+      appendLegacyTask({ version: 1, generation: 1, relation: 'new', triggerMessageId: 'goal-1' })
       session.append('turn/start', { turn })
       session.append('step/start', { turn, step: 1 })
       await ctx.parallel('session/flush', session)
@@ -111,7 +116,7 @@ async function runColdChild(root, phase, scenario) {
       session.append('turn/end', { turn, reason: { kind: 'completed' } })
       if (scenario === 'same-process-followup') {
         turn = 2
-        session.append('xiaoshe/task-generation', { version: 1, generation: 1, relation: 'continuation', triggerMessageId: 'warm-resume' })
+        appendLegacyTask({ version: 1, generation: 1, relation: 'continuation', triggerMessageId: 'warm-resume' })
         session.append('turn/start', { turn })
         session.append('step/start', { turn, step: 1 })
         assert.equal(ctx.xiaosheVerificationProgress.reconcile(agent).status, 'pending')
@@ -129,7 +134,7 @@ async function runColdChild(root, phase, scenario) {
       return { phase, pid: process.pid, logPath, factCount: facts().length, sessionId: session.header.id }
     }
     if (scenario === 'cross-generation') currentGeneration = 2
-    session.append('xiaoshe/task-generation', {
+    appendLegacyTask({
       version: 1, generation: currentGeneration,
       relation: scenario === 'cross-generation' ? 'new' : 'continuation', triggerMessageId: 'resume-goal',
     })

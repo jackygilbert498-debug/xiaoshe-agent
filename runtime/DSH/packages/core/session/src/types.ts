@@ -390,6 +390,13 @@ export interface SessionEventMap {
     generation: number
     relation: 'new' | 'continuation'
     triggerMessageId: string
+  } | {
+    /** V2 is emitted after the exact direct user message commits, before its tools. */
+    version: 2
+    generation: number
+    relation: 'new' | 'continuation'
+    triggerMessageId: string
+    triggerMessageSeq: number
   }
   /**
    * Durable correlation marker for one research body accepted by Xiaoshe.

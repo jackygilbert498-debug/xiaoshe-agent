@@ -114,10 +114,12 @@ test('pure JS probe success cannot mint project gates or retire an earlier opaqu
   ctx.provide('xiaosheVerificationPolicy', createVerificationPolicy())
   applyReliability(ctx)
   applyVerification(ctx)
-  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/inserted', { agent,
-    message: createUserMessage({ content: [{ type: 'text', text: '修复 JavaScript 项目 src 模块并验证结果。' }], source: { kind: 'user' } }) })
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
+  const message = createUserMessage({ content: [{ type: 'text', text: '修复 JavaScript 项目 src 模块并验证结果。' }], source: { kind: 'user' } })
+  ctx.emit(scopeTarget(agent, agent), 'agent/inbox/claimed', { agent, message })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame: { type: 'start' } })
   // Durable pre-existing effects are historical test inputs; no shell program
   // or project mutation is executed just to manufacture verification debt.
   for (const [callId, name, args] of [

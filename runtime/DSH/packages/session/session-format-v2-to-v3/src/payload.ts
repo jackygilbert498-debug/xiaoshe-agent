@@ -316,9 +316,29 @@ export function assertV3Event(event: SessionFormatEvent, knownEventTypes?: Reado
     }
   }
   assertV3StructuralRow(event)
-  if (XIAOSHE_EVENT_TYPES.has(event.type)) assertXiaosheEvent(event)
+  if (XIAOSHE_EVENT_TYPES.has(event.type)) assertCurrentXiaosheEvent(event)
   if (event.type === 'tool/ptc-dispatch') assertDispatchMeta(record(event.data, event.type + ' data'))
   assertCanonicalPayload(event)
+}
+
+/** Current V3 admits committed-input identities; the V2 migration validator stays frozen. */
+function assertCurrentXiaosheEvent(event: SessionFormatEvent): void {
+  const data = record(event.data, event.type + ' data')
+  if (event.type !== 'xiaoshe/task-generation' || data['version'] !== 2) {
+    assertXiaosheEvent(event)
+    return
+  }
+  keys(data, ['version', 'generation', 'relation', 'triggerMessageId', 'triggerMessageSeq'], [], event.type)
+  sessionFormatCount(data['generation'], event.type + ' generation')
+  const triggerSeq = sessionFormatCount(data['triggerMessageSeq'], event.type + ' triggerMessageSeq')
+  if (triggerSeq >= event.seq) throw new SessionFormatError(event.type + ' triggerMessageSeq must name an earlier event')
+  const id = data['triggerMessageId']
+  if (typeof id !== 'string' || id.length === 0 || id.length > 512 || id.trim() !== id) {
+    throw new SessionFormatError(event.type + ' triggerMessageId must be an exact bounded message id')
+  }
+  if (data['relation'] !== 'new' && data['relation'] !== 'continuation') {
+    throw new SessionFormatError(event.type + ' invalid relation')
+  }
 }
 
 function assertCanonicalPayload(event: SessionFormatEvent): void {

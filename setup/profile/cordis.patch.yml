@@ -1,4 +1,6 @@
 # 小蛇开发者发行版只提供公开配置，不包含任何密钥。
+# 定时提醒与时间上下文由小蛇 bundle 提供；这里不重复插入插件。
+# 用户已有的 schedule/time-context/ui-schedule 覆盖继续优先生效。
 - id: modlens
   config:
     upstream: deepseek-official

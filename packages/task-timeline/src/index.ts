@@ -15,11 +15,11 @@ export interface TimelineItem {
 }
 export interface TimelineProjection { readonly schemaVersion: 1; readonly items: readonly TimelineItem[] }
 interface State { readonly value: TimelineProjection }
-interface Definition { readonly key: 'taskTimeline'; readonly stateSchema: { parse(value: unknown): State }; readonly schema: { parse(value: unknown): TimelineProjection }; readonly stateVersion: 4; readonly wire: { readonly viewSchema: { parse(value: unknown): TimelineProjection }; view(state: State): TimelineProjection }; init(): State; apply(state: State, event: SessionFact): State; view(state: State): TimelineProjection }
+interface Definition { readonly key: 'taskTimeline'; readonly stateSchema: { parse(value: unknown): State }; readonly schema: { parse(value: unknown): TimelineProjection }; readonly stateVersion: 5; readonly wire: { readonly viewSchema: { parse(value: unknown): TimelineProjection }; view(state: State): TimelineProjection }; init(): State; apply(state: State, event: SessionFact): State; view(state: State): TimelineProjection }
 
 export const taskTimelineProjection: Definition = {
   // Replay old projection caches from their original log; do not migrate/delete source facts.
-  key: 'taskTimeline', stateVersion: 4,
+  key: 'taskTimeline', stateVersion: 5,
   schema: { parse(value) { const row = record(value); if (row?.schemaVersion !== 1 || !Array.isArray(row.items)) throw new TypeError('invalid task timeline'); return value as TimelineProjection } },
   stateSchema: { parse(value) {
     const row = record(value)
@@ -71,6 +71,12 @@ function project(event: SessionFact, previous: readonly TimelineItem[]): Timelin
     const call = callId === undefined ? undefined : [...previous].reverse()
       .find(item => item.kind === 'tool' && item.text.startsWith('调用 ') && item.callId === callId)
     const name = call?.text.slice(3) ?? callId ?? '未关联工具结果'; const failed = data?.error !== undefined || message?.isError === true || hasErrorContent(message?.content)
+    // Cancellation is a durable tool-result code, never a guess from output,
+    // the latest turn's state, or another call. Keep prior genuine errors intact.
+    const code = record(data?.error)?.code
+    if (code === 'ABORTED' || code === 'ABORTED_BEFORE_DISPATCH') {
+      return { key: `tool-result:${event.seq}`, seq: event.seq, time: event.time, kind: 'tool', text: `已取消：${name}` }
+    }
     // A successful result proves only its own arrival until an exact call is
     // found. Calling an orphan result "completed" would manufacture task
     // progress in the user-visible timeline.
