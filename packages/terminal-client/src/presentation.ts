@@ -14,8 +14,8 @@ export interface Palette {
 }
 
 const ANSI: Palette = {
-  reset: '\u001B[0m', dim: '\u001B[2m', user: '\u001B[38;5;81m', assistant: '\u001B[38;5;114m',
-  tool: '\u001B[38;5;176m', warning: '\u001B[38;5;214m', success: '\u001B[38;5;78m', heading: '\u001B[1;38;5;222m',
+  reset: '\u001B[0m', dim: '\u001B[38;5;245m', user: '\u001B[38;5;108m', assistant: '\u001B[38;5;108m',
+  tool: '\u001B[38;5;245m', warning: '\u001B[38;5;179m', success: '\u001B[38;5;108m', heading: '\u001B[1;38;5;108m',
 }
 
 const PLAIN: Palette = { reset: '', dim: '', user: '', assistant: '', tool: '', warning: '', success: '', heading: '' }
@@ -51,6 +51,12 @@ function textBlocks(value: unknown): string {
 /** Extract final/user text across current and pre-react-loop durable shapes. */
 export function eventText(event: SessionEvent): string {
   if (!isRecord(event.data)) return ''
+  if (Array.isArray(event.data.stream)) return event.data.stream.flatMap(record => {
+    if (!isRecord(record)) return []
+    if (record.type === 'text-chunks' && Array.isArray(record.texts)) return record.texts.filter((text): text is string => typeof text === 'string')
+    if (record.type === 'chunk' && isRecord(record.chunk) && record.chunk.type === 'text-delta' && typeof record.chunk.text === 'string') return [record.chunk.text]
+    return []
+  }).join('')
   if (isRecord(event.data.message)) return textBlocks(event.data.message.content)
   return textBlocks(event.data.content)
 }

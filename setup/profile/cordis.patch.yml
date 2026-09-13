@@ -2,3 +2,6 @@
 - id: modlens
   config:
     upstream: deepseek-official
+    # 小蛇会在安装期对锁定的 ModLens 运行时补上该配置入口；视觉服务
+    # 整次读取（含后端重试）最多 60 秒，超时清理进程并返回明确失败。
+    timeoutMs: 60000

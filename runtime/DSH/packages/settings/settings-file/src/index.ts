@@ -15,7 +15,8 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { Document, parseDocument } from 'yaml'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { canonicalizeWatchPath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { SettingsProvider, deepEqualJson, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 
 /** Plugin config: file location and hot-reload behavior. */
 export interface Config {
@@ -186,7 +187,17 @@ export class FileSettingsProvider extends SettingsProvider {
     // queues serialize with each other and with watcher reloads on the one
     // operation chain: each render must see the text the previous operation
     // committed, or a sibling section silently vanishes from disk.
-    return this.enqueue(() => this.persistSection(ns, section))
+    return this.enqueue(async () => {
+      await this.persistSection(ns, () => ({ section }))
+    })
+  }
+
+  /** Refresh and derive the namespace write while the cross-process lock is held. */
+  protected override persistGuarded<T extends { readonly section: Record<string, unknown> }>(
+    ns: SettingsNamespace,
+    prepare: () => T,
+  ): Promise<T> {
+    return this.enqueue(() => this.persistSection(ns, prepare))
   }
 
   /** Queue one exclusive document operation behind every earlier one. */
@@ -207,12 +218,15 @@ export class FileSettingsProvider extends SettingsProvider {
     })
   }
 
-  private async persistSection(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
+  private async persistSection<T extends { readonly section: Record<string, unknown> }>(
+    ns: SettingsNamespace,
+    prepare: () => T,
+  ): Promise<T> {
     // The writer lock's exclusive create needs the parent to exist before
     // writeFileAtomic gets its own chance to create it.
     // 0700: the harness home holds user-private documents.
     await mkdir(dirname(this.spec.filename), { recursive: true, mode: 0o700 })
-    await withFileLock(this.spec.filename, async () => {
+    return withFileLock(this.spec.filename, async () => {
       // Read-modify-write: fold in any on-disk state this process has not
       // observed yet — an external edit still inside the watcher debounce
       // window, a change the watcher missed, or another process's write — so
@@ -220,12 +234,17 @@ export class FileSettingsProvider extends SettingsProvider {
       // on-disk document fails the write loud instead of silently overwriting
       // a user's manual edit.
       await this.reconcileFromDisk()
+      // Reconciliation may have advanced this provider's local namespace
+      // revision or raw section. Prepare both CAS and legacy merge only here,
+      // inside the same lock and immediately before rendering.
+      const prepared = prepare()
       const output = this.spec.format === 'yaml'
-        ? this.renderYaml(ns, section)
-        : this.renderJson(ns, section)
+        ? this.renderYaml(ns, prepared.section)
+        : this.renderJson(ns, prepared.section)
       // 0600: a document that may hold personal values is never world-readable.
       await writeFileAtomic(this.spec.filename, output, { mode: 0o600, dirMode: 0o700 })
       this.text = output
+      return prepared
     })
   }
 

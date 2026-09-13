@@ -17,5 +17,13 @@
         requestTimeoutMs: !!js Number(process.env.XIAOSHE_DESKTOP_TIMEOUT_MS ?? 60000)
     - id: xiaoshe-product-identity
       name: '@xiaoshe/dsh-desktop-control/product-identity'
+    - id: xiaoshe-agent-reliability
+      name: '@xiaoshe/dsh-desktop-control/agent-reliability'
+    - id: xiaoshe-isolated-browser
+      name: '@xiaoshe/dsh-desktop-control/isolated-browser'
+    - id: xiaoshe-verification-results
+      name: '@xiaoshe/dsh-desktop-control/verification-results'
+    - id: xiaoshe-pure-js-probe
+      name: '@xiaoshe/dsh-desktop-control/pure-js-probe'
     - id: xiaoshe-runtime-routes
       name: '@xiaoshe/dsh-desktop-control/runtime-routes'

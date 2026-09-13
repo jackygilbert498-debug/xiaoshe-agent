@@ -1,68 +1,78 @@
 #!/usr/bin/env node
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { isMap, isSeq, parseDocument } from 'yaml'
 
-function parseArgs(argv) {
-  const values = new Map()
-  for (let index = 2; index < argv.length; index += 2) {
-    const key = argv[index]
-    const value = argv[index + 1]
-    if (!['--target', '--template'].includes(key) || !value) {
-      throw new Error('用法：node scripts/ensure-profile-patch.mjs --target <cordis.patch.yml> --template <template.yml>')
+function document(text) {
+  // Parse !!js as inert YAML, never evaluate profile expressions in an installer.
+  const doc = parseDocument(text, { customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: value => value }] })
+  // Parser messages can quote a bad line containing a credential; report
+  // the error class only, never configuration content.
+  if (doc.errors.length) throw new Error(`Profile YAML 无效，未修改（${doc.errors[0].code}）`)
+  if (doc.contents === null) doc.contents = doc.createNode([])
+  if (!isSeq(doc.contents)) throw new Error('Profile patch 必须是 YAML 列表，未修改')
+  return doc
+}
+
+export function mergeProfile(current, template) {
+  const doc = document(current)
+  const defaults = document(template).contents.items.find(row => isMap(row) && row.get('id') === 'modlens')
+  if (!defaults || !isMap(defaults.get('config'))) throw new Error('模板未定义 modlens config')
+  const rows = doc.contents.items.filter(row => isMap(row) && row.get('id') === 'modlens')
+  if (!rows.length) {
+    doc.contents.add(defaults.clone())
+    return String(doc)
+  }
+  let changed = false
+  const first = rows[0]
+  if (!first.has('config')) { first.set('config', doc.createNode({})); changed = true }
+  const config = first.get('config')
+  if (!isMap(config)) throw new Error('已有 ModLens config 不是映射，未修改')
+  // DSH replaces an id's entire config. Coalesce the earlier installer's
+  // timeout-only duplicate into ONE row so upstream and user options survive.
+  for (const duplicate of rows.slice(1)) {
+    if (duplicate.items.some(pair => !['id', 'config'].includes(String(pair.key)))) {
+      throw new Error('多个 ModLens patch 含有非 config 操作，需人工合并，未修改')
     }
-    values.set(key, resolve(value))
+    const extra = duplicate.get('config')
+    if (!isMap(extra)) throw new Error('重复 ModLens config 不是映射，未修改')
+    for (const pair of extra.items) config.set(pair.key, pair.value?.clone?.() ?? pair.value)
+    doc.contents.items.splice(doc.contents.items.indexOf(duplicate), 1)
+    changed = true
   }
-  const target = values.get('--target')
-  const template = values.get('--template')
-  if (!target || !template || values.size !== 2) throw new Error('必须同时指定 --target 和 --template')
-  return { target, template }
-}
-
-function containsModLensPatch(value) {
-  return /^\s*-\s+id:\s*modlens(?:\s|$)/mu.test(value)
-}
-
-function semanticBody(value) {
-  return value
-    .split(/\r?\n/u)
-    .filter((line) => !/^\s*(?:#|$)/u.test(line))
-    .join('')
-    .replace(/\s/gu, '')
-}
-
-async function atomicWrite(path, content, mode) {
-  await mkdir(dirname(path), { recursive: true })
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`
-  await writeFile(temporary, content, { mode })
-  await rename(temporary, path)
-  await chmod(path, mode)
-}
-
-try {
-  const { target, template } = parseArgs(process.argv)
-  const templateValue = await readFile(template, 'utf8')
-  if (!containsModLensPatch(templateValue)) throw new Error('模板未定义 modlens patch')
-
-  let current = ''
-  let mode = 0o600
-  try {
-    current = await readFile(target, 'utf8')
-    mode = (await stat(target)).mode & 0o777
-  } catch (error) {
-    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+  for (const pair of defaults.get('config').items) {
+    if (!config.has(pair.key)) { config.add(pair.clone()); changed = true }
   }
+  // 25 seconds was the previous installer's value, too short for CLI cold
+  // starts. Preserve other explicit user budgets; runtime supplies the cap.
+  if (config.get('timeoutMs') === 25000) { config.set('timeoutMs', 60000); changed = true }
+  return changed ? String(doc) : current
+}
 
-  if (containsModLensPatch(current)) {
-    process.stdout.write(`[保留] Profile 已有 modlens 配置：${target}\n`)
-  } else {
-    const body = semanticBody(current)
-    const next = body === '' || body === '[]'
-      ? templateValue.trimEnd() + '\n'
-      : `${current.trimEnd()}\n\n# 小蛇安装器追加：ModLens 使用 DeepSeek 官方 Provider。\n${templateValue.trimEnd()}\n`
-    await atomicWrite(target, next, mode)
-    process.stdout.write(`[完成] 已合并 modlens Profile 配置：${target}\n`)
+async function main() {
+  const args = process.argv.slice(2)
+  const options = new Map()
+  for (let index = 0; index < args.length; index += 2) {
+    if (!['--target', '--template'].includes(args[index]) || !args[index + 1]) throw new Error('必须指定 --target 和 --template')
+    options.set(args[index], resolve(args[index + 1]))
   }
-} catch (error) {
-  process.stderr.write(`[错误] ${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
+  if (options.size !== 2) throw new Error('必须指定 --target 和 --template')
+  const target = options.get('--target')
+  let current = ''; let mode = 0o600
+  try { current = await readFile(target, 'utf8'); mode = (await stat(target)).mode & 0o777 }
+  catch (error) { if (error.code !== 'ENOENT') throw error }
+  const next = mergeProfile(current, await readFile(options.get('--template'), 'utf8'))
+  if (next !== current) {
+    await mkdir(dirname(target), { recursive: true })
+    const temporary = `${target}.tmp-${process.pid}`
+    await writeFile(temporary, next, { mode })
+    await rename(temporary, target)
+    await chmod(target, mode)
+  }
+  process.stdout.write(`[完成] ModLens 路由与限时配置已核对（保留用户配置）：${target}\n`)
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(error => { process.stderr.write(`[错误] ${error.message}\n`); process.exitCode = 1 })
 }

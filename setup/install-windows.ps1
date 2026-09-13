@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
-param([switch]$CheckOnly)
+param(
+  [switch]$CheckOnly,
+  [switch]$RunDeveloperValidation
+)
 $ErrorActionPreference = 'Stop'
 $ToolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $XsRoot = Split-Path -Parent $ToolDir
@@ -16,23 +19,56 @@ function Require-File([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "发行源码不完整，缺少：$Path" }
 }
 
+function Resolve-CompatiblePython {
+  $Candidates = New-Object System.Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace($env:XIAOSHE_PYTHON)) { $Candidates.Add($env:XIAOSHE_PYTHON.Trim()) }
+  $PyLauncher = Get-Command 'py.exe' -ErrorAction SilentlyContinue
+  if ($PyLauncher) {
+    $FromLauncher = (& $PyLauncher.Source -3 -c 'import os,sys; print(os.path.realpath(sys.executable))' 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($FromLauncher)) { $Candidates.Add($FromLauncher.Trim()) }
+  }
+  foreach ($Name in @('python.exe', 'python3.exe', 'python')) {
+    $Command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($Command -and -not [string]::IsNullOrWhiteSpace($Command.Source)) { $Candidates.Add($Command.Source) }
+  }
+  foreach ($Candidate in $Candidates | Select-Object -Unique) {
+    if ($Candidate.IndexOf('\WindowsApps\', [StringComparison]::OrdinalIgnoreCase) -ge 0) { continue }
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { continue }
+    & $Candidate -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) { return (Resolve-Path -LiteralPath $Candidate).Path }
+  }
+  throw '未找到真实的 Python 3.10+ 解释器；Windows Store 的占位别名不受支持。'
+}
+
+$ProxyHelper = Join-Path $XsRoot 'scripts\windows-proxy-environment.ps1'
+Require-File $ProxyHelper
+. $ProxyHelper
 $Node = Require-Command 'node'
-$NodeMajor = [int]((& $Node --version).Trim().TrimStart('v').Split('.')[0])
-if ($NodeMajor -lt 24) { throw "Node.js 需要 24 或更高版本，当前为 $(& $Node --version)。" }
+$NodeVersion = (& $Node --version).Trim()
+if (-not (Test-XiaosheNodeProxyVersion $NodeVersion)) {
+  throw "Node.js 需要 22.23+ 或 24.17+（推荐 Node 24 LTS），当前为 $NodeVersion。"
+}
 $PnpmCommand = Get-Command 'pnpm.cmd' -ErrorAction SilentlyContinue
 if ($CheckOnly -and (-not $PnpmCommand -or ((& $PnpmCommand.Source --version).Trim() -ne '11.7.0'))) {
   throw '--CheckOnly 需要已安装的 pnpm 11.7.0；正式安装模式会创建项目专用实例。'
 }
 $Pnpm = if ($PnpmCommand) { $PnpmCommand.Source } else { '' }
 Require-Command 'git' | Out-Null
-$env:XIAOSHE_PYTHON = Require-Command 'python'
+$env:XIAOSHE_PYTHON = Resolve-CompatiblePython
 
 Step '校验' '检查开发者发行源码和本机工具链…'
 Require-File (Join-Path $XsRoot 'package.json')
 Require-File (Join-Path $DshRoot 'package.json')
 Require-File (Join-Path $XsRoot 'runtime\xiaoshe-legacy\run.py')
 Require-File (Join-Path $XsRoot 'packages\product-bundle\package.json')
+Require-File (Join-Path $XsRoot 'packages\provider-readiness\package.json')
+Require-File (Join-Path $XsRoot 'packages\migration-recovery\package.json')
+Require-File (Join-Path $XsRoot 'packages\agent-experience\package.json')
+Require-File (Join-Path $XsRoot 'packages\coding-workbench\package.json')
 Require-File (Join-Path $ToolDir 'profile\cordis.patch.yml')
+if ($RunDeveloperValidation) {
+  Require-File (Join-Path $XsRoot 'apps\desktop-shell\package.json')
+}
 if ($CheckOnly) { Step '通过' '源码结构和前置工具已验证；未修改本机。'; exit 0 }
 $PnpmPrefix = Join-Path $HOME '.xiaoshe\pnpm-11.7.0'
 $Pnpm = Join-Path $PnpmPrefix 'node_modules\.bin\pnpm.cmd'
@@ -46,6 +82,10 @@ $PnpmShimDir = Join-Path $HOME '.xiaoshe\bin'
 New-Item -ItemType Directory -Force $PnpmShimDir | Out-Null
 $PnpmShim = Join-Path $PnpmShimDir 'pnpm.cmd'
 Set-Content -Encoding ASCII $PnpmShim ("@echo off`r`ncall `"{0}`" %*`r`nexit /b %errorlevel%`r`n" -f $Pnpm)
+$SavedPath = $env:Path
+$HadCI = Test-Path Env:\CI
+$SavedCI = $env:CI
+try {
 $env:Path = "$PnpmShimDir;$([IO.Path]::GetDirectoryName($Node));$($env:Path)"
 
 $DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
@@ -83,6 +123,14 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'XS 根包类型检查失败。' }
   & $Pnpm run build
   if ($LASTEXITCODE -ne 0) { throw 'XS 根包构建失败。' }
+  # The packaged acceptance already executes this suite before launch. Running it
+  # again inside first-device setup would inherit the installation Profile, port,
+  # and temporary roots, so keep it available only for an explicit developer run.
+  if ($RunDeveloperValidation) {
+    Step '验证' '运行显式请求的桌面壳开发者测试…'
+    & $Pnpm --filter '@xiaoshe/desktop-shell' test
+    if ($LASTEXITCODE -ne 0) { throw '桌面壳安全与生命周期测试失败。' }
+  }
 } finally {
   Pop-Location
 }
@@ -99,8 +147,13 @@ $ProductPackages = @(
   (Join-Path $XsRoot 'packages\heartbeat'),
   (Join-Path $XsRoot 'packages\memory'),
   (Join-Path $XsRoot 'packages\plugin-governance'),
+  (Join-Path $XsRoot 'packages\provider-readiness'),
+  (Join-Path $XsRoot 'packages\migration-recovery'),
+  (Join-Path $XsRoot 'packages\agent-experience'),
+  (Join-Path $XsRoot 'packages\coding-workbench'),
   (Join-Path $XsRoot 'packages\task-timeline'),
   (Join-Path $DshRoot 'packages\session-query\tool-session-query'),
+  (Join-Path $DshRoot 'packages\web\web-fetch-http'),
   (Join-Path $XsRoot 'packages\product-bundle')
 )
 Push-Location $XsRoot
@@ -114,12 +167,24 @@ $ProfilePatch = Join-Path $ProfileRoot 'cordis.patch.yml'
   --target $ProfilePatch `
   --template (Join-Path $ToolDir 'profile\cordis.patch.yml')
 if ($LASTEXITCODE -ne 0) { throw 'ModLens Profile 配置合并失败。' }
+& $Node (Join-Path $XsRoot 'scripts\patch-modlens-runtime.mjs') `
+  --profile-root $ProfileRoot
+if ($LASTEXITCODE -ne 0) { throw 'ModLens 限时读图补丁失败。' }
 
 Step '终验' '解析最终 DSH web Profile…'
 & $Pnpm --dir $DshRoot dsh web --dump-config | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'DSH Profile 解析失败。' }
-Step '命令' '安装 Windows 短入口 s 与 xiaoshe-doctor…'
+Step '冒烟' '在隔离端口启动已安装 Profile 并验证产品健康…'
+& $Node (Join-Path $XsRoot 'scripts\smoke-installed-profile.mjs') `
+  --dsh-root $DshRoot --profile-root $ProfileRoot
+if ($LASTEXITCODE -ne 0) { throw '已安装 DSH Profile 启动健康检查失败。' }
+Step '命令' '安装 Windows 双入口 s（终端版）、ss（桌面版）与 xiaoshe-doctor…'
 & (Join-Path $XsRoot 'scripts\install-windows-cli.ps1') -XsRoot $XsRoot | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Windows 命令入口安装失败。' }
-Step '完成' '已安装开发者发行版。重开终端输入 s；输入 xiaoshe-doctor 可运行只读诊断。首次使用请在设置中配置模型凭据。'
+Step '完成' '已安装开发者发行版与独立桌面壳。重开终端输入 s 启动终端版，输入 ss 启动桌面版；xiaoshe-doctor 用于只读诊断。'
 Write-Host '桌面操作仍受系统权限和当前设备显示配置约束，请先在小蛇中检查权限状态。' -ForegroundColor Yellow
+} finally {
+  $env:Path = $SavedPath
+  if ($HadCI) { $env:CI = $SavedCI }
+  else { Remove-Item Env:\CI -ErrorAction SilentlyContinue }
+}

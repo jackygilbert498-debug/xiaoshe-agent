@@ -5,10 +5,13 @@ $ErrorActionPreference = 'Stop'
 $XsDoctorRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)).Path
 $DshDoctorRoot = Join-Path $XsDoctorRoot 'runtime\DSH'
 $LegacyDoctorRoot = Join-Path $XsDoctorRoot 'runtime\xiaoshe-legacy'
-$ProfileDoctorRoot = Join-Path $env:USERPROFILE '.dsh\profiles\web'
-$StateDoctorPath = Join-Path $env:LOCALAPPDATA 'Xiaoshe\dsh-web-state.json'
+$DshDoctorHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
+$ProfileDoctorRoot = Join-Path $DshDoctorHome 'profiles\web'
 $DoctorPort = if ($env:XIAOSHE_DSH_PORT) { [int]$env:XIAOSHE_DSH_PORT } else { 3080 }
+$StateDoctorFileName = if ($DoctorPort -eq 3080) { 'dsh-web-state.json' } else { "dsh-web-state-$DoctorPort.json" }
+$StateDoctorPath = Join-Path $env:LOCALAPPDATA "Xiaoshe\$StateDoctorFileName"
 $DoctorChecks = [System.Collections.Generic.List[object]]::new()
+. (Join-Path $XsDoctorRoot 'scripts\windows-proxy-environment.ps1')
 
 function Add-DoctorCheck([string]$Id, [string]$Status, [string]$Detail) {
   $DoctorChecks.Add([pscustomobject]@{ id = $Id; status = $Status; detail = $Detail })
@@ -25,8 +28,7 @@ Add-DoctorCheck 'legacy.root' $(if (Test-Path -LiteralPath (Join-Path $LegacyDoc
 $NodeDoctor = Find-DoctorCommand 'node'
 if ($NodeDoctor) {
   $NodeDoctorVersion = (& $NodeDoctor.Source -p 'process.versions.node').Trim()
-  $NodeDoctorMajor = [int]$NodeDoctorVersion.Split('.')[0]
-  Add-DoctorCheck 'runtime.node' $(if ($NodeDoctorMajor -ge 24) { 'pass' } else { 'fail' }) $NodeDoctorVersion
+  Add-DoctorCheck 'runtime.node' $(if (Test-XiaosheNodeProxyVersion $NodeDoctorVersion) { 'pass' } else { 'fail' }) $NodeDoctorVersion
 } else { Add-DoctorCheck 'runtime.node' 'fail' 'node not found' }
 
 $PythonDoctor = Find-DoctorCommand 'python'
@@ -36,7 +38,7 @@ if ($PythonDoctor) {
 } else { Add-DoctorCheck 'runtime.python' 'fail' 'python not found' }
 
 $PwshDoctor = Find-DoctorCommand 'pwsh.exe'
-Add-DoctorCheck 'runtime.pwsh-uia' $(if ($PwshDoctor) { 'pass' } else { 'fail' }) $(if ($PwshDoctor) { $PwshDoctor.Source } else { 'pwsh.exe not found; Windows PowerShell 5 UIA is insufficient for the verified provider path' })
+Add-DoctorCheck 'runtime.pwsh-uia' $(if ($PwshDoctor) { 'pass' } else { 'warn' }) $(if ($PwshDoctor) { $PwshDoctor.Source } else { 'pwsh.exe not found; Windows PowerShell 5.1 remains available, but PowerShell 7 is recommended for richer UIA results' })
 
 $PinnedDoctorPnpm = Join-Path $env:USERPROFILE '.xiaoshe\pnpm-11.7.0\node_modules\.bin\pnpm.cmd'
 if (Test-Path -LiteralPath $PinnedDoctorPnpm) {

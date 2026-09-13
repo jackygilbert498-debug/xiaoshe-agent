@@ -1,18 +1,17 @@
-/** Locale bundles for the agent-preset settings row, hero chip, header label, and management section. */
+/** Locale bundles for the agent-preset hero chip, header label, and management section. */
 
 /** Locale keys these surfaces render. */
 export type AgentPresetSettingsKey =
-  | 'title' | 'description' | 'loading' | 'error' | 'userTrust' | 'seatHint' | 'headerHint'
+  | 'error' | 'userTrust' | 'seatHint' | 'headerHint'
   | 'nav' | 'sectionIntro' | 'builtIn' | 'setDefault' | 'view'
   | 'presetStandardName' | 'presetStandardDescription'
-  | 'presetCodeName' | 'presetCodeDescription'
+  | 'presetPtcName' | 'presetPtcDescription'
   | 'presetMinimalName' | 'presetMinimalDescription'
   | 'presetCordisName' | 'presetCordisDescription'
-  | 'manualSettingsName' | 'manualSettingsDescription'
   | 'duplicate' | 'duplicateUnavailable' | 'delete' | 'presetId' | 'presetIdPlaceholder' | 'copyOf'
   | 'displayName' | 'displayNamePlaceholder'
   | 'inUse' | 'noDescription' | 'builtInGroup' | 'customGroup'
-  | 'brokenBadge' | 'brokenNoCopy'
+  | 'brokenBadge' | 'brokenNoCopy' | 'switchRefused'
   | 'composition' | 'cancel' | 'close' | 'retry'
   | 'copyTitle' | 'copyIntro' | 'create' | 'creating' | 'creatorDraft'
   | 'openLocation' | 'showLocation' | 'revealedPathLabel'
@@ -21,9 +20,6 @@ export type AgentPresetSettingsKey =
 
 /** English copy. */
 export const en: Record<AgentPresetSettingsKey, string> = {
-  title: 'Agent preset',
-  description: 'Applies to sessions you start from now on. Running sessions keep the preset they began with.',
-  loading: 'Loading presets…',
   error: 'Could not load agent presets.',
   userTrust: 'Custom',
   seatHint: 'Agent preset for the session you are about to start',
@@ -35,20 +31,18 @@ export const en: Record<AgentPresetSettingsKey, string> = {
   builtIn: 'Built-in',
   setDefault: 'Set as default',
   view: 'View',
-  presetStandardName: 'Automatic (recommended)',
+  presetStandardName: 'Standard mode',
   presetStandardDescription:
-    'Xiaoshe chooses the tools and execution approach for each task. Best for most work.',
-  presetCodeName: 'PTC mode',
-  presetCodeDescription:
-    'All Standard mode capabilities, with tools exposed through the Code Mode SDK so the model can combine multi-step operations in one TypeScript program.',
+    'Full coding agent with file editing, shell, file and web search, skills, planning, goals, subagents, and workflows.',
+  presetPtcName: 'PTC mode',
+  presetPtcDescription:
+    'Full coding agent without the workflow tool; other tools are exposed through the PTC mode SDK so the model can combine multi-step operations in one TypeScript program.',
   presetMinimalName: 'Minimal mode',
   presetMinimalDescription:
-    'Two-tool coding agent with persistent bash and str_replace_editor.',
-  presetCordisName: 'Create an agent',
+    'Single-tool coding agent with a persistent shell.',
+  presetCordisName: 'Creator mode',
   presetCordisDescription:
     'Built for creating custom agent presets, with all Standard mode capabilities plus runtime inspection, plugin experiments, and preset-authoring guidance.',
-  manualSettingsName: 'Manual settings',
-  manualSettingsDescription: 'Choose PTC, Minimal, or a custom preset yourself.',
   duplicate: 'Duplicate',
   duplicateUnavailable: 'This deployment has no writable preset directory',
   delete: 'Delete',
@@ -62,6 +56,7 @@ export const en: Record<AgentPresetSettingsKey, string> = {
   noDescription: 'No description.',
   brokenBadge: 'Failed to load',
   brokenNoCopy: 'A preset that failed to load cannot be duplicated',
+  switchRefused: 'Could not switch to {name}: {reason}',
   copyOf: 'Copied from',
   composition: 'Composition (agent.cordis.yml)',
   cancel: 'Cancel',
@@ -89,28 +84,23 @@ export const en: Record<AgentPresetSettingsKey, string> = {
 
 /** Simplified Chinese copy. */
 export const zh: Record<AgentPresetSettingsKey, string> = {
-  title: '助手方案',
-  description: '默认使用自动模式；只有需要固定工具组合时才手动指定。新会话生效，当前会话不变。',
-  loading: '正在加载预设…',
-  error: '无法加载助手方案。',
+  error: '无法加载 Agent 预设。',
   userTrust: '自定义',
-  seatHint: '新会话使用的助手方案',
-  headerHint: '当前会话的助手方案，开始后保持不变',
-  nav: '助手',
-  sectionIntro: '助手方案决定小蛇在一个会话中可用的工具、提示词和协作方式。日常使用建议保持「自动」；需要固定工作流时再复制或创建专用方案。',
+  seatHint: '即将开始的这个会话所用的 Agent 预设',
+  headerHint: '本会话运行的 Agent 预设，开始时即固定',
+  nav: 'Agent 预设',
+  sectionIntro: '预设即一个会话的 Agent 所运行的插件组装 —— 它的工具、提示词与能力。复制一份既有预设改成自己的，或用「创造模式」让 Agent 帮你创建。',
   builtIn: '内置',
   setDefault: '设为默认',
   view: '查看',
-  presetStandardName: '自动（推荐）',
-  presetStandardDescription: '小蛇根据任务自行选择工具和执行方式，适合绝大多数工作。',
-  presetCodeName: 'PTC 模式',
-  presetCodeDescription: '具备标准模式的全部能力，并通过 Code Mode SDK 呈现工具，让模型用一个 TypeScript 程序组合多步操作。',
+  presetStandardName: '标准模式',
+  presetStandardDescription: '功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流。',
+  presetPtcName: 'PTC 模式',
+  presetPtcDescription: '功能完整的编码 Agent，但默认不提供 workflow 工具；其他工具通过 PTC 模式 SDK 呈现，让模型用一个 TypeScript 程序组合多步操作。',
   presetMinimalName: '极简模式',
-  presetMinimalDescription: '仅提供持久 bash 与 str_replace_editor 的双工具编码 Agent。',
-  presetCordisName: '自动编排',
-  presetCordisDescription: '用于创建自定义助手方案：具备自动模式的全部能力，并提供运行时检查、插件实验和方案创作指导。',
-  manualSettingsName: '手动设置',
-  manualSettingsDescription: '需要时手动指定 PTC、极简或自定义模式。',
+  presetMinimalDescription: '仅提供持久 shell 的单工具编码 Agent。',
+  presetCordisName: '创造模式',
+  presetCordisDescription: '用于创建自定义 Agent preset：具备标准模式的全部能力，并提供运行时检查、插件实验和 preset 创作指导。',
   duplicate: '复制',
   duplicateUnavailable: '此部署未配置可写的预设目录',
   delete: '删除',
@@ -124,6 +114,7 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
   noDescription: '暂无描述。',
   brokenBadge: '加载失败',
   brokenNoCopy: '预设加载失败，不能复制',
+  switchRefused: '无法切换到「{name}」：{reason}',
   copyOf: '复制自',
   composition: '组装（agent.cordis.yml）',
   cancel: '取消',
@@ -146,52 +137,8 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
   deleting: '正在删除…',
 }
 
-/** Preset roster fields needed to resolve Web display copy. */
-export interface PresetDisplaySource {
-  /** Stable preset id. */
-  readonly id: string
-  /** Whether the deployment ships the preset or the user owns it. */
-  readonly trust: 'system' | 'user'
-  /** Unlocalized name published by the preset. */
-  readonly name?: string
-  /** Unlocalized description published by the preset. */
-  readonly description?: string
-}
-
-/** Display copy resolved for the active Web locale. */
-export interface PresetDisplayText {
-  /** Localized built-in name or the preset's own fallback name. */
-  readonly name: string
-  /** Localized built-in description or the preset's own description. */
-  readonly description?: string
-}
-
-interface PresetLocaleKeys {
-  readonly name: AgentPresetSettingsKey
-  readonly description: AgentPresetSettingsKey
-}
-
-const BUILT_IN_PRESET_KEYS: Readonly<Partial<Record<string, PresetLocaleKeys>>> = {
-  standard: { name: 'presetStandardName', description: 'presetStandardDescription' },
-  code: { name: 'presetCodeName', description: 'presetCodeDescription' },
-  minimal: { name: 'presetMinimalName', description: 'presetMinimalDescription' },
-  cordis: { name: 'presetCordisName', description: 'presetCordisDescription' },
-}
-
-/**
- * Resolve preset display copy without making user-authored metadata translatable.
- * @param preset - roster row whose copy is being rendered.
- * @param t - active Web locale lookup.
- * @returns localized copy for a known shipped preset, otherwise file metadata.
- */
-export function presetDisplayText(
-  preset: PresetDisplaySource,
-  t: (key: AgentPresetSettingsKey) => string,
-): PresetDisplayText {
-  const keys = preset.trust === 'system' ? BUILT_IN_PRESET_KEYS[preset.id] : undefined
-  if (keys !== undefined) return { name: t(keys.name), description: t(keys.description) }
-  return {
-    name: preset.name ?? preset.id,
-    ...preset.description === undefined ? {} : { description: preset.description },
-  }
-}
+// The resolution itself is the shared fold in `dsh-agent-presets/display`,
+// re-exported here so every surface in this plugin reads one path; the
+// Settings plugin list inlines the same fold over this plugin's dictionaries.
+export { presetDisplayText } from '@deepseek-ai/dsh-agent-presets/display'
+export type { PresetDisplaySource, PresetDisplayText } from '@deepseek-ai/dsh-agent-presets/display'

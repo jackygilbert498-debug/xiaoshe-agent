@@ -1,0 +1,24 @@
+{
+  "name": "@xiaoshe/migration-recovery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib"],
+  "scripts": {
+    "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
+    "test": "node ../../runtime/DSH/node_modules/typescript/bin/tsc -b ../../runtime/DSH/packages/util/atomic-write && tsc -p tsconfig.build.json && node ../../runtime/DSH/node_modules/tsx/dist/cli.mjs --tsconfig ../../runtime/DSH/tsconfig.base.json --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-atomic-write": "link:../../runtime/DSH/packages/util/atomic-write"
+  },
+  "devDependencies": { "@types/node": "22.19.7", "typescript": "5.9.3" },
+  "dsh": { "client": { "inject": ["@xiaoshe/native-shell-legacy-adapted"], "platform": "web" } }
+}

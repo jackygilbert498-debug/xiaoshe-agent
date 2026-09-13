@@ -87,3 +87,12 @@ export interface WorkSurfaceRegistry {
   getSnapshot(): WorkSurfaceRegistrySnapshot
   subscribe(listener: () => void): () => void
 }
+
+/**
+ * Optional Client-side extension seam. Feature plugins may publish bounded,
+ * ephemeral surfaces for the current session without becoming a second
+ * durable source of truth. Releasing the contribution removes it.
+ */
+export interface WorkSurfaceContributionRegistry extends WorkSurfaceRegistry {
+  publishContribution(namespace: string, sessionId: string, items: readonly WorkSurface[]): () => void
+}

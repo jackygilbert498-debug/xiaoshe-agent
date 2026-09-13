@@ -36,10 +36,10 @@
       "path": "../subagent"
     },
     {
-      "path": "../../subprocess/subprocess"
+      "path": "../../test-support/loader-smoke"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../subprocess/subprocess"
     }
   ]
 }

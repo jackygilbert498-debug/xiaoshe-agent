@@ -8,10 +8,171 @@ interface ReactLike {
   useState<T>(initial: T): [T, (value: T | ((current: T) => T)) => void]
   useRef<T>(initial: T): { current: T }
   useEffect(effect: () => void | (() => void), dependencies: readonly unknown[]): void
+  useLayoutEffect?(effect: () => void | (() => void), dependencies: readonly unknown[]): void
 }
 
 interface ClientUiPrimitivesLike {
-  readonly MarkdownText: (props: { readonly text: string; readonly streaming?: boolean }) => unknown
+  readonly MarkdownText: (props: { readonly text: string; readonly streaming?: boolean; readonly labels: typeof MARKDOWN_LABELS }) => unknown
+}
+
+// DSH 0.1.5 makes localized code/footnote labels a required renderer input.
+// Reuse one stable object in chat and file previews, including streaming updates.
+const MARKDOWN_LABELS = { code: { copyLabel: '复制代码', copiedLabel: '已复制' }, footnotes: '脚注' } as const
+
+const CLIENT_SOURCE_IDENTITY = '__XIAOSHE_CLIENT_SOURCE_IDENTITY__'
+
+/** Called only by the committed root effect; never read an identity from DOM or disk. */
+export function mountLoadedFrontendVersion(): () => void {
+  const noop = (): void => {}
+  if (typeof window === 'undefined' || !/^[a-f0-9]{64}$/u.test(CLIENT_SOURCE_IDENTITY)) return noop
+  try {
+    const version = (window as unknown as { xiaosheDesktop?: { version?: { mountFrontend(identity: string): () => void } } }).xiaosheDesktop?.version
+    const release = version?.mountFrontend(CLIENT_SOURCE_IDENTITY)
+    return typeof release === 'function' ? release : noop
+  } catch { return noop }
+}
+
+/** Never turn an HTTP 200 or an unversioned legacy response into “latest”. */
+export function runtimeVersionPresentation(value: unknown, loadedIdentity = CLIENT_SOURCE_IDENTITY): {
+  state: 'current' | 'stale' | 'unknown' | 'unavailable'; label: string; detail: string; facts: readonly (readonly [string, string])[]
+} {
+  const report = record(value)
+  const candidate = record(report?.candidate); const backend = record(report?.backend); const frontend = record(report?.frontend)
+  const identity = (value: unknown): string | undefined => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value) ? value : undefined
+  const candidateId = identity(candidate?.identity); const backendId = identity(backend?.identity)
+  const sourceId = identity(frontend?.source_identity); const buildId = identity(frontend?.build_identity); const loadedId = identity(loadedIdentity)
+  const valid = report?.schema === 'xiaoshe-runtime-version/v1'
+  let state: 'current' | 'stale' | 'unknown' | 'unavailable' = valid && report.status === 'unavailable' ? 'unavailable' : 'unknown'
+  if (valid && (report.status === 'stale' || (candidateId && backendId && candidateId !== backendId)
+    || (sourceId && buildId && sourceId !== buildId) || (buildId && loadedId && buildId !== loadedId))) state = 'stale'
+  else if (valid && report.status === 'current' && candidateId && candidateId === backendId && sourceId && sourceId === buildId
+    && loadedId === buildId && frontend?.state === 'current' && frontend.loaded_state === 'current') state = 'current'
+  const labels = { current: '版本一致', stale: '版本不一致', unknown: '尚未确认', unavailable: '诊断不可用' }
+  const details = {
+    current: '运行后台、当前界面与本次检查的磁盘候选一致；这不是正式发布或签名验收结论。',
+    stale: '检测到源码、后台或界面版本不一致。请先保存草稿，再按受控启动流程更新；检查不会自动刷新或重启。',
+    unknown: '当前证据不足，不能确认是否运行最新版；旧启动器未报告来源时也会显示此状态。',
+    unavailable: '暂时无法核对版本；服务可访问不代表版本一致，请查看本机诊断。',
+  }
+  const short = (value: string | undefined): string => value?.slice(0, 12) ?? '未报告'
+  return { state, label: labels[state], detail: details[state], facts: [
+    ['来源', report?.source === 'developer-source' ? '本机开发源码' : report?.source === 'embedded-runtime' ? '内嵌运行包' : '未报告'],
+    ['磁盘候选', short(candidateId)], ['运行后台', short(backendId)], ['当前界面', short(loadedId)], ['磁盘界面', short(buildId)],
+  ] }
+}
+
+interface BrowserTabState { tab_id: string; url: string; title: string; loading: boolean; error: string; busy: boolean }
+interface BrowserWorkspaceState { mode: 'agent' | 'paused' | 'user'; desktop_allowed: boolean; desktop_until: number; active_tab: string | null; notice: string; tabs: BrowserTabState[] }
+interface NativeBrowserBridge {
+  request(ownerId: string, action: string, args?: Record<string, unknown>): Promise<{ ok: boolean; value?: BrowserWorkspaceState; error?: string }>
+  bounds(ownerId: string, bounds?: { x: number; y: number; width: number; height: number }, reason?: string): void
+  subscribe(callback: (event: string) => void): () => void
+}
+function nativeBrowserBridge(): NativeBrowserBridge | undefined {
+  return typeof window === 'undefined' ? undefined : (window as unknown as { xiaosheDesktop?: { browser?: NativeBrowserBridge } }).xiaosheDesktop?.browser
+}
+function createBrowserDock(react: ReactLike): (props: { ownerId?: string; open: boolean; resizing: boolean; onOpen(): void }) => unknown {
+  const e = react.createElement
+  const bridge = nativeBrowserBridge()
+  return function BrowserDock(props) {
+    const [state, setState] = react.useState<BrowserWorkspaceState | undefined>(undefined)
+    const [error, setError] = react.useState('')
+    const [address, setAddress] = react.useState('')
+    const [confirmDesktop, setConfirmDesktop] = react.useState(false)
+    const slot = react.useRef<HTMLDivElement | null>(null)
+    const live = react.useRef(props); live.current = props
+    const active = state?.tabs.find(tab => tab.tab_id === state.active_tab)
+    const send = async (action: string, args: Record<string, unknown> = {}): Promise<void> => {
+      const owner = props.ownerId
+      if (!bridge || !owner) return
+      setError('')
+      try {
+        const reply = await bridge.request(owner, action, args)
+        if (live.current.ownerId !== owner) return
+        if (!reply.ok) throw new Error(reply.error || '浏览器控制失败')
+        // Native events refresh state too; a late navigation reply cannot
+        // overwrite a newer pause/takeover result.
+        const fresh = await bridge.request(owner, 'status')
+        if (fresh.ok && live.current.ownerId === owner) setState(fresh.value)
+      } catch (failure) { if (live.current.ownerId === owner) setError(failure instanceof Error ? failure.message : '浏览器暂时不可用') }
+    }
+    react.useEffect(() => {
+      const owner = props.ownerId
+      setState(undefined); setError(''); setConfirmDesktop(false)
+      if (!bridge || !owner) return
+      let disposed = false; let ready = false
+      const refresh = async (bind = false): Promise<void> => {
+        try {
+          const reply = await bridge.request(owner, bind ? 'bind' : 'status')
+          if (disposed) return
+          if (!reply.ok || !reply.value) throw new Error(reply.error || '浏览器暂时不可用')
+          ready = true
+          // Passive status refreshes must not steal the user's workbench view.
+          // The native workspace's explicit reveal event still opens its tab.
+          setState(reply.value)
+        } catch (failure) { if (!disposed) setError(failure instanceof Error ? failure.message : '浏览器连接已中断') }
+      }
+      const unsubscribe = bridge.subscribe(event => { if (event === 'reveal') live.current.onOpen(); if (ready) void refresh() })
+      void refresh(true)
+      const timer = setInterval(() => { if (ready) void refresh() }, 5000)
+      return () => { disposed = true; unsubscribe(); clearInterval(timer); bridge.bounds(owner, undefined, 'owner-effect-cleanup') }
+    }, [props.ownerId])
+    react.useEffect(() => { setAddress(active?.url === 'about:blank' ? '' : active?.url ?? '') }, [active?.tab_id, active?.url])
+    react.useEffect(() => {
+      const owner = props.ownerId
+      if (!bridge || !owner) return
+      // Native WebContentsView can swallow pointer events across the divider.
+      // Temporarily unmount its bounds, not its tab, until the drag finishes.
+      if (!props.open || props.resizing) { bridge.bounds(owner, undefined, !props.open ? 'dock-closed' : 'dock-resizing'); return }
+      const update = (): void => {
+        const element = slot.current
+        // Preserve the existing guard priority; the reason is diagnostic only.
+        if (!element) { bridge.bounds(owner, undefined, 'slot-missing'); return }
+        if (document.visibilityState === 'hidden') { bridge.bounds(owner, undefined, 'document-hidden'); return }
+        if (document.querySelector('[aria-modal="true"]')) { bridge.bounds(owner, undefined, 'modal-present'); return }
+        const box = element.getBoundingClientRect()
+        const points = [[box.left + 2, box.top + 2], [box.right - 2, box.bottom - 2], [box.left + box.width / 2, box.top + box.height / 2]]
+        const clear = points.every(([x, y]) => element.contains(document.elementFromPoint(x!, y!)))
+        bridge.bounds(owner, clear ? { x: box.x, y: box.y, width: box.width, height: box.height } : undefined, clear ? 'layout-visible' : 'hit-test-blocked')
+      }
+      const observer = new ResizeObserver(update)
+      if (slot.current) observer.observe(slot.current)
+      const mutations = new MutationObserver(update)
+      mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'aria-modal', 'hidden'] })
+      const timer = setInterval(update, 400)
+      window.addEventListener('resize', update); document.addEventListener('scroll', update, true); document.addEventListener('visibilitychange', update)
+      update()
+      return () => { observer.disconnect(); mutations.disconnect(); clearInterval(timer); window.removeEventListener('resize', update); document.removeEventListener('scroll', update, true); document.removeEventListener('visibilitychange', update); bridge.bounds(owner, undefined, 'layout-effect-cleanup') }
+    }, [props.ownerId, props.open, props.resizing, active?.tab_id])
+    if (!bridge || !props.open) return null
+    const mode = state?.mode ?? 'paused'
+    const navigate = (): void => { const value = address.trim(); if (value) void send('open', { url: /^[a-z][a-z\d+.-]*:/i.test(value) ? value : `https://${value}`, ...(active ? { tab_id: active.tab_id } : {}) }) }
+    return e('div', { className: 'browser-dock', id: 'xsla-browser-dock', 'aria-label': '小蛇专用浏览器' },
+      e('div', { className: 'browser-heading' }, e('span', null, '独立登录 · 不抢鼠标键盘')),
+      e('div', { className: 'browser-tabs', role: 'tablist', 'aria-label': '网页标签' },
+        ...(state?.tabs ?? []).map(tab => e('div', { key: tab.tab_id, className: `browser-tab ${tab.tab_id === active?.tab_id ? 'selected' : ''}` },
+          e('button', { type: 'button', role: 'tab', 'aria-selected': tab.tab_id === active?.tab_id, title: tab.url, onClick: () => { void send('select', { tab_id: tab.tab_id }) } }, `${tab.loading ? '◌ ' : ''}${tab.title || '新标签页'}`),
+          e('button', { type: 'button', title: '关闭标签', 'aria-label': `关闭 ${tab.title || '标签'}`, onClick: () => { void send('close', { tab_id: tab.tab_id }) } }, '×'))),
+        e('button', { type: 'button', title: '新建标签', 'aria-label': '新建浏览器标签', onClick: () => { void send('open', { url: 'about:blank' }) } }, '+')),
+      e('form', { className: 'browser-address', onSubmit: (event: { preventDefault(): void }) => { event.preventDefault(); navigate() } },
+        ...(['back', 'forward', 'reload'] as const).map((action, index) => e('button', { key: action, type: 'button', disabled: !active, title: ['后退', '前进', '刷新'][index], 'aria-label': ['后退', '前进', '刷新'][index], onClick: () => { if (active) void send(action, { tab_id: active.tab_id }) } }, ['←', '→', '↻'][index])),
+        e('input', { value: address, placeholder: '输入网址，例如 https://…', 'aria-label': '专用浏览器网址', spellCheck: false, onChange: (event: { target: { value: string } }) => setAddress(event.target.value) }),
+        e('button', { type: 'submit', disabled: !address.trim() }, '打开')),
+      e('div', { className: 'browser-control', 'data-browser-mode': mode },
+        e('span', { role: 'status' }, mode === 'user' ? '你正在接管 · 小蛇已停手' : mode === 'paused' ? '已暂停 · 等待你恢复' : active?.busy ? '小蛇正在操作网页' : '小蛇可操作 · 电脑仍归你'),
+        e('div', null,
+          e('button', { type: 'button', disabled: mode === 'paused', onClick: () => { void send('mode', { mode: 'paused' }) } }, '暂停'),
+          mode === 'user' ? null : e('button', { type: 'button', onClick: () => { void send('mode', { mode: 'user' }) } }, '我来接管'),
+          mode === 'agent' ? null : e('button', { className: 'browser-primary', type: 'button', onClick: () => { void send('mode', { mode: 'agent' }) } }, '交给小蛇'))),
+      error || active?.error || state?.notice ? e('div', { className: 'browser-error', role: 'alert' }, error || active?.error || state?.notice) : null,
+      e('div', { className: 'browser-page-slot', ref: slot }, active ? null : e('div', { className: 'browser-empty' }, e('h3', null, '给小蛇一张自己的工作台'), e('p', null, '把网页链接发给小蛇，它会在这里操作。'), e('p', null, '首次使用网站时，点“我来接管”登录，再点“交给小蛇”。登录状态保存在此浏览器，不读取你的其他浏览器。'))),
+      confirmDesktop ? e('div', { className: 'browser-desktop-confirm', role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认允许桌面控制' },
+        e('p', null, '允许本会话在接下来 10 分钟操作真实桌面？这会使用你的鼠标、键盘或前台窗口。普通网页任务不需要开启。'),
+        e('button', { type: 'button', onClick: () => setConfirmDesktop(false) }, '保持隔离'),
+        e('button', { type: 'button', onClick: () => { setConfirmDesktop(false); void send('desktop', { allowed: true }) } }, '允许 10 分钟')) : null,
+      e('footer', { className: 'browser-footer' }, e('span', null, state?.desktop_allowed ? '真实桌面：临时允许（原审批仍生效）' : '真实桌面：禁止自动操作'),
+        e('button', { type: 'button', onClick: () => { if (state?.desktop_allowed) void send('desktop', { allowed: false }); else setConfirmDesktop(true) } }, state?.desktop_allowed ? '立即收回' : '桌面控制…')))
+  }
 }
 
 interface SlotsLike {
@@ -33,7 +194,7 @@ interface ShellSlotProps {
 interface Result<T> {
   readonly ok: boolean
   readonly value?: T
-  readonly error?: { readonly message: string }
+  readonly error?: { readonly message: string; readonly code?: string; readonly kind?: string }
 }
 
 type RuntimeImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
@@ -77,7 +238,18 @@ interface CatalogSnapshot {
   }>>
 }
 
+interface HistoryImageRef {
+  readonly attachmentId: string
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+}
+type HistoryImageReader = (input: { readonly sessionId: string; readonly attachmentId: string }) => Promise<{ readonly attachment: HistoryImageRef; readonly data: Uint8Array }>
 interface TimelineSnapshot {
+  readonly sessionId?: string
+  readonly loading?: boolean
   readonly total?: number
   readonly hasEarlier?: boolean
   readonly items: readonly {
@@ -86,10 +258,75 @@ interface TimelineSnapshot {
     readonly time?: number
     readonly kind: string
     readonly text: string
+    readonly images?: readonly HistoryImageRef[]
     readonly reasoning?: string
     readonly errorCode?: string
     readonly isError?: boolean
   }[]
+}
+
+type ConversationDisplayEntry =
+  | { readonly kind: 'message'; readonly item: TimelineSnapshot['items'][number]; readonly eventIndex: number }
+  | { readonly kind: 'tools'; readonly key: string; readonly items: { readonly item: TimelineSnapshot['items'][number]; readonly eventIndex: number }[] }
+
+/** Collapse only routine tool chatter. Errors and human/assistant messages keep their exact order and anchors. */
+export function conversationDisplayEntries(items: TimelineSnapshot['items']): ConversationDisplayEntry[] {
+  const result: ConversationDisplayEntry[] = []
+  items.forEach((item, eventIndex) => {
+    if (item.kind !== 'tool' || item.isError === true) { result.push({ kind: 'message', item, eventIndex }); return }
+    const previous = result.at(-1)
+    if (previous?.kind === 'tools') previous.items.push({ item, eventIndex })
+    else result.push({ kind: 'tools', key: `tools:${item.key}`, items: [{ item, eventIndex }] })
+  })
+  return result
+}
+
+/** A factual progress digest, deliberately independent of private reasoning and elapsed-time guesses. */
+export function taskProgressSummary(input: { readonly state: string; readonly items: TimelineSnapshot['items']; readonly run: RunCenterSnapshot }): {
+  readonly goal: string; readonly activity: string; readonly progress?: string; readonly warning?: string
+} {
+  let lastUserIndex = -1
+  for (let index = input.items.length - 1; index >= 0; index--) {
+    if (input.items[index]?.kind === 'user') { lastUserIndex = index; break }
+  }
+  const turnItems = input.items.slice(Math.max(0, lastUserIndex))
+  const concise = (text: string): string => text.replace(/\s+/gu, ' ').trim().slice(0, 100)
+  const goal = concise(input.run.goal?.objective ?? input.items[lastUserIndex]?.text ?? '')
+  const completed = input.run.todos.filter(todo => ['completed', 'done'].includes(todo.status)).length
+  const active = input.run.todos.find(todo => ['in_progress', 'running', 'doing'].includes(todo.status))
+  const next = input.run.todos.find(todo => ['pending', 'todo', 'not_started'].includes(todo.status))
+  const runningJob = input.run.jobs.find(job => job.status === 'running')
+  const repeated = new Map<string, number>()
+  for (const item of turnItems) if (item.isError || item.kind === 'error') {
+    const key = concise(item.text)
+    if (key) repeated.set(key, (repeated.get(key) ?? 0) + 1)
+  }
+  const failures = Math.max(0, ...repeated.values())
+  const activity = input.run.goal?.phase === 'paused' ? '目标已暂停，可以补充信息后恢复'
+    : input.state === 'blocked' ? '等待你处理确认或问题'
+      : input.state !== 'running' ? '本轮已结束，可查看回复或继续补充'
+        : active ? concise(active.text) : runningJob ? concise(runningJob.label)
+          : next ? `下一步：${concise(next.text)}` : '正在处理，等待下一条可报告的进展'
+  return { goal, activity,
+    ...(input.run.todos.length ? { progress: `已完成 ${completed} / ${input.run.todos.length} 项计划` } : {}),
+    ...(failures >= 3 ? { warning: `本轮同类错误已出现 ${failures} 次，可展开详情核对，或补充信息调整方向。` } : {}) }
+}
+
+/** A late Host acknowledgement owns only the submitted draft, never newer text or another session. */
+export function shouldClearAcknowledgedDraft(owner: string, currentOwner: string | undefined, sent: string, currentText: string): boolean {
+  return owner === currentOwner && sent === currentText
+}
+
+type ComposerSendPhase = 'sending' | 'accepted' | 'failed' | 'unknown'
+export function sendFailurePhase(error?: { readonly kind?: string; readonly code?: string }): 'unknown' | 'failed' {
+  return error?.kind === 'needs_verification' || error?.code === 'ambiguous' ? 'unknown' : 'failed'
+}
+
+export function sendStatusPresentation(phase: ComposerSendPhase, mode: 'queue' | 'steer'): { label: string; detail: string } {
+  if (phase === 'sending') return { label: '正在发送', detail: '正在等待后台接收；你可以继续起草下一条。' }
+  if (phase === 'accepted') return { label: mode === 'steer' ? '已接收 · 正在调整方向' : '已接收 · 按顺序执行', detail: '可以继续发送补充信息；排队消息支持编辑和移除。' }
+  if (phase === 'unknown') return { label: '发送结果待核对', detail: '后台可能已经接收，草稿已保留。请先核对对话和队列，避免重复发送。' }
+  return { label: '未发送成功', detail: '草稿已保留，可检查连接后重试。' }
 }
 
 type WorkSurfaceKind = 'web' | 'file' | 'image' | 'video' | 'pdf' | 'terminal' | 'desktop'
@@ -130,6 +367,139 @@ interface WorkSurfaceRegistrySnapshot {
   readonly items: readonly WorkSurface[]
 }
 
+interface FileReceipt { readonly receiptId: string; readonly name: string; readonly bytes: number; readonly mediaType?: string }
+interface RuntimeFileContent { readonly sessionId: string; readonly path: string; readonly name: string; readonly mediaType: string; readonly data: Uint8Array; readonly bytes: number; readonly version: string }
+interface RuntimeFiles {
+  upload(input: { sessionId: string; file: Blob; name: string; signal?: AbortSignal; onProgress?: (progress: { loaded: number; total?: number }) => void }): Promise<Result<FileReceipt>>
+  read(input: { sessionId: string; path: string; signal?: AbortSignal }): Promise<Result<RuntimeFileContent>>
+}
+interface DraftFile {
+  readonly id: string; readonly owner: string; readonly file: File; readonly controller: AbortController
+  readonly phase: 'uploading' | 'ready' | 'failed' | 'cancelled'; readonly progress: number
+  readonly receipt?: FileReceipt; readonly error?: string
+}
+
+/** Mirror the public transport limits before admission; the provider validates again. */
+export function validateFileBatch(files: readonly { readonly name: string; readonly size: number }[]): string | undefined {
+  if (files.length > 10) return '每条消息最多添加 10 个文件'
+  let bytes = 0
+  for (const file of files) {
+    if (!file.name.trim() || !Number.isSafeInteger(file.size) || file.size < 0) return '文件名称或大小无效'
+    if (file.size > 32 * 1024 * 1024) return `${file.name} 超过单个文件 32 MB 上限`
+    bytes += file.size
+  }
+  return bytes > 128 * 1024 * 1024 ? '每条消息的文件合计不能超过 128 MB' : undefined
+}
+
+/** One latest tab per file; the unmodified projection remains the execution history. */
+export function materialFileTabs<T extends Pick<WorkSurface, 'id' | 'type' | 'source' | 'sessionId' | 'seq'>>(items: readonly T[]): readonly T[] {
+  const files = new Map<string, T>()
+  for (const item of items) {
+    if (!['file', 'image', 'pdf', 'video'].includes(item.type) || !item.source) continue
+    const key = `${item.sessionId}\0${/^[a-z]:[\\/]/iu.test(item.source) ? item.source.replace(/\\/gu, '/').toLocaleLowerCase() : item.source}`
+    const previous = files.get(key)
+    if (previous === undefined || item.seq >= previous.seq) files.set(key, item)
+  }
+  return [...files.values()]
+}
+
+/** CSP is first in the opaque sandbox document, before any untrusted markup. */
+export function staticDocumentHtml(text: string): string {
+  const escape = (value: string): string => value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;')
+  let body = `<pre>${escape(text)}</pre>`
+  if (typeof DOMParser !== 'undefined') {
+    const parsed = new DOMParser().parseFromString(text, 'text/html')
+    const allowed = new Set('div span p br hr h1 h2 h3 h4 h5 h6 b strong i em u s blockquote pre code ul ol li table thead tbody tfoot tr td th caption section article header footer main figure figcaption style'.split(' '))
+    const clean = (node: Node): Node | undefined => {
+      if (node.nodeType === 3) return parsed.createTextNode(node.textContent ?? '')
+      if (!(node instanceof Element) || !allowed.has(node.tagName.toLowerCase())) return undefined
+      const copy = parsed.createElement(node.tagName.toLowerCase())
+      if (node.hasAttribute('style')) copy.setAttribute('style', node.getAttribute('style')!)
+      for (const child of Array.from(node.childNodes)) { const safe = clean(child); if (safe) copy.append(safe) }
+      return copy
+    }
+    const container = parsed.createElement('div')
+    for (const node of [...Array.from(parsed.head.querySelectorAll('style')), ...Array.from(parsed.body.childNodes)]) {
+      const safe = clean(node); if (safe) container.append(safe)
+    }
+    body = container.innerHTML
+  }
+  // No meta refresh, links, forms or active embeds survive the allowlist. CSP also blocks CSS network fetches.
+  return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; base-uri \'none\'; form-action \'none\'"><style>body{font:14px/1.7 system-ui;padding:20px;overflow-wrap:anywhere}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{padding:6px;border:1px solid #ddd}</style></head><body>' + body + '</body></html>'
+}
+
+type FilePreviewState = { readonly status: 'loading' | 'ready' | 'error'; readonly file?: RuntimeFileContent; readonly url?: string; readonly error?: string }
+
+/** A preview owns its read and Blob URL; cancellation cannot publish into the next document. */
+export function createFilePreviewResource(input: {
+  readonly sessionId: string; readonly path: string; readonly read: RuntimeFiles['read']; readonly onChange: (state: FilePreviewState) => void
+}): { load(): Promise<void>; dispose(): void } {
+  let disposed = false, generation = 0, url: string | undefined, controller: AbortController | undefined
+  const release = (): void => { if (url) URL.revokeObjectURL(url); url = undefined }
+  return {
+    async load() {
+      if (disposed) return
+      const current = ++generation
+      controller?.abort(); controller = new AbortController(); release()
+      input.onChange({ status: 'loading' })
+      try {
+        const result = await input.read({ sessionId: input.sessionId, path: input.path, signal: controller.signal })
+        if (disposed || current !== generation) return
+        if (!result.ok || result.value === undefined) throw new Error(result.error?.message ?? '文件读取未确认')
+        const file = result.value
+        if (file.sessionId !== input.sessionId || file.path !== input.path || !(file.data instanceof Uint8Array)
+          || file.bytes !== file.data.byteLength || file.bytes > 32 * 1024 * 1024) throw new Error('文件回执与当前材料不匹配')
+        url = URL.createObjectURL(new Blob([new Uint8Array(file.data)], { type: file.mediaType }))
+        input.onChange({ status: 'ready', file, url })
+      } catch (cause: unknown) {
+        if (!disposed && current === generation) input.onChange({ status: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    },
+    dispose() { disposed = true; generation++; controller?.abort(); release() },
+  }
+}
+
+function createFilePreviewComponent(react: ReactLike, read: RuntimeFiles['read'], MarkdownText: unknown): (props: { surface: WorkSurface; reloadKey: number }) => unknown {
+  const e = react.createElement
+  const ImageViewer = createImageViewer(react)
+  return ({ surface, reloadKey }) => {
+    const identity = `${surface.sessionId}\0${surface.source}\0${reloadKey}`
+    const [loaded, setLoaded] = react.useState<{ identity: string; state: FilePreviewState }>({ identity, state: { status: 'loading' } })
+    const resource = react.useRef<ReturnType<typeof createFilePreviewResource> | undefined>(undefined)
+    react.useEffect(() => {
+      const current = createFilePreviewResource({ sessionId: surface.sessionId, path: surface.source!, read, onChange: state => setLoaded({ identity, state }) })
+      resource.current = current; void current.load()
+      return () => { current.dispose(); if (resource.current === current) resource.current = undefined }
+    }, [identity])
+    const state = loaded.identity === identity ? loaded.state : { status: 'loading' as const }
+    const file = state.file
+    let content: unknown = e('p', { role: 'status' }, '正在读取文件…')
+    if (state.status === 'error') content = e('div', { className: 'surface-fallback', role: 'alert' }, e('p', null, state.error), e('button', { type: 'button', onClick: () => { void resource.current?.load() } }, '重试读取'))
+    else if (file && state.url) {
+      const ext = file.name.split('.').pop()?.toLowerCase()
+      if (/^image\/(png|jpeg|webp|gif)$/u.test(file.mediaType)) content = e(ImageViewer, { src: state.url, alt: file.name })
+      else if (file.mediaType === 'application/pdf') content = e('object', { data: state.url, type: 'application/pdf', className: 'surface-media surface-pdf', 'aria-label': file.name }, e('p', null, '此环境不支持内嵌 PDF；可保存后打开。'))
+      else if (/^video\/(mp4|webm|ogg)$/u.test(file.mediaType)) content = e('video', { src: state.url, controls: true, className: 'surface-media' })
+      else if (file.data.subarray(0, 1024).some(byte => byte === 0)) content = e('p', null, '此二进制格式暂不提供内嵌预览，可保存后使用本机应用打开。')
+      else {
+        const truncated = file.bytes > 512 * 1024
+        const text = new TextDecoder().decode(file.data.subarray(0, 512 * 1024))
+        content = e('div', { className: 'document-text' },
+          ext === 'html' || ext === 'htm' ? e('div', null, e('p', { className: 'document-boundary' }, '静态预览 · 不执行脚本，外部资源与交互已禁用；完整网站请使用浏览器。'),
+            e('iframe', { sandbox: '', srcDoc: staticDocumentHtml(text), title: `${file.name} 静态预览`, className: 'document-html', referrerPolicy: 'no-referrer' }))
+            : ext === 'md' || ext === 'markdown' ? e('div', { className: 'event-markdown' }, e(MarkdownText, { text, labels: MARKDOWN_LABELS }))
+              : e('pre', null, ...text.split('\n').slice(0, 5000).map((line, index) => e('span', { className: 'document-line', key: index }, e('i', { 'aria-hidden': true }, index + 1), e('code', null, line || '\u00a0')))),
+          truncated || text.split('\n').length > 5000 ? e('p', null, '预览显示前 512 KB / 5000 行，保存文件可查看完整内容。') : null)
+      }
+    }
+    return e('div', { className: 'document-reader', 'data-file-state': state.status },
+      file === undefined ? null : e('div', { className: 'document-receipt' }, e('span', null, `当前文件 · ${formatBytes(file.bytes)}`),
+        e('a', { href: state.url, download: file.name, rel: 'noopener noreferrer' }, '保存文件')),
+      content,
+      e('details', { className: 'document-evidence' }, e('summary', null, '历史执行快照'), renderWorkSurfaceContent(e, surface, 'watch', reloadKey)))
+  }
+}
+
 interface ContextSnapshot {
   readonly sessions: Readonly<Record<string, {
     readonly pressure?: unknown
@@ -157,6 +527,44 @@ interface ModelCatalogSnapshot {
     }[]
   }[]
   readonly failures: readonly { readonly id: string; readonly name: string; readonly message: string }[]
+  readonly error?: string
+}
+
+interface RunCenterSnapshot {
+  readonly sessionId?: string
+  readonly status: 'idle' | 'loading' | 'ready' | 'error'
+  readonly jobs: readonly {
+    readonly id: string
+    readonly kind?: string
+    readonly label: string
+    readonly status: string
+    readonly detail?: string
+    readonly startedAt?: number
+    readonly finishedAt?: number
+    readonly cancellable: false
+  }[]
+  readonly subagents: readonly ({ readonly kind: 'child'; readonly id: string; readonly label?: string; readonly activity: string; readonly canOpen: true; readonly canInterrupt: boolean } | { readonly kind: 'diagnostic'; readonly id: string; readonly reason: string; readonly canOpen: false; readonly canInterrupt: false })[]
+  readonly queue: readonly { readonly id: string; readonly placement: string; readonly preview: string; readonly text?: string | null; readonly editable: boolean; readonly removable: boolean; readonly steerable: boolean }[]
+  readonly goal?: { readonly objective: string; readonly phase: string; readonly roundsStarted: number; readonly maxGoalRounds: number; readonly blockedReason?: string }
+  readonly plan?: { readonly active: boolean; readonly pending: boolean }
+  readonly todos: readonly { readonly id: string; readonly text: string; readonly status: string }[]
+  readonly skills: readonly { readonly name: string; readonly description: string; readonly modelInvocable: boolean }[]
+  readonly deliverables: readonly { readonly id: string; readonly title: string; readonly kind: string; readonly status: string }[]
+  readonly error?: string
+}
+
+interface ProviderReadinessSnapshot {
+  readonly sessionId?: string
+  readonly status: 'idle' | 'loading' | 'ready' | 'probing' | 'error'
+  readonly providers: readonly {
+    readonly id: string; readonly displayName: string; readonly active: boolean; readonly declared: boolean
+    readonly routes: readonly {
+      readonly provider: string; readonly model: string; readonly name: string
+      readonly facts: { readonly catalogued: boolean; readonly supported: boolean; readonly configured: boolean; readonly available: boolean; readonly verified: boolean }
+      readonly reasons: readonly string[]
+      readonly probe?: { readonly status: string; readonly latencyMs?: number; readonly contextWindow?: number; readonly completedAt?: number; readonly error?: { readonly message: string } }
+    }[]
+  }[]
   readonly error?: string
 }
 
@@ -233,6 +641,7 @@ interface MemoryEntry {
 interface MemorySnapshot {
   readonly api_version: 1
   readonly revision: number
+  readonly project?: string
   readonly counts: {
     readonly active: number
     readonly global: number
@@ -246,9 +655,14 @@ interface MemorySnapshot {
 }
 
 interface MemoryLifecycleSnapshot {
-  readonly status: 'idle' | 'loading' | 'ready' | 'error'
+  readonly status: 'idle' | 'loading' | 'ready' | 'degraded' | 'error'
   readonly memory?: MemorySnapshot
   readonly error?: { readonly message: string; readonly status?: number; readonly kind?: string }
+}
+
+interface MemoryProjectContext {
+  readonly cwd?: string
+  readonly canonical?: string
 }
 
 interface HeartbeatPublicCheck {
@@ -279,14 +693,16 @@ type ProductHealthSnapshot =
 
 interface PluginGovernanceSnapshot {
   readonly status: 'idle' | 'loading' | 'ready' | 'error' | 'disposed'
-  readonly transactions: readonly {
-    readonly state: string
-    readonly action: string
-    readonly packageName: string
-    readonly profile: string
-  }[]
+  readonly transactions: readonly PublicPluginTransaction[]
   readonly pendingRequests: number
   readonly error?: string
+}
+
+interface HostPluginFact {
+  readonly entryId: string
+  readonly moduleName: string
+  readonly enabled: boolean
+  readonly fiberPhase: string | null
 }
 
 interface PublicCandidate {
@@ -298,6 +714,7 @@ interface PublicCandidate {
   readonly identity: CandidateIdentity
   readonly provenance: CandidateProvenance
   readonly audit: Readonly<Record<string, unknown>>
+  readonly signature: { readonly status: 'unsigned' | 'invalid' | 'valid-untrusted' | 'trusted'; readonly fingerprint?: string; readonly publisher?: string; readonly reason: string }
   readonly healthPath?: string
   readonly osSandboxEnforced: false
 }
@@ -315,7 +732,7 @@ interface CandidateProvenance {
   readonly kind: 'local-directory' | 'local-tarball' | 'registry'
   readonly selection: 'local-bytes' | 'exact-version' | 'floating-reference' | 'external-reference'
   readonly label: string
-  readonly assurance: 'unverified'
+  readonly assurance: 'unverified' | 'signed-untrusted' | 'verified-publisher' | 'invalid-signature'
 }
 
 export interface PluginConfirmationChallenge {
@@ -329,6 +746,7 @@ export interface PluginConfirmationChallenge {
   readonly identity?: CandidateIdentity
   readonly provenance?: CandidateProvenance
   readonly disclosures: readonly string[]
+  readonly compatibility?: { readonly status: 'compatible' | 'warning' | 'blocked'; readonly blockers: readonly string[]; readonly warnings: readonly string[]; readonly facts: readonly string[] }
   readonly osSandboxEnforced: false
 }
 
@@ -340,12 +758,22 @@ interface PublicPluginTransaction {
   readonly version: string
   readonly state: string
   readonly consent: { readonly confirmed: boolean; readonly expiresAt: number }
+  readonly health?: readonly { readonly gate: string; readonly ok: boolean; readonly detail: string }[]
+  readonly rollback?: {
+    readonly attempted: boolean
+    readonly succeeded: boolean
+    readonly operation?: string
+    readonly restoredSpec?: string
+    readonly health?: readonly { readonly gate: string; readonly ok: boolean; readonly detail: string }[]
+    readonly residuals: readonly string[]
+  }
+  readonly events?: readonly { readonly at: number; readonly kind: string; readonly message: string }[]
   readonly osSandboxEnforced: false
 }
 
 type CandidateSource =
-  | { readonly kind: 'directory' | 'tarball'; readonly path: string }
-  | { readonly kind: 'registry'; readonly spec: string }
+  | { readonly kind: 'directory' | 'tarball'; readonly path: string; readonly signaturePath?: string }
+  | { readonly kind: 'registry'; readonly spec: string; readonly signaturePath?: string }
 
 export type PluginUiIntent =
   | { readonly action: 'add' | 'update'; readonly profile: string; readonly source: CandidateSource }
@@ -385,14 +813,16 @@ export interface LegacyAdaptedClientContext {
   slots: SlotsLike
   /** DSH ui-theme is the sole persisted theme owner for shell and settings. */
   theme: {
-    getTheme(): { readonly preference: string; readonly active: { readonly id: string; readonly colorScheme: 'light' | 'dark' }; readonly revision: number }
+    getTheme(): { readonly preference: string; readonly active: { readonly id: string; readonly colorScheme: 'light' | 'dark' }; readonly revision: number; readonly fontSize?: number }
     setTheme(id: string): void
+    overrideTokens?(source: string, tokens: Record<string, { light: string; dark: string }>): () => void
   }
+  settingsScope?: { bind(spec: { namespace: string }): AppearanceSettingsScope }
   on(name: 'theme/change', listener: () => void): () => void
   agentRuntimeSession: {
     getSnapshot(): RuntimeSnapshot
     subscribe(listener: () => void): () => void
-    sendTurn(input: { sessionId: string; content: string; images?: readonly RuntimeImageInput[]; mode: 'queue' | 'steer' }): Promise<Result<{ accepted: true }>>
+    sendTurn(input: { sessionId: string; content: string; images?: readonly RuntimeImageInput[]; files?: readonly FileReceipt[]; mode: 'queue' | 'steer' }): Promise<Result<{ accepted: true }>>
     stopRun(input: { sessionId: string }): Promise<Result<{ accepted: true }>>
     forkSession(input: { sessionId: string }): Promise<Result<{ sessionId: string }>>
   }
@@ -412,7 +842,11 @@ export interface LegacyAdaptedClientContext {
     getSnapshot(): TimelineSnapshot
     subscribe(listener: () => void): () => void
     loadEarlier(): void
+    getOutline?(): readonly { readonly key: string; readonly seq: number; readonly text: string }[]
+    reveal?(seq: number): void
+    readImage: HistoryImageReader
   }
+  runtimeFiles?: RuntimeFiles
   workSurfaceRegistry: {
     getSnapshot(): WorkSurfaceRegistrySnapshot
     subscribe(listener: () => void): () => void
@@ -425,7 +859,27 @@ export interface LegacyAdaptedClientContext {
     getSnapshot(): ModelCatalogSnapshot
     subscribe(listener: () => void): () => void
     refresh(sessionId?: string): Promise<Result<ModelCatalogSnapshot>>
-    select(input: { readonly sessionId?: string; readonly provider: string; readonly model: string; readonly reasoningEffort?: string }): Promise<Result<{ selected: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string } }>>
+    select(input: { readonly sessionId?: string; readonly provider: string; readonly model: string; readonly reasoningEffort?: string }): Promise<Result<{
+      selected: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string }
+      readonly persistence?: { readonly status: 'saved' | 'session-only'; readonly warning?: string }
+      readonly effective?: 'next-request' | 'immediate'
+    }>>
+  }
+  runCenter: {
+    getSnapshot(): RunCenterSnapshot
+    subscribe(listener: () => void): () => void
+    refresh(): Promise<Result<RunCenterSnapshot>>
+    updateQueue(input: { readonly sessionId: string; readonly itemId: string; readonly action: { readonly kind: 'remove' | 'steer' } | { readonly kind: 'edit'; readonly text: string } }): Promise<Result<{ accepted: true }>>
+    setGoalPhase?(input: { readonly sessionId: string; readonly action: 'pause' | 'resume' }): Promise<Result<{ accepted: true }>>
+    openSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Result<{ opened: true }>
+    interruptSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Promise<Result<{ accepted: true }>>
+  }
+  providerReadiness: {
+    getSnapshot(): ProviderReadinessSnapshot
+    subscribe(listener: () => void): () => void
+    refresh(sessionId?: string): Promise<Result<ProviderReadinessSnapshot>>
+    probe(input: { readonly provider: string; readonly model: string; readonly timeoutMs?: number }): Promise<Result<{ readonly probe: unknown; readonly snapshot: ProviderReadinessSnapshot }>>
+    cancelProbe(): Result<{ readonly cancelled: true }>
   }
   workspaceCatalog: {
     getSnapshot(): WorkspaceCatalogSnapshot
@@ -437,6 +891,7 @@ export interface LegacyAdaptedClientContext {
   }
   userApproval: {
     getSnapshot(): {
+      readonly sessionId?: string
       readonly approvals: readonly {
         readonly key: string
         readonly toolName: string
@@ -459,7 +914,7 @@ export interface LegacyAdaptedClientContext {
     select(value: string): Promise<Result<{ selected: string }>>
   }
   pluginGovernance: {
-    listHostPlugins(): Promise<Result<{ entries: readonly { moduleName: string; fiberPhase: string | null }[] }>>
+    listHostPlugins(): Promise<Result<{ entries: readonly HostPluginFact[] }>>
     auditCandidate(source: CandidateSource, signal?: AbortSignal): Promise<Result<{ candidate: PublicCandidate }>>
     prepareChange(input: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<Result<{ challenge: PluginConfirmationChallenge }>>
     confirmChange(input: { readonly challengeId: string; readonly token: string }, signal?: AbortSignal): Promise<Result<{ transaction: PublicPluginTransaction }>>
@@ -496,12 +951,15 @@ export function validatePluginIntent(input: {
   readonly profile: string
   readonly sourceKind: string
   readonly source: string
+  readonly signaturePath?: string
 }): PluginUiIntent {
   const profile = input.profile.trim()
   if (!/^xiaoshe-managed-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(profile)) {
     throw new TypeError('目标必须是受管扩展环境')
   }
   const source = boundedText(input.source, '候选来源或包名', 2_000)
+  const signaturePath = input.signaturePath?.trim() ?? ''
+  if (signaturePath.length > 2_000 || /[\r\n\0]/u.test(signaturePath)) throw new TypeError('签名旁路文件路径无效')
   if (input.action === 'remove') {
     if (source.length > 214) throw new TypeError('包名过长')
     return { action: 'remove', profile, packageName: source }
@@ -511,24 +969,28 @@ export function validatePluginIntent(input: {
   }
   if (input.sourceKind === 'registry') {
     if (source.length > 500) throw new TypeError('软件源版本说明过长')
-    return { action: input.action, profile, source: { kind: 'registry', spec: source } }
+    return { action: input.action, profile, source: { kind: 'registry', spec: source, ...(signaturePath === '' ? {} : { signaturePath }) } }
   }
   if (input.sourceKind !== 'directory' && input.sourceKind !== 'tarball') {
     throw new TypeError('候选来源类型无效')
   }
-  return { action: input.action, profile, source: { kind: input.sourceKind, path: source } }
+  return { action: input.action, profile, source: { kind: input.sourceKind, path: source, ...(signaturePath === '' ? {} : { signaturePath }) } }
 }
 
 export const inject = [
   'slots',
   'theme',
+  'settingsScope',
   'agentRuntimeSession',
   'sessionCommand',
   'sessionCatalog',
   'taskTimeline',
+  'runtimeFiles',
   'workSurfaceRegistry',
   'contextGovernance',
   'modelCatalog',
+  'runCenter',
+  'providerReadiness',
   'workspaceCatalog',
   'pluginGovernance',
   'userApproval',
@@ -537,6 +999,152 @@ export const inject = [
   'memoryLifecycle',
   'productHealth',
 ]
+
+type AppearancePreset = 'moss' | 'graphite' | 'ocean' | 'sand' | 'custom'
+interface AppearanceValue { readonly preset: AppearancePreset; readonly customAccent: string }
+interface AppearanceSettingsScope {
+  getSnapshot(): { status: 'loading' | 'ready' | 'unavailable' | 'degraded'; value: unknown; writable: boolean; mode: 'host' | 'memory' }
+  subscribe(listener: () => void): () => void
+  mutate(ops: readonly { op: 'set'; path: readonly string[]; value: string }[]): Promise<void>
+}
+interface AppearanceSnapshot {
+  readonly value: AppearanceValue
+  readonly status: 'loading' | 'ready' | 'saving' | 'error' | 'unavailable'
+  readonly writable: boolean
+}
+const DEFAULT_APPEARANCE: AppearanceValue = { preset: 'moss', customAccent: '#4d6e54' }
+const APPEARANCE_PRESETS = [
+  { id: 'moss', label: '竹影', detail: '温和的自然色', accent: '#4d6e54', darkAccent: '#b3ccb3', light: ['#fdfdfb', '#f3f4f0', '#f8f9f5'], dark: ['#1c1f1d', '#171a18', '#242925'] },
+  { id: 'graphite', label: '墨灰', detail: '纯净的中性色', accent: '#52545d', darkAccent: '#c0c2cc', light: ['#fcfcfc', '#f4f4f5', '#f7f7f8'], dark: ['#1c1d1f', '#17181a', '#26272b'] },
+  { id: 'ocean', label: '雾蓝', detail: '清晰、冷静', accent: '#416693', darkAccent: '#a9c5e8', light: ['#fcfdff', '#f1f4f8', '#f6f8fc'], dark: ['#1c1f25', '#171a20', '#252a33'] },
+  { id: 'sand', label: '暖砂', detail: '柔和的纸张感', accent: '#86623c', darkAccent: '#d8bd98', light: ['#fffdf9', '#f4f1ea', '#faf6ef'], dark: ['#211e1a', '#1b1916', '#2b2721'] },
+] as const
+
+/** Narrow persisted values before they can enter CSS, including older or damaged files. */
+export function normalizeAppearance(value: unknown): AppearanceValue {
+  const input = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+  return {
+    preset: ['moss', 'graphite', 'ocean', 'sand', 'custom'].includes(String(input.preset)) ? input.preset as AppearancePreset : 'moss',
+    customAccent: typeof input.customAccent === 'string' && /^#[0-9a-f]{6}$/iu.test(input.customAccent) ? input.customAccent.toLowerCase() : DEFAULT_APPEARANCE.customAccent,
+  }
+}
+
+function colorChannels(hex: string): number[] { return [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16)) }
+function mixColor(color: string, toward: string, ratio: number): string {
+  const other = colorChannels(toward)
+  return `#${colorChannels(color).map((channel, index) => Math.round(channel * (1 - ratio) + other[index]! * ratio).toString(16).padStart(2, '0')).join('')}`
+}
+function colorContrast(a: string, b: string): number {
+  const luminance = (hex: string): number => colorChannels(hex).map(channel => {
+    const value = channel / 255
+    return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4
+  }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index]!, 0)
+  const first = luminance(a); const second = luminance(b)
+  return (Math.max(first, second) + .05) / (Math.min(first, second) + .05)
+}
+/** Keep chosen hue, but adjust lightness when text/focus would disappear on the surface. */
+function readableAccent(color: string, background: string): string {
+  const toward = colorContrast('#000000', background) > colorContrast('#ffffff', background) ? '#000000' : '#ffffff'
+  for (let step = 0; step <= 25; step++) {
+    const candidate = mixColor(color, toward, step / 25)
+    if (colorContrast(candidate, background) >= 4.6) return candidate
+  }
+  return toward
+}
+
+/** One semantic palette drives the real shell, settings portals and lightweight sample alike. */
+export function appearanceTokens(value: AppearanceValue, mode: 'light' | 'dark'): Record<string, string> {
+  const normalized = normalizeAppearance(value)
+  const palette = APPEARANCE_PRESETS.find(preset => preset.id === normalized.preset) ?? APPEARANCE_PRESETS[1]
+  const dark = mode === 'dark'
+  const [surface, background, layer] = dark ? palette.dark : palette.light
+  const ink = dark ? '#edf0ed' : '#252b27'
+  const muted = dark ? '#adb6af' : '#636b65'
+  const requested = normalized.preset === 'custom' ? normalized.customAccent : dark ? palette.darkAccent : palette.accent
+  const accent = readableAccent(requested, surface)
+  const soft = mixColor(surface, accent, dark ? .12 : .09)
+  const accentText = readableAccent(accent, soft)
+  const onAccent = colorContrast('#ffffff', accent) >= colorContrast('#171a18', accent) ? '#ffffff' : '#171a18'
+  const tokens: Record<string, string> = {
+    '--bg': background, '--surface': surface, '--surface-2': layer, '--card': dark ? layer : '#ffffff',
+    '--card-hover': mixColor(surface, ink, .065), '--ink': ink, '--ink2': dark ? '#c4cdc6' : '#4e5851', '--ink3': muted, '--faint': muted,
+    '--line': mixColor(surface, ink, .14), '--line2': mixColor(surface, ink, .20), '--line3': mixColor(surface, ink, .31),
+    '--accent': accent, '--accent-deep': accentText, '--accent-bg': soft,
+    '--cta': accent, '--cta-deep': accentText, '--cta-ink': onAccent, '--cta-glow': `${accent}22`,
+    '--ok': dark ? '#a2c9ad' : '#3d7050', '--info': dark ? '#acc8e6' : '#416993',
+    '--warn': dark ? '#ddc292' : '#85632c', '--err': dark ? '#e3a99d' : '#a3473b',
+  }
+  const aliases: Record<string, string> = {
+    '--dsw-alias-bg-base': '--surface', '--dsw-alias-bg-layer-1': '--bg', '--dsw-alias-bg-layer-2': '--surface-2',
+    '--dsw-alias-bg-overlay': '--card', '--dsw-alias-border-l1': '--line', '--dsw-alias-border-l2': '--line2',
+    '--dsw-alias-brand-primary': '--accent', '--dsw-alias-label-primary': '--ink', '--dsw-alias-label-secondary': '--ink3',
+    '--dsw-alias-state-error-primary': '--err', '--dsw-alias-state-success-primary': '--ok', '--dsw-alias-state-warn-primary': '--warn',
+    '--dsw-specific-sidebar-fill': '--bg',
+  }
+  for (const [alias, semantic] of Object.entries(aliases)) tokens[alias] = tokens[semantic]!
+  return tokens
+}
+
+/**
+ * The host remains authoritative. Coalesce rapid color changes and hold the newest
+ * preview through older acknowledgements; only the last durable write earns "saved".
+ */
+export function createAppearancePreference(scope?: AppearanceSettingsScope) {
+  const listeners = new Set<() => void>()
+  const initial = scope?.getSnapshot()
+  let snapshot: AppearanceSnapshot = {
+    value: normalizeAppearance(initial?.value),
+    status: initial?.status === 'loading' ? 'loading' : initial?.status === 'ready' && initial.mode === 'host' ? 'ready' : 'unavailable',
+    writable: initial?.status === 'ready' && initial.writable === true && initial.mode === 'host',
+  }
+  let pending: AppearanceValue | undefined
+  let draining: Promise<void> | undefined
+  let disposed = false
+  const publish = (next: AppearanceSnapshot): void => {
+    snapshot = next
+    if (!disposed) for (const listener of listeners) listener()
+  }
+  const unsubscribe = scope?.subscribe(() => {
+    const host = scope.getSnapshot()
+    const writable = host.writable && host.mode === 'host' && host.status === 'ready'
+    if (draining !== undefined || pending !== undefined || snapshot.status === 'error') {
+      publish({ ...snapshot, writable })
+      return
+    }
+    publish({ value: normalizeAppearance(host.value), writable,
+      status: host.status === 'loading' ? 'loading' : host.status === 'ready' && host.mode === 'host' ? 'ready' : 'unavailable' })
+  })
+  const save = (value: AppearanceValue): Promise<void> => {
+    if (disposed) return Promise.resolve()
+    if (!scope || !snapshot.writable) { publish({ ...snapshot, status: 'unavailable' }); return Promise.resolve() }
+    pending = normalizeAppearance(value)
+    publish({ value: pending, writable: true, status: 'saving' })
+    if (draining !== undefined) return draining
+    draining = (async () => {
+      while (pending !== undefined && !disposed) {
+        const next = pending; pending = undefined
+        try {
+          await scope.mutate([{ op: 'set', path: ['preset'], value: next.preset }, { op: 'set', path: ['customAccent'], value: next.customAccent }])
+          if (pending === undefined) {
+            const host = scope.getSnapshot()
+            const accepted = normalizeAppearance(host.value)
+            if (host.status !== 'ready' || host.mode !== 'host' || accepted.preset !== next.preset || accepted.customAccent !== next.customAccent) throw new Error('appearance write not acknowledged')
+            publish({ value: accepted, status: 'ready', writable: host.writable })
+          }
+        } catch {
+          if (pending === undefined) publish({ ...snapshot, status: 'error' })
+        }
+      }
+    })().finally(() => { draining = undefined })
+    return draining
+  }
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    save,
+    dispose() { disposed = true; pending = undefined; unsubscribe?.(); listeners.clear() },
+  }
+}
 
 export const BROWSER_BRAND_ICON_HREF = '/api/xiaoshe/legacy-adapted-brand-icon?v=3a919a69c3b6f425'
 export const BROWSER_BRAND_RASTER_HREF = '/api/xiaoshe/legacy-adapted-brand-raster?v=ac2b7c8f62f571c6'
@@ -611,12 +1219,13 @@ export function mountBrowserBrand(doc: Document, createObserver?: BrowserBrandOb
 
   applyBrand()
   const observer = createObserver?.(applyBrand)
+  // Observe structural favicon replacement only. Watching the attributes we
+  // write can race a host/theme favicon owner into an endless MutationObserver
+  // ping-pong; in Electron that starves the renderer and leaves a painted but
+  // non-interactive window. A newly inserted icon still triggers re-ownership.
   observer?.observe(doc.head, {
     childList: true,
     subtree: true,
-    characterData: true,
-    attributes: true,
-    attributeFilter: ['href', 'rel', 'type'],
   })
 
   return () => {
@@ -748,6 +1357,8 @@ export const DEFAULT_DRAFT_IMAGE_LIMITS: RuntimeImageInputLimits = Object.freeze
 })
 
 export const COMPOSER_DRAFT_STORAGE_PREFIX = 'xsla-composer-draft-v1:'
+/** sessionStorage deliberately keeps unfinished prompts out of durable disk storage. */
+export const COMPOSER_DRAFT_CURRENT_WINDOW_NOTICE = '草稿仅保存在当前窗口；关闭窗口或崩溃后不会恢复。'
 const UNBOUND_COMPOSER_DRAFT_KEY = '__new-session__'
 const MAX_STORED_DRAFT_TEXT_CHARACTERS = 1_000_000
 const MAX_STORED_DRAFT_IMAGE_DATA_CHARACTERS = 8 * 1024 * 1024
@@ -916,6 +1527,7 @@ export interface UserTurnNavigationItem {
   readonly eventIndex: number
   readonly ordinal: number
   readonly preview: string
+  readonly seq?: number
 }
 
 interface UserTurnPreviewState {
@@ -929,20 +1541,171 @@ const USER_TURN_PREVIEW_MAX_CHARS = 96
 const SESSION_CATALOG_PAGE_SIZE = 100
 
 /** Derive the visual turn index from the authoritative timeline without copying session state. */
-export function buildUserTurnNavigation(items: TimelineSnapshot['items']): readonly UserTurnNavigationItem[] {
+export function buildUserTurnNavigation(items: TimelineSnapshot['items'], outline?: readonly { key: string; seq: number; text: string }[]): readonly UserTurnNavigationItem[] {
+  if (outline !== undefined) return outline.map((item, index) => ({
+    key: item.key, seq: item.seq, eventIndex: items.findIndex(row => row.key === item.key), ordinal: index + 1,
+    preview: item.text.replace(/\s+/gu, ' ').trim().slice(0, USER_TURN_PREVIEW_MAX_CHARS) || '（附件或无文字内容）',
+  }))
   const result: UserTurnNavigationItem[] = []
   for (const [eventIndex, item] of items.entries()) {
     if (item.kind !== 'user') continue
     const normalized = item.text.replace(/\s+/g, ' ').trim()
     const characters = Array.from(normalized)
     const preview = normalized === ''
-      ? '（无文字内容）'
+      ? (item.images?.length ? `图片 ${item.images.length} 张` : '（无文字内容）')
       : characters.length <= USER_TURN_PREVIEW_MAX_CHARS
         ? normalized
         : `${characters.slice(0, USER_TURN_PREVIEW_MAX_CHARS - 1).join('').trimEnd()}…`
     result.push({ key: item.key, eventIndex, ordinal: result.length + 1, preview })
   }
   return result
+}
+
+/** Page the complete outline, not the timeline itself. Reserve two 24px controls
+ * for long conversations so neither history length nor page zoom adds a nested
+ * scrollbar. A manual page is temporary; the next reading-position change follows
+ * the active message again. Tiny viewports keep ordinary transcript scrolling. */
+export function userTurnNavigationPage(
+  items: readonly UserTurnNavigationItem[], activeOrdinal: number | undefined,
+  requestedPage: number | undefined, availableHeight: number | undefined,
+): { items: readonly UserTurnNavigationItem[]; page: number; pageCount: number } {
+  const height = availableHeight !== undefined && Number.isFinite(availableHeight) ? availableHeight : 216
+  const slots = Math.min(7, Math.max(0, Math.floor((height - 16) / 24)))
+  const needsPaging = items.length > Math.min(5, slots)
+  const capacity = Math.min(5, Math.max(0, slots - (needsPaging ? 2 : 0)))
+  if (items.length === 0 || capacity === 0) return { items: [], page: 0, pageCount: 0 }
+  const pageCount = Math.ceil(items.length / capacity)
+  const activeIndex = Math.max(0, items.findIndex(item => item.ordinal === activeOrdinal))
+  const requested = requestedPage !== undefined && Number.isFinite(requestedPage)
+    ? Math.floor(requestedPage) : Math.floor(activeIndex / capacity)
+  const page = Math.min(pageCount - 1, Math.max(0, requested))
+  return { items: items.slice(page * capacity, (page + 1) * capacity), page, pageCount }
+}
+
+/** Prefetch only on upward reading, never on startup or bottom-follow. */
+export function shouldPrefetchHistory(input: {
+  scrollTop: number; previousTop: number; clientHeight: number; hasEarlier: boolean; loading: boolean
+}): boolean {
+  return input.hasEarlier && !input.loading
+    && [input.scrollTop, input.previousTop, input.clientHeight].every(Number.isFinite)
+    && input.clientHeight > 0 && input.scrollTop < input.previousTop
+    && input.scrollTop <= Math.min(240, input.clientHeight / 2)
+}
+
+/** Stable-message anchoring excludes unrelated new replies from the prepend
+ * delta. Height is a fallback for a viewport without a surviving anchor. */
+export function historyPrependScrollTop(input: {
+  scrollTop: number; previousHeight: number; scrollHeight: number; anchorTop?: number; previousAnchorTop?: number
+}): number {
+  const delta = input.anchorTop !== undefined && input.previousAnchorTop !== undefined
+    ? input.anchorTop - input.previousAnchorTop : Math.max(0, input.scrollHeight - input.previousHeight)
+  return Math.max(0, input.scrollTop + delta)
+}
+
+interface HistoryPrependState {
+  readonly owner: string | undefined
+  readonly firstKey: string | undefined
+  anchorKey: string | undefined
+  anchorTop: number | undefined
+  height: number
+  timeout?: ReturnType<typeof setTimeout>
+}
+
+/** Record the reader's current message, including collapsed tool groups. */
+function historyViewportAnchor(stream: HTMLElement): Pick<HistoryPrependState, 'anchorKey' | 'anchorTop' | 'height'> {
+  const top = stream.getBoundingClientRect().top
+  const anchor = Array.from(stream.querySelectorAll<HTMLElement>('.events > [data-event-key]'))
+    .find(node => node.getBoundingClientRect().bottom > top + 1)
+  return { height: stream.scrollHeight, anchorKey: anchor?.getAttribute('data-event-key') ?? undefined,
+    anchorTop: anchor === undefined ? undefined : anchor.getBoundingClientRect().top - top }
+}
+
+type HistoryImageState = { readonly status: 'loading' | 'ready' | 'error'; readonly url?: string }
+
+/** A rendered historical image owns only its Blob URL, never composer state.
+ * Generation checks also cover retry/unmount while an authorized read is pending. */
+export function createHistoryImageResource(input: {
+  readonly sessionId: string; readonly image: HistoryImageRef; readonly readImage: HistoryImageReader
+  readonly onChange: (state: HistoryImageState) => void
+}, urls: Pick<typeof URL, 'createObjectURL' | 'revokeObjectURL'> = URL): { load(): Promise<void>; fail(): void; dispose(): void } {
+  let generation = 0; let disposed = false; let ownedUrl: string | undefined
+  const release = (): void => { if (ownedUrl !== undefined) { urls.revokeObjectURL(ownedUrl); ownedUrl = undefined } }
+  const fail = (): void => { if (disposed) return; generation++; release(); input.onChange({ status: 'error' }) }
+  return {
+    async load() {
+      if (disposed) return
+      const request = ++generation; release(); input.onChange({ status: 'loading' })
+      try {
+        const result = await input.readImage({ sessionId: input.sessionId, attachmentId: input.image.attachmentId })
+        if (disposed || generation !== request) return
+        const actual = result.attachment; const expected = input.image
+        if (!actual || !/^sha256:[a-f0-9]{64}$/u.test(actual.attachmentId)
+          || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(actual.mediaType)
+          || actual.attachmentId !== expected.attachmentId || actual.mediaType !== expected.mediaType
+          || actual.width !== expected.width || actual.height !== expected.height || actual.bytes !== expected.bytes
+          || !(result.data instanceof Uint8Array) || result.data.byteLength !== expected.bytes) throw new Error('invalid historical image')
+        const url = urls.createObjectURL(new Blob([Uint8Array.from(result.data).buffer], { type: actual.mediaType }))
+        if (!url.startsWith('blob:')) throw new Error('historical images require Blob URLs')
+        ownedUrl = url
+        input.onChange({ status: 'ready', url })
+      } catch { if (!disposed && generation === request) fail() }
+    },
+    fail,
+    dispose() { if (disposed) return; disposed = true; generation++; release() },
+  }
+}
+
+export function createHistoryImageComponent(react: ReactLike, readImage: HistoryImageReader): (props: { sessionId: string; image: HistoryImageRef; ordinal: number }) => unknown {
+  const e = react.createElement
+  const ImageViewer = createImageViewer(react)
+  return ({ sessionId, image, ordinal }) => {
+    const identity = JSON.stringify([sessionId, image.attachmentId, image.mediaType, image.bytes, image.width, image.height])
+    const [loaded, setLoaded] = react.useState<{ identity: string; value: HistoryImageState }>({ identity, value: { status: 'loading' } })
+    const resource = react.useRef<ReturnType<typeof createHistoryImageResource> | undefined>(undefined)
+    react.useEffect(() => {
+      const current = createHistoryImageResource({ sessionId, image, readImage, onChange: value => setLoaded({ identity, value }) })
+      resource.current = current; void current.load()
+      return () => { current.dispose(); if (resource.current === current) resource.current = undefined }
+    }, [identity])
+    const state = loaded.identity === identity ? loaded.value : { status: 'loading' as const }
+    const label = image.name || `历史图片 ${ordinal}`
+    const imageProps = {
+      src: state.url, alt: label, width: image.width, height: image.height,
+      'data-attachment-id': image.attachmentId, 'data-session-id': sessionId,
+      onError: () => resource.current?.fail(),
+    }
+    return e('figure', { className: 'history-image', 'data-attachment-id': image.attachmentId, 'data-session-id': sessionId, 'data-image-state': state.status },
+      state.status === 'ready' && state.url?.startsWith('blob:') ? e(ImageViewer, imageProps, e('img', imageProps)) : e('div', { className: 'history-image-placeholder', role: 'status' },
+        state.status === 'error' ? '图片加载失败' : '图片加载中…',
+        state.status === 'error' ? e('button', { type: 'button', onClick: () => { void resource.current?.load() }, 'aria-label': `重试加载${label}` }, '重试') : null),
+      e('figcaption', null, label))
+  }
+}
+
+/** Decorative image expansion does not navigate or outlive its parent's owned URL. */
+function createImageViewer(react: ReactLike): (props: { src: string; alt: string; width?: number; height?: number; onError?: () => void; children?: unknown }) => unknown {
+  const e = react.createElement
+  return props => {
+    const [open, setOpen] = react.useState(false)
+    const trigger = react.useRef<HTMLButtonElement | null>(null)
+    const close = react.useRef<HTMLButtonElement | null>(null)
+    react.useEffect(() => { setOpen(false) }, [props.src])
+    react.useEffect(() => {
+      if (!open) return
+      close.current?.focus()
+      return () => { trigger.current?.focus() }
+    }, [open])
+    return e('div', { className: 'image-viewer' },
+      e('button', { type: 'button', ref: trigger, className: 'image-expand', 'aria-label': `放大 ${props.alt}`, onClick: () => setOpen(true) }, props.children ?? e('img', props)),
+      !open ? null : e('div', { className: 'image-lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': props.alt,
+        onClick: (event: { target: EventTarget; currentTarget: EventTarget }) => { if (event.target === event.currentTarget) setOpen(false) },
+        onKeyDown: (event: { key: string; preventDefault(): void; stopPropagation(): void }) => {
+          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false) }
+          if (event.key === 'Tab') { event.preventDefault(); close.current?.focus() }
+        } },
+        e('button', { type: 'button', ref: close, 'aria-label': '关闭图片预览', onClick: () => setOpen(false) }, '关闭 · Esc'),
+        e('img', { src: props.src, alt: props.alt, onError: () => { setOpen(false); props.onError?.() } })))
+  }
 }
 
 /** Pick the message marker closest to the upper-third reading line. */
@@ -957,9 +1720,12 @@ export function activeUserTurnOrdinalAtScroll(
   // fractional. Treat a one-pixel edge as the requested reading line so an
   // explicit marker jump cannot immediately highlight the previous message.
   const subpixelTolerance = 1
-  let ordinal = 1
+  let ordinal: number | undefined
   for (const [index, offset] of offsets.entries()) {
-    if (!Number.isFinite(offset) || offset > readingLine + subpixelTolerance) break
+    // The full outline includes history outside the currently rendered window.
+    if (!Number.isFinite(offset)) continue
+    ordinal ??= index + 1
+    if (offset > readingLine + subpixelTolerance) break
     ordinal = index + 1
   }
   return ordinal
@@ -1018,6 +1784,18 @@ export function shouldOfferJumpToLatest(metrics: ConversationScrollMetrics): boo
   return distanceFromLatest > Math.max(160, clientHeight * 0.3)
 }
 
+/** Distance from the stream floor below which the reader still counts as
+ * pinned: new content keeps following. */
+const PINNED_FOLLOW_THRESHOLD = 24
+
+/** A reader within the pinned threshold owns bottom-follow; anything above it
+ * has deliberately scrolled away and must not be yanked back down. */
+export function isPinnedAtBottom(metrics: ConversationScrollMetrics): boolean {
+  const { scrollHeight, scrollTop, clientHeight } = metrics
+  if (![scrollHeight, scrollTop, clientHeight].every(Number.isFinite) || clientHeight <= 0) return true
+  return scrollHeight - clientHeight - Math.max(0, scrollTop) <= PINNED_FOLLOW_THRESHOLD
+}
+
 function conversationScrollBehavior(): ScrollBehavior {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'smooth'
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
@@ -1064,8 +1842,11 @@ export function pluginCandidatePresentation(candidate: PublicCandidate): {
       ...(developerLicense === '' ? [] : [developerLicense]),
       `来源：${candidate.provenance.label}`,
       `来源核验：${pluginSourceAssuranceLabel(candidate.provenance.assurance)} · ${pluginSourceSelectionLabel(candidate.provenance.selection)}`,
+      `签名状态：${pluginSignatureStatusLabel(candidate.signature.status)}${candidate.signature.publisher === undefined ? '' : ` · ${candidate.signature.publisher}`}`,
+      ...(candidate.signature.fingerprint === undefined ? [] : [`公钥指纹：${abbreviateHash(candidate.signature.fingerprint)}`]),
       '运行边界：本机进程内 · 系统沙箱未启用',
       `风险：${pluginRiskLabel(candidate.audit.risk)}`,
+      ...pluginPolicyFacts(candidate.audit),
       `安装包摘要 ${abbreviateHash(candidate.sha256)} · 清单摘要 ${abbreviateHash(candidate.manifestSha256)}`,
     ]),
   }
@@ -1198,18 +1979,19 @@ export function reconcileWorkSurfaceDockPreference(
   const ids = items.map(item => item.id)
   const available = new Set(ids)
   const known = new Set(preference.knownIds)
-  const newIds = ids.filter(id => !known.has(id))
   for (const id of ids) known.add(id)
   const knownIds = [...known].slice(-64)
   const pinnedIds = preference.pinnedIds.filter(id => available.has(id))
   const dismissedIds = preference.dismissedIds.filter(id => available.has(id))
   const visible = ids.filter(id => !dismissedIds.includes(id))
-  const newest = newIds.at(-1)
-  const activeId = newest ?? (preference.activeId !== undefined && visible.includes(preference.activeId)
+  // Replay and passive tool results update the list, not the user's intent.
+  // Explicit material/launcher clicks own opening; new results must not steal
+  // the selected content or reopen a dock the user has just closed.
+  const activeId = preference.activeId !== undefined && visible.includes(preference.activeId)
     ? preference.activeId
-    : visible.at(-1))
+    : visible.at(-1)
   const reconciled = {
-    open: items.length > 0 && (newest !== undefined || (preference.open && activeId !== undefined)),
+    open: preference.open && activeId !== undefined,
     width: preference.width,
     pinnedIds,
     dismissedIds,
@@ -1230,9 +2012,61 @@ export function dismissWorkSurface(preference: WorkSurfaceDockPreference, surfac
 /** Constrain the internal divider while keeping a useful conversation column. */
 export function workSurfaceDockWidth(requested: number, chatWidth = Number.POSITIVE_INFINITY): number {
   const maximumForChat = Number.isFinite(chatWidth)
-    ? Math.max(WORK_SURFACE_DOCK_LIMITS.min, Math.floor(chatWidth - 360))
+    // Reserve the existing 14 px divider hit target as well: a visually fitted
+    // dock can otherwise still steal clicks from the composer's send button.
+    ? Math.max(WORK_SURFACE_DOCK_LIMITS.min, Math.floor(chatWidth - 360 - 14))
     : WORK_SURFACE_DOCK_LIMITS.max
   return Math.round(clampNumber(requested, WORK_SURFACE_DOCK_LIMITS.min, Math.min(WORK_SURFACE_DOCK_LIMITS.max, maximumForChat)))
+}
+
+const BROWSER_WIDTH_STORAGE_KEY = 'xsla-browser-width-v1'
+
+export type WorkbenchView = 'task' | 'materials' | 'browser'
+const WORKBENCH_OVERLAY_BREAKPOINT = 900
+
+/** One reading area, with the existing per-mode preferences kept intact. */
+export function workbenchPanelWidth(view: WorkbenchView, widths: { task: number; materials: number; browser: number | undefined }, availableWidth: number): number {
+  if (view === 'browser') return browserDockWidth(widths.browser, availableWidth)
+  if (view === 'materials') return workSurfaceDockWidth(widths.materials, availableWidth)
+  const requested = Number.isFinite(widths.task) && widths.task > 0 ? widths.task : 280
+  const maximum = Number.isFinite(availableWidth) ? Math.max(248, Math.min(400, availableWidth - 374)) : 400
+  return Math.round(clampNumber(requested, 248, maximum))
+}
+
+export function workbenchTabKeyTarget(current: WorkbenchView, key: string, browserAvailable: boolean): WorkbenchView | undefined {
+  const views: WorkbenchView[] = browserAvailable ? ['task', 'materials', 'browser'] : ['task', 'materials']
+  const index = Math.max(0, views.indexOf(current))
+  if (key === 'Home') return views[0]
+  if (key === 'End') return views.at(-1)
+  if (key === 'ArrowRight') return views[(index + 1) % views.length]
+  if (key === 'ArrowLeft') return views[(index + views.length - 1) % views.length]
+  return undefined
+}
+
+export function workbenchNotice(options: {
+  questionCount: number; approvalCount: number; runCenter: RunCenterSnapshot
+  contextView: { level: string }; heartbeat: { tone?: string }
+}): { kind: 'interaction' | 'task'; label: string } | undefined {
+  if (options.questionCount > 0) return { kind: 'interaction', label: `${options.questionCount} 项问题等待回答` }
+  if (options.approvalCount > 0) return { kind: 'interaction', label: `${options.approvalCount} 项操作等待确认` }
+  if (options.runCenter.status === 'error') return { kind: 'task', label: /not attached|not found/i.test(options.runCenter.error ?? '') ? '任务状态未连接' : '任务状态需要关注' }
+  if (runCenterWorkbenchPresentation(options.runCenter).attentionGroups.length > 0 || options.contextView.level === 'critical' || options.heartbeat.tone === 'warn') return { kind: 'task', label: '有运行事项需要关注' }
+  return undefined
+}
+
+export function browserDockWidth(requested: number | undefined, chatWidth: number): number {
+  const available = Number.isFinite(chatWidth) && chatWidth > 0 ? chatWidth : 1236
+  const maximum = Math.max(320, Math.floor(available - 374))
+  const preferred = requested !== undefined && Number.isFinite(requested) && requested > 0
+    ? requested : Math.min(available * .55, 680)
+  return Math.round(clampNumber(preferred, 320, maximum))
+}
+
+function readBrowserWidth(): number | undefined {
+  try {
+    const value = Number(globalThis.localStorage?.getItem(BROWSER_WIDTH_STORAGE_KEY))
+    return Number.isFinite(value) && value > 0 ? value : undefined
+  } catch { return undefined }
 }
 
 export type ResizablePanel = 'side' | 'inspector'
@@ -1245,11 +2079,11 @@ export interface PanelWidths {
 export const PANEL_WIDTH_STORAGE_KEY = 'xsla-panel-widths-v1'
 // Below this width the inspector becomes a drawer so the current task keeps
 // a genuinely useful working surface on compact laptops and portrait tablets.
-export const PANEL_RESIZE_DESKTOP_BREAKPOINT = 1180
+export const PANEL_RESIZE_DESKTOP_BREAKPOINT = 1240
 export const PANEL_WIDTH_LIMITS = {
   side: { min: 188, max: 420, standard: 232, wide: 256 },
-  inspector: { min: 248, max: 480, standard: 292, wide: 320 },
-  centerMin: 520,
+  inspector: { min: 248, max: 400, standard: 280, wide: 300 },
+  centerMin: 640,
 } as const
 
 function clampNumber(value: number, minimum: number, maximum: number): number {
@@ -1391,6 +2225,20 @@ export function transitionOverlayState(
   return { side: false, inspector: !current.inspector }
 }
 
+/** Opening the inspector is a drawer action only while the rails are off-canvas. */
+export function openInspectorOverlayState(_current: OverlayState, viewportWidth: number): OverlayState {
+  return viewportWidth <= PANEL_RESIZE_DESKTOP_BREAKPOINT
+    ? { side: false, inspector: true }
+    : { side: false, inspector: false }
+}
+
+/** A desktop resize must never leave a mobile scrim covering the application. */
+export function overlayStateAfterViewportResize(current: OverlayState, viewportWidth: number): OverlayState {
+  return viewportWidth > PANEL_RESIZE_DESKTOP_BREAKPOINT && (current.side || current.inspector)
+    ? { side: false, inspector: false }
+    : current
+}
+
 /** Abort the previous query and permanently close the coordinator on unmount. */
 export function createSearchCoordinator(
   execute: (query: string, signal: AbortSignal) => Promise<Result<SearchResult>>,
@@ -1524,6 +2372,88 @@ export function apply(
   const e = react.createElement
   const MarkdownText = injectedPrimitives?.MarkdownText ?? loadMarkdownTextPrimitive(react)
   const composerEnterPreference = createComposerEnterPreference()
+  const appearance = createAppearancePreference(ctx.settingsScope?.bind({ namespace: 'xiaoshe-appearance' }))
+  let releasePalette: (() => void) | undefined
+  let installedPalette = ''
+  const syncPalette = (): void => {
+    const value = appearance.getSnapshot().value
+    const identity = JSON.stringify(value)
+    if (identity === installedPalette) return
+    installedPalette = identity
+    const light = appearanceTokens(value, 'light'); const dark = appearanceTokens(value, 'dark')
+    const pairs = Object.fromEntries(Object.keys(light).map(key => [key, { light: light[key]!, dark: dark[key]! }]))
+    // Replace before disposing the old layer: avoids a flash and duplicate theme ownership.
+    const previous = releasePalette
+    releasePalette = ctx.theme.overrideTokens?.('xiaoshe-appearance', pairs)
+    previous?.()
+  }
+  syncPalette()
+  const unsubscribeAppearance = appearance.subscribe(syncPalette)
+  const AppearanceSettingsSection = (): unknown => {
+    const state = react.useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
+    const themeState = react.useSyncExternalStore(listener => ctx.on('theme/change', listener), () => ctx.theme.getTheme())
+    const [customDraft, setCustomDraft] = react.useState(state.value.customAccent)
+    react.useEffect(() => setCustomDraft(state.value.customAccent), [state.value.customAccent])
+    const validCustom = /^#[0-9a-f]{6}$/iu.test(customDraft)
+    const mode = themeState.active.colorScheme
+    const choose = (preset: AppearancePreset): void => { void appearance.save({ ...state.value, preset }) }
+    return e('section', { className: 'xsla-settings-page xsla-appearance', 'data-native-settings': 'appearance' },
+      e('div', { className: 'xsla-settings-heading' }, e('h2', null, '外观'), e('p', null, '选择舒服的明暗与配色。设置保存在本机，所有会话共用。')),
+      e('div', { className: 'xsla-appearance-grid' },
+        e('div', { className: 'xsla-appearance-controls' },
+          e('fieldset', null, e('legend', null, '显示模式'),
+            e('div', { className: 'xsla-mode-options', role: 'group', 'aria-label': '显示模式' },
+              ...(['light', 'dark', 'system'] as const).map((id, index) => e('button', {
+                type: 'button', key: id, 'aria-pressed': themeState.preference === id,
+                onClick: () => ctx.theme.setTheme(id),
+              }, e('span', { className: 'xsla-mode-window', 'data-mode': id, 'aria-hidden': 'true' }, e('i', null), e('span', null)),
+              e('span', null, ['亮色', '暗色', '跟随系统'][index]))))),
+          e('fieldset', null, e('legend', null, '配色方案'),
+            e('div', { className: 'xsla-palette-options', role: 'group', 'aria-label': '配色方案' },
+              ...APPEARANCE_PRESETS.map(preset => e('button', {
+                type: 'button', key: preset.id, 'aria-pressed': state.value.preset === preset.id,
+                disabled: !state.writable, onClick: () => choose(preset.id),
+              }, e('span', { className: 'xsla-palette-swatches', 'aria-hidden': 'true' },
+                ...[preset.accent, ...preset[mode].slice(0, 2)].map((color, index) => e('i', { key: index, style: { background: color } }))),
+              e('span', null, e('b', null, preset.label), e('small', null, preset.detail)),
+              state.value.preset === preset.id ? e('span', { className: 'xsla-choice-check', 'aria-hidden': 'true' }, '✓') : null)))),
+          e('fieldset', { className: 'xsla-custom-accent' }, e('legend', null, '自定义强调色'),
+            e('p', null, '用于按钮与选中状态；自动调整明暗保证可读性，不改变标识。'),
+            e('div', { className: 'xsla-color-inputs' },
+              e('input', { type: 'color', 'aria-label': '选择强调色', value: validCustom ? customDraft : state.value.customAccent, disabled: !state.writable,
+                onChange: (event: { currentTarget: HTMLInputElement }) => { setCustomDraft(event.currentTarget.value); void appearance.save({ preset: 'custom', customAccent: event.currentTarget.value }) } }),
+              e('input', { type: 'text', 'aria-label': '强调色十六进制值', value: customDraft, maxLength: 7, spellCheck: false, disabled: !state.writable,
+                'aria-invalid': !validCustom, onChange: (event: { currentTarget: HTMLInputElement }) => setCustomDraft(event.currentTarget.value),
+                onKeyDown: (event: { key: string; preventDefault(): void }) => { if (event.key === 'Enter' && validCustom) { event.preventDefault(); void appearance.save({ preset: 'custom', customAccent: customDraft }) } } }),
+              e('button', { type: 'button', className: 'xsla-settings-action', disabled: !state.writable || !validCustom,
+                onClick: () => { void appearance.save({ preset: 'custom', customAccent: customDraft }) } }, state.value.preset === 'custom' && customDraft.toLowerCase() === state.value.customAccent ? '已应用' : '应用')),
+            validCustom ? null : e('p', { className: 'xsla-appearance-error', role: 'status' }, '请输入六位颜色值，例如 #4D6E54。')),
+          e('div', { className: 'xsla-appearance-footer' },
+            e('span', { role: 'status', 'aria-live': 'polite', 'data-appearance-save': state.status },
+              { loading: '正在读取配色…', ready: '配色已保存', saving: '正在保存配色…', error: '配色未保存，请重试', unavailable: '配色存储暂不可用' }[state.status]),
+            state.status === 'error' ? e('button', { className: 'xsla-settings-action', type: 'button', disabled: !state.writable, onClick: () => { void appearance.save(state.value) } }, '重试保存') : null,
+            e('button', { className: 'xsla-settings-action', type: 'button', disabled: !state.writable, onClick: () => { void appearance.save(DEFAULT_APPEARANCE) } }, '恢复默认配色'))),
+        e('aside', { className: 'xsla-appearance-sample', 'aria-label': '当前外观示意', style: appearanceTokens(state.value, mode) },
+          e('div', { className: 'xsla-sample-window', 'aria-hidden': 'true' },
+            e('div', { className: 'xsla-sample-rail' }, brandMark(e, 'xsla-sample-brand', 'appearance'), e('i', null), e('i', null), e('i', null)),
+            e('div', { className: 'xsla-sample-chat' }, e('header', null, '小蛇'),
+              e('div', { className: 'xsla-sample-bubble' }, '把想做的事写下来'),
+              e('div', { className: 'xsla-sample-answer' }, e('b', null, '清晰，专注'), e('p', null, '正文、进展和工作材料各在其位。')),
+              e('div', { className: 'xsla-sample-input' }, e('span', null, '输入你的任务…'), e('b', null, '↑')))),
+          e('p', { className: 'xsla-sample-caption' }, '外观示意 · 实际界面同步应用'),
+          e('small', null, '文字大小仍可在「通用」中调整。'))))
+  }
+  // The shell retains drafts and project guards while settings owns navigation.
+  // These are presentation snapshots only; Memory and runtime stores remain the
+  // sole owners of durable facts and all writes use the existing handlers.
+  let managementPages: Readonly<{ memory: unknown; runtime: unknown }> = { memory: null, runtime: null }
+  const managementListeners = new Set<() => void>()
+  const ManagementSettingsSection = (props: { readonly page: 'memory' | 'runtime' }): unknown => {
+    const pages = react.useSyncExternalStore(listener => { managementListeners.add(listener); return () => { managementListeners.delete(listener) } }, () => managementPages)
+    return e('section', { className: 'xsla-settings-page xsla-management-page', 'data-native-settings': props.page }, pages[props.page])
+  }
+  const MemorySettingsSection = (): unknown => e(ManagementSettingsSection, { page: 'memory' })
+  const RuntimeSettingsSection = (): unknown => e(ManagementSettingsSection, { page: 'runtime' })
 
   /** Xiaoshe owns the visible settings identity; DSH only supplies the slot ledger. */
   const SettingsBrandHeader = (): unknown => e('div', { className: 'xsla-settings-brand' },
@@ -1532,7 +2462,7 @@ export function apply(
       e('b', null, '小蛇设置'),
       e('small', null, '设置中心 · 本机配置')))
 
-  const SettingsTriggerContent = (props: { readonly wide?: boolean } = {}): unknown => e('span', { className: 'xsla-settings-trigger-content' },
+  const SettingsTriggerContent = (props: { readonly wide?: boolean } = {}): unknown => e('span', { className: 'xsla-settings-trigger-content', 'data-xsla-settings-trigger-content': '' },
     settingsGlyph(e),
     props.wide === false ? null : e('span', null, '设置'))
 
@@ -1566,7 +2496,18 @@ export function apply(
   const SecuritySettingsSection = (props: { readonly close?: () => void } = {}): unknown => {
     const runtime = react.useSyncExternalStore(listener => ctx.agentRuntimeSession.subscribe(listener), () => ctx.agentRuntimeSession.getSnapshot())
     const permissions = react.useSyncExternalStore(listener => ctx.permissionPresets.subscribe(listener), () => ctx.permissionPresets.getSnapshot())
+    const productHealth = react.useSyncExternalStore(listener => ctx.productHealth.subscribe(listener), () => ctx.productHealth.getSnapshot())
+    const [networkPlugins, setNetworkPlugins] = react.useState<readonly HostPluginFact[] | undefined>(undefined)
     const current = permissions.options.find(option => option.value === permissions.currentValue)
+    const desktop = 'value' in productHealth ? productHealth.value?.desktop : undefined
+    const network = networkCapabilityPresentation({ desktop, plugins: networkPlugins })
+    react.useEffect(() => {
+      let active = true
+      void ctx.pluginGovernance.listHostPlugins().then(result => {
+        if (active && result.ok) setNetworkPlugins(result.value?.entries ?? [])
+      }).catch(() => {})
+      return () => { active = false }
+    }, [])
     const focusPermissionControl = (): void => {
       props.close?.()
       queueMicrotask(() => {
@@ -1588,6 +2529,11 @@ export function apply(
         ...permissions.options.map(option => e('div', { className: 'xsla-settings-fact', role: 'listitem', key: option.value },
           e('b', null, permissionPresetLabel(option.value, option.name)),
           e('span', null, permissionPresetDescription(option.value) || option.description || '由运行时定义')))),
+      e('article', { className: 'xsla-settings-card', 'data-capability': 'network' },
+        e('div', { className: 'xsla-settings-card-head' },
+          e('div', null, e('b', null, '网络能力'), e('small', null, '独立于文件权限')),
+          e('span', { className: 'xsla-settings-badge', 'data-status': network.state }, network.label)),
+        e('p', null, network.detail)),
       e('p', { className: 'xsla-settings-boundary' }, '当前版本不提供无效的跨会话默认权限开关；底层支持后再由权限插件贡献。'))
   }
 
@@ -1621,15 +2567,57 @@ export function apply(
     const actions = record(desktopStatus?.actions)
     const waiting = health.status === 'idle' || health.status === 'loading'
     const unavailable = waiting ? '读取中…' : '提供方不可用'
+    const [versionReport, setVersionReport] = react.useState<unknown>(undefined)
+    const [checkingVersion, setCheckingVersion] = react.useState(false)
+    const [versionError, setVersionError] = react.useState('')
+    const versionRequest = react.useRef<AbortController | undefined>(undefined)
+    const versionView = runtimeVersionPresentation(versionReport)
+    const checkVersion = async (): Promise<void> => {
+      versionRequest.current?.abort()
+      const controller = new AbortController(); versionRequest.current = controller
+      const timer = setTimeout(() => controller.abort(), 35_000)
+      setCheckingVersion(true); setVersionError(''); setVersionReport(undefined)
+      try {
+        const query = /^[a-f0-9]{64}$/u.test(CLIENT_SOURCE_IDENTITY) ? `?frontend_identity=${CLIENT_SOURCE_IDENTITY}` : ''
+        const response = await fetch(`/xiaoshe/desktop/version${query}`, { signal: controller.signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error' })
+        if (response.status === 404) throw new Error('当前后台尚不提供版本诊断；请先保存草稿，再按受控启动流程更新后台。')
+        if (!response.ok) throw new Error('本次版本诊断未完成，不能确认新版；可稍后重新检查。')
+        const report: unknown = await response.json()
+        if (versionRequest.current === controller) setVersionReport(report)
+      } catch (failure) {
+        if (versionRequest.current === controller) setVersionError(controller.signal.aborted ? '版本检查超时，未刷新或重启任何服务。' : failure instanceof Error ? failure.message : '版本检查不可用。')
+      } finally {
+        clearTimeout(timer)
+        if (versionRequest.current === controller) { versionRequest.current = undefined; setCheckingVersion(false) }
+      }
+    }
+    react.useEffect(() => {
+      void checkVersion()
+      return () => { const pending = versionRequest.current; versionRequest.current = undefined; pending?.abort() }
+    }, [])
     return e('section', { className: 'xsla-settings-page', 'data-native-settings': 'about' },
       e('div', { className: 'xsla-settings-heading' },
         e('h2', null, '高级与关于'),
         e('p', null, '来自桌面桥的实时版本与诊断信息。')),
+      e('article', { className: 'xsla-settings-card' },
+        e('b', null, '数据分享 · 产品默认值'),
+        e('p', null, '公开发行配置默认关闭额外插件清单上报与模型请求日志上传；正常模型对话和本地会话记录不受影响。'),
+        e('small', null, '这不是本机开关状态读数。已有个人配置可覆盖默认值，可通过“打开配置文件”核对或调整。')),
       e('article', { className: 'xsla-settings-card xsla-about-card' },
         brandMark(e, 'xsla-about-mark', 'about'),
         e('div', { className: 'xsla-about-copy' },
           e('b', null, String(desktopStatus?.product ?? '小蛇')),
           e('span', null, `版本 ${String(desktopStatus?.version ?? unavailable)} · 小蛇 UI 适配版`))),
+      e('article', { className: 'xsla-settings-card', 'data-version-status': versionView.state },
+        e('div', { className: 'xsla-settings-card-head' },
+          e('b', null, '版本一致性'),
+          e('span', { className: 'xsla-settings-badge', 'data-status': versionView.state }, checkingVersion ? '正在核对…' : versionView.label)),
+        e('p', { ...(versionView.state === 'stale' ? { role: 'alert' } : {}) }, versionView.detail),
+        e('div', { className: 'xsla-settings-facts', role: 'list', 'aria-label': '版本来源与身份' },
+          ...versionView.facts.map(([label, value]) => e('div', { className: 'xsla-settings-fact', role: 'listitem', key: label }, e('b', null, label), e('span', null, value)))),
+        versionError ? e('p', { className: 'xsla-settings-error', role: 'alert' }, versionError) : null,
+        e('button', { className: 'xsla-settings-action', type: 'button', disabled: checkingVersion, onClick: () => { void checkVersion() } }, checkingVersion ? '检查中…' : '重新检查版本'),
+        e('p', { className: 'xsla-settings-boundary' }, '只读检查本机文件和启动身份，不连接模型、不自动安装或重启。源码继续变化后需要重新检查。')),
       e('div', { className: 'xsla-settings-facts', role: 'list', 'aria-label': '运行诊断' },
         e('div', { className: 'xsla-settings-fact', role: 'listitem' }, e('b', null, '桌面桥'), e('span', null, bridge === undefined ? unavailable : `${String(bridge.state)} · ${String(bridge.platform ?? '平台未报告')}`)),
         e('div', { className: 'xsla-settings-fact', role: 'listitem' }, e('b', null, '持久操作'), e('span', null, actions === undefined ? unavailable : actions.persistent === true ? '已启用' : '未启用')),
@@ -1639,13 +2627,20 @@ export function apply(
       e('p', { className: 'xsla-settings-boundary' }, '配置文件由设置标题栏的“打开配置文件”入口管理；日志由本机启动器持续写入。'))
   }
 
+  const BrowserDock = createBrowserDock(react)
+  const HistoryImage = createHistoryImageComponent(react, input => ctx.taskTimeline.readImage(input))
+  const FilePreview = createFilePreviewComponent(react, input => ctx.runtimeFiles === undefined
+    ? Promise.resolve({ ok: false, error: { message: '当前运行端不支持文件读取，请更新后重试' } }) : ctx.runtimeFiles.read(input), MarkdownText)
   const Shell = (slotProps: ShellSlotProps = {}): unknown => {
+    react.useEffect(mountLoadedFrontendVersion, [])
     const runtime = react.useSyncExternalStore(listener => ctx.agentRuntimeSession.subscribe(listener), () => ctx.agentRuntimeSession.getSnapshot())
     const catalog = react.useSyncExternalStore(listener => ctx.sessionCatalog.subscribe(listener), () => ctx.sessionCatalog.getSnapshot())
     const timeline = react.useSyncExternalStore(listener => ctx.taskTimeline.subscribe(listener), () => ctx.taskTimeline.getSnapshot())
     const workSurfaces = react.useSyncExternalStore(listener => ctx.workSurfaceRegistry.subscribe(listener), () => ctx.workSurfaceRegistry.getSnapshot())
     const context = react.useSyncExternalStore(listener => ctx.contextGovernance.subscribe(listener), () => ctx.contextGovernance.getSnapshot())
     const models = react.useSyncExternalStore(listener => ctx.modelCatalog.subscribe(listener), () => ctx.modelCatalog.getSnapshot())
+    const runCenter = react.useSyncExternalStore(listener => ctx.runCenter.subscribe(listener), () => ctx.runCenter.getSnapshot())
+    const providerReadinessSnapshot = react.useSyncExternalStore(listener => ctx.providerReadiness.subscribe(listener), () => ctx.providerReadiness.getSnapshot())
     const workspaces = react.useSyncExternalStore(listener => ctx.workspaceCatalog.subscribe(listener), () => ctx.workspaceCatalog.getSnapshot())
     const approvals = react.useSyncExternalStore(listener => ctx.userApproval.subscribe(listener), () => ctx.userApproval.getSnapshot())
     const questionInteractions = react.useSyncExternalStore(listener => ctx.userQuestionInteraction.subscribe(listener), () => ctx.userQuestionInteraction.getSnapshot())
@@ -1654,26 +2649,36 @@ export function apply(
     const productHealth = react.useSyncExternalStore(listener => ctx.productHealth.subscribe(listener), () => ctx.productHealth.getSnapshot())
     const pluginState = react.useSyncExternalStore(listener => ctx.pluginGovernance.subscribe(listener), () => ctx.pluginGovernance.getSnapshot())
     const themeSnapshot = react.useSyncExternalStore(listener => ctx.on('theme/change', listener), () => ctx.theme.getTheme())
+    const appearanceSnapshot = react.useSyncExternalStore(appearance.subscribe, appearance.getSnapshot)
     const enterBehavior = react.useSyncExternalStore(composerEnterPreference.subscribe, composerEnterPreference.getSnapshot)
     const currentId = runtime.currentSessionId
+    const sessionModels = modelCatalogForSession(models, currentId)
+    const providerReadiness = providerReadinessForSession(providerReadinessSnapshot, currentId)
+    const sessionRunCenter = runCenterForSession(runCenter, currentId)
+    const sessionApprovals = sessionScopedRows(approvals.approvals, approvals.sessionId, currentId)
+    const sessionQuestionRequests = sessionScopedRows(questionInteractions.requests, questionInteractions.sessionId, currentId)
     const initialComposerDraft = readComposerDraft(browserSessionDraftStorage(), currentId)
     const initialDraftImages = hydrateDraftImages(initialComposerDraft.images)
 
     const [sideCollapsed, setSideCollapsed] = react.useState(false)
-    const [inspCollapsed, setInspCollapsed] = react.useState(false)
+    const [inspCollapsed, setInspCollapsed] = react.useState(timeline.items.length === 0 || (typeof window !== 'undefined' && window.innerWidth <= WORKBENCH_OVERLAY_BREAKPOINT))
+    const [workbenchView, setWorkbenchView] = react.useState<WorkbenchView>('task')
+    const [layoutViewportWidth, setLayoutViewportWidth] = react.useState(typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth)
     const [panelWidths, setPanelWidths] = react.useState<PanelWidths>(readPanelWidthPreference())
     const [resizingPanel, setResizingPanel] = react.useState<ResizablePanel | undefined>(undefined)
     const panelWidthsTouchedRef = react.useRef(false)
     const panelResizeCleanupRef = react.useRef<(() => void) | undefined>(undefined)
     const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = react.useState<readonly string[]>(readWorkspaceGroupCollapsePreference())
     const theme = themeSnapshot.active.colorScheme === 'dark' ? 'ink-jade' : 'light'
-    const [rightTab, setRightTab] = react.useState<'status' | 'memory' | 'system'>('status')
     const [overlayState, setOverlayState] = react.useState<OverlayState>({ side: false, inspector: false })
     const sideOverlayOpen = overlayState.side
-    const inspOverlayOpen = overlayState.inspector
+    // A native page is not a modal: otherwise the browser's modal safety guard
+    // would correctly hide its own slot. Task/material drawers retain trapping.
+    const inspOverlayOpen = !inspCollapsed && layoutViewportWidth <= WORKBENCH_OVERLAY_BREAKPOINT && workbenchView !== 'browser'
     const [pluginManagerOpen, setPluginManagerOpen] = react.useState(false)
     const [commandOpen, setCommandOpen] = react.useState(false)
-    const [choiceMenu, setChoiceMenu] = react.useState<'permission' | 'effort' | undefined>(undefined)
+    const [choiceMenu, setChoiceMenu] = react.useState<'permission' | 'model' | undefined>(undefined)
+    const [modelSelectionNotice, setModelSelectionNotice] = react.useState<ModelSelectionNotice | undefined>(undefined)
     const [slashQuery, setSlashQuery] = react.useState<string | undefined>(undefined)
     const [slashSelection, setSlashSelection] = react.useState(0)
     const [permissionChallenge, setPermissionChallenge] = react.useState<string | undefined>(undefined)
@@ -1689,22 +2694,43 @@ export function apply(
     const [sideMutation, setSideMutation] = react.useState<string | undefined>(undefined)
     const [pluginWorkflow, setPluginWorkflow] = react.useState<PluginWorkflow>({ step: 'idle' })
     const [error, setError] = react.useState('')
-    const [questionFlow, setQuestionFlow] = react.useState<QuestionFlowState>(createQuestionFlowState(questionInteractions.requests[0]))
+    const [questionFlow, setQuestionFlow] = react.useState<QuestionFlowState>(createQuestionFlowState(sessionQuestionRequests[0]))
     const [submitting, setSubmitting] = react.useState(false)
+    const [sendMode, setSendMode] = react.useState<'queue' | 'steer'>('queue')
+    const [sendNotice, setSendNotice] = react.useState<{ owner: string | undefined; phase: ComposerSendPhase; mode: 'queue' | 'steer' } | undefined>(undefined)
+    const [queueEdit, setQueueEdit] = react.useState<{ id: string; text: string } | undefined>(undefined)
+    const [queueBusy, setQueueBusy] = react.useState<string | undefined>(undefined)
+    const [goalBusy, setGoalBusy] = react.useState(false)
+    const sessionOwnerRef = react.useRef(currentId)
+    sessionOwnerRef.current = currentId
+    // Identity, not just the ID: A -> B -> A must invalidate A's old UI work.
+    const sessionVisitRef = react.useRef({ id: currentId })
+    if (sessionVisitRef.current.id !== currentId) sessionVisitRef.current = { id: currentId }
     const [stopping, setStopping] = react.useState(false)
     const [draftImages, setDraftImages] = react.useState<readonly DraftImage[]>(initialDraftImages)
+    const [composerHasText, setComposerHasText] = react.useState(initialComposerDraft.text.trim() !== '')
+    const [draftFiles, setDraftFiles] = react.useState<readonly DraftFile[]>([])
+    const draftFilesRef = react.useRef<readonly DraftFile[]>([])
     const draftImagesRef = react.useRef<readonly DraftImage[]>(initialDraftImages)
     const draftStorageWarningRef = react.useRef(false)
     const composerTextareaRef = react.useRef<HTMLTextAreaElement | null>(null)
     const streamRef = react.useRef<HTMLDivElement | null>(null)
+    const historyPrependRef = react.useRef<HistoryPrependState | undefined>(undefined)
+    const previousScrollTopRef = react.useRef(0)
+    const [historyLoading, setHistoryLoading] = react.useState(false)
+    const [historyError, setHistoryError] = react.useState(false)
+    /** Bottom-follow ownership: true while the reader sits at the stream floor. */
+    const pinnedRef = react.useRef(true)
     const submittingRef = react.useRef(false)
     const stoppingRef = react.useRef(false)
     const [showJumpToLatest, setShowJumpToLatest] = react.useState(false)
     const [activeUserTurnOrdinal, setActiveUserTurnOrdinal] = react.useState<number | undefined>(undefined)
+    const [turnIndexPage, setTurnIndexPage] = react.useState<number | undefined>(undefined)
+    const [turnIndexHeight, setTurnIndexHeight] = react.useState(216)
     const [unreadLatestCount, setUnreadLatestCount] = react.useState(0)
     const timelineCountRef = react.useRef(timeline.items.length)
     const [userTurnPreview, setUserTurnPreview] = react.useState<UserTurnPreviewState | undefined>(undefined)
-    const [plugins, setPlugins] = react.useState<readonly { moduleName: string; fiberPhase: string | null }[]>([])
+    const [plugins, setPlugins] = react.useState<readonly HostPluginFact[]>([])
     const [query, setQuery] = react.useState('')
     const [searchResults, setSearchResults] = react.useState<readonly { sessionId: string; snippet: string }[]>([])
     const [sessionDisplayLimit, setSessionDisplayLimit] = react.useState(SESSION_CATALOG_PAGE_SIZE)
@@ -1718,15 +2744,28 @@ export function apply(
       preference: initialSurfacePreference,
     })
     const [surfaceReload, setSurfaceReload] = react.useState(0)
+    const [materialCategory, setMaterialCategory] = react.useState<'files' | 'activity'>('files')
+    const [materialFullscreen, setMaterialFullscreen] = react.useState(false)
+    const [materialSplit, setMaterialSplit] = react.useState(false)
+    const [secondarySurfaceId, setSecondarySurfaceId] = react.useState<string | undefined>(undefined)
+    const surfaceChatRef = react.useRef<HTMLElement | null>(null)
+    const [surfaceChatWidth, setSurfaceChatWidth] = react.useState(Number.POSITIVE_INFINITY)
+    const browserOpen = !inspCollapsed && workbenchView === 'browser'
+    const [browserWidth, setBrowserWidth] = react.useState<number | undefined>(readBrowserWidth())
     const [resizingSurface, setResizingSurface] = react.useState(false)
     const surfaceResizeCleanupRef = react.useRef<(() => void) | undefined>(undefined)
 
     const current = currentId === undefined ? undefined : runtime.sessions[currentId]
-    const projectedQuestionRequest = questionInteractions.requests[0]
+    const projectedQuestionRequest = sessionQuestionRequests[0]
     const imageLimits = current?.imageInputLimits ?? DEFAULT_DRAFT_IMAGE_LIMITS
     const currentCatalog = currentId === undefined ? undefined : catalog.sessions[currentId]
+    const memoryProjectContextRef = react.useRef<MemoryProjectContext>({
+      ...(currentCatalog?.cwd === undefined ? {} : { cwd: currentCatalog.cwd }),
+      ...(memoryState.memory?.project === undefined ? {} : { canonical: memoryState.memory.project }),
+    })
     const currentWorkspace = workspaces.items.find(item => item.sessionIds.includes(currentId ?? '') || item.path === currentCatalog?.cwd)
-    const userTurnNavigation = buildUserTurnNavigation(timeline.items)
+    const userTurnNavigation = buildUserTurnNavigation(timeline.items, ctx.taskTimeline.getOutline?.())
+    const turnIndex = userTurnNavigationPage(userTurnNavigation, activeUserTurnOrdinal, turnIndexPage, turnIndexHeight)
     const currentSurfaceItems = workSurfaces.sessionId === currentId ? workSurfaces.items : []
     const surfacePreference = surfaceDockState.sessionId === currentId
       ? surfaceDockState.preference
@@ -1743,8 +2782,41 @@ export function apply(
         }
         return left.updatedAt - right.updatedAt || left.seq - right.seq
       })
-    const activeSurface = surfaceItems.find(item => item.id === surfacePreference.activeId) ?? surfaceItems.at(-1)
-    const surfaceDockOpen = surfacePreference.open && activeSurface !== undefined
+    // Choose the current file BEFORE applying visibility; hiding a current
+    // revision must not resurrect an older execution record as the same tab.
+    const allFileTabs = materialFileTabs(currentSurfaceItems)
+    const fileTabs = allFileTabs.filter(item => !surfacePreference.dismissedIds.includes(item.id))
+    const showingFiles = materialCategory === 'files' && allFileTabs.length > 0
+    const materialItems = showingFiles ? fileTabs : surfaceItems
+    const activeSurface = materialItems.find(item => item.id === surfacePreference.activeId) ?? materialItems.at(-1)
+    const secondarySurface = materialItems.find(item => item.id === secondarySurfaceId && item.id !== activeSurface?.id)
+      ?? materialItems.find(item => item.id !== activeSurface?.id)
+    const surfaceDockOpen = !inspCollapsed && workbenchView === 'materials'
+    const fittedSurfaceWidth = workSurfaceDockWidth(surfacePreference.width, surfaceChatWidth)
+    const fittedWorkbenchWidth = workbenchPanelWidth(workbenchView, { task: panelWidths.inspector, materials: surfacePreference.width, browser: browserWidth }, surfaceChatWidth)
+
+    react.useEffect(() => {
+      try {
+        if (browserWidth === undefined) globalThis.localStorage?.removeItem(BROWSER_WIDTH_STORAGE_KEY)
+        else globalThis.localStorage?.setItem(BROWSER_WIDTH_STORAGE_KEY, String(browserWidth))
+      } catch { /* Storage-denied WebViews retain the split for this window. */ }
+    }, [browserWidth])
+
+    react.useEffect(() => {
+      const chat = surfaceChatRef.current
+      if (chat === null || typeof window === 'undefined') return
+      // Measure the joint conversation/workbench budget, not the already
+      // narrowed chat column (which would feed back into the next width fit).
+      const main = chat.parentElement
+      const side = main?.querySelector<HTMLElement>('#xsla-side')
+      const measure = (): void => setSurfaceChatWidth((main?.getBoundingClientRect().width ?? chat.getBoundingClientRect().width) - (side?.getBoundingClientRect().width ?? 0))
+      measure()
+      const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure)
+      if (main) observer?.observe(main)
+      if (side) observer?.observe(side)
+      if (observer === undefined) window.addEventListener('resize', measure)
+      return () => { observer?.disconnect(); window.removeEventListener('resize', measure) }
+    }, [])
 
     react.useEffect(() => {
       if (typeof document === 'undefined') return
@@ -1786,10 +2858,10 @@ export function apply(
     react.useEffect(() => {
       if (typeof window === 'undefined') return
       const fitToViewport = (): void => {
-        // Below this breakpoint the rails are drawers with CSS-owned widths;
-        // preserve the user's desktop split instead of silently shrinking it.
-        if (window.innerWidth <= PANEL_RESIZE_DESKTOP_BREAKPOINT) return
-        setPanelWidths(current => fitPanelWidths(current, window.innerWidth))
+        setLayoutViewportWidth(window.innerWidth)
+        setOverlayState(current => overlayStateAfterViewportResize(current, window.innerWidth))
+        // Fit the displayed workbench separately. Merely resizing the window
+        // must not overwrite a saved per-view reading width.
       }
       window.addEventListener('resize', fitToViewport)
       return () => { window.removeEventListener('resize', fitToViewport) }
@@ -1849,6 +2921,22 @@ export function apply(
     }, [])
 
     react.useEffect(() => {
+      const nextContext = {
+        ...(currentCatalog?.cwd === undefined ? {} : { cwd: currentCatalog.cwd }),
+        ...(memoryState.memory?.project === undefined ? {} : { canonical: memoryState.memory.project }),
+      }
+      if (memoryProjectContextChanged(memoryProjectContextRef.current, nextContext)) {
+        // An edit is bound to the project where it began. Clear it before the
+        // retained Memory snapshot can be mistaken for the newly selected cwd.
+        setMemoryEditing(undefined)
+        setMemoryDraft('')
+        setMemoryError('')
+        setMemoryEditorExpanded(false)
+      }
+      memoryProjectContextRef.current = nextContext
+    }, [currentCatalog?.cwd, memoryState.memory?.project])
+
+    react.useEffect(() => {
       void ctx.memoryLifecycle.refresh({
         scope: currentCatalog?.cwd === undefined ? 'global' : 'all',
         ...(currentCatalog?.cwd === undefined ? {} : { project: currentCatalog.cwd }),
@@ -1857,17 +2945,107 @@ export function apply(
     }, [currentCatalog?.cwd])
 
     react.useEffect(() => {
-      if (currentId !== undefined) void ctx.modelCatalog.refresh(currentId).catch(() => {})
+      setModelSelectionNotice(undefined)
+      setSendMode('queue')
+      setQueueEdit(undefined)
+      setMaterialFullscreen(false)
+      setMaterialSplit(false)
+      setSecondarySurfaceId(undefined)
+      if (currentId !== undefined) {
+        void ctx.modelCatalog.refresh(currentId).catch(() => {})
+        void ctx.runCenter.refresh().catch(() => {})
+        void ctx.providerReadiness.refresh(currentId).catch(() => {})
+      }
     }, [currentId])
+
+    const cancelHistoryPrepend = (): void => {
+      clearTimeout(historyPrependRef.current?.timeout)
+      historyPrependRef.current = undefined
+      setHistoryLoading(false)
+    }
+
+    const loadEarlierHistory = (): void => {
+      const stream = streamRef.current
+      if (stream === null || historyPrependRef.current !== undefined || !timeline.hasEarlier || timeline.loading) return
+      const pending: HistoryPrependState = {
+        owner: currentId, firstKey: timeline.items[0]?.key, ...historyViewportAnchor(stream),
+      }
+      historyPrependRef.current = pending
+      pinnedRef.current = false
+      setHistoryError(false)
+      setHistoryLoading(true)
+      const fail = (): void => {
+        if (historyPrependRef.current !== pending || sessionOwnerRef.current !== pending.owner) return
+        cancelHistoryPrepend()
+        setHistoryError(true)
+      }
+      // Wait for the committed snapshot even though today's provider expands
+      // synchronously. A stalled provider offers retry rather than spinning.
+      pending.timeout = setTimeout(fail, 10_000)
+      try { ctx.taskTimeline.loadEarlier() } catch { fail() }
+    }
+
+    // Anchor before paint, then recheck Chromium's content-visibility layout.
+    // Session ownership and one pending request prevent late/duplicate loads.
+    ;(react.useLayoutEffect ?? react.useEffect)(() => {
+      const pending = historyPrependRef.current
+      const stream = streamRef.current
+      if (pending === undefined || stream === null || pending.owner !== currentId || pending.firstKey === timeline.items[0]?.key) return
+      clearTimeout(pending.timeout)
+      let active = true
+      const restore = (afterLayout = false): void => {
+        if (!active || historyPrependRef.current !== pending || sessionOwnerRef.current !== pending.owner) return
+        const anchor = Array.from(stream.querySelectorAll<HTMLElement>('.events > [data-event-key]'))
+          .find(node => node.getAttribute('data-event-key') === pending.anchorKey)
+        if (afterLayout && anchor === undefined) return
+        stream.scrollTo({ top: historyPrependScrollTop({
+          scrollTop: stream.scrollTop, previousHeight: pending.height, scrollHeight: stream.scrollHeight,
+          ...(anchor === undefined || pending.anchorTop === undefined ? {} : { anchorTop: anchor.getBoundingClientRect().top - stream.getBoundingClientRect().top, previousAnchorTop: pending.anchorTop }),
+        }), behavior: 'instant' })
+        previousScrollTopRef.current = stream.scrollTop
+      }
+      restore()
+      const frame = window.requestAnimationFrame(() => {
+        // Reapplying a height fallback would double its delta. Only a surviving
+        // message can be corrected again after the first layout.
+        if (pending.anchorKey !== undefined) restore(true)
+        if (active && historyPrependRef.current === pending) cancelHistoryPrepend()
+      })
+      return () => { active = false; window.cancelAnimationFrame(frame) }
+    }, [currentId, timeline.items[0]?.key])
+
+    react.useEffect(() => {
+      cancelHistoryPrepend()
+      setHistoryError(false)
+      previousScrollTopRef.current = 0
+      return () => { clearTimeout(historyPrependRef.current?.timeout); historyPrependRef.current = undefined }
+    }, [currentId])
+
+    // A late successful page or an outline jump supersedes an earlier timeout.
+    // Do not leave an error with a retry button that can no longer load anything.
+    react.useEffect(() => { setHistoryError(false) }, [currentId, timeline.items[0]?.key, timeline.hasEarlier])
+
+    // A session switch resets bottom-follow ownership: the new transcript
+    // opens at its floor instead of inheriting the previous reader position.
+    react.useEffect(() => { pinnedRef.current = true }, [currentId])
 
     react.useEffect(() => {
       const stream = streamRef.current
       if (stream === null) return
 
       const refresh = (): void => {
+        setTurnIndexHeight(stream.clientHeight)
         setShowJumpToLatest(shouldOfferJumpToLatest(stream))
         const offsets = userTurnNavigation.map(item => stream.querySelector<HTMLElement>(`[data-event-index="${item.eventIndex}"]`)?.offsetTop ?? Number.NaN)
         setActiveUserTurnOrdinal(activeUserTurnOrdinalAtScroll(offsets, stream.scrollTop, stream.clientHeight))
+        // New flow content (a fresh item or streamed text growth) follows the
+        // floor while the reader is pinned. 'instant' bypasses the .stream
+        // smooth rule ('auto' inherits it), so continuous streaming never
+        // stacks easing animations; the scroll event it emits re-reads the
+        // real distance and re-arms the pinned ledger.
+        if (pinnedRef.current) {
+          stream.scrollTo({ top: stream.scrollHeight, behavior: 'instant' })
+        }
       }
       refresh()
 
@@ -1876,6 +3054,7 @@ export function apply(
        * scroll content so the shortcut follows the real viewport distance. */
       if (typeof ResizeObserver !== 'function') return
       const observer = new ResizeObserver(refresh)
+      observer.observe(stream)
       for (const child of Array.from(stream.children)) observer.observe(child)
       const mutations = typeof MutationObserver === 'function'
         ? new MutationObserver(() => {
@@ -1890,7 +3069,10 @@ export function apply(
       }
     }, [currentId, timeline.items.length])
 
-    react.useEffect(() => setUserTurnPreview(undefined), [currentId])
+    react.useEffect(() => {
+      setTurnIndexPage(undefined)
+      setUserTurnPreview(undefined)
+    }, [currentId, activeUserTurnOrdinal])
 
     react.useEffect(() => {
       const previous = timelineCountRef.current
@@ -1901,6 +3083,7 @@ export function apply(
     }, [timeline.items.length, showJumpToLatest])
 
     const persistDraft = (text: string, images: readonly DraftImage[], sessionId = currentId): void => {
+      if (sessionId === sessionOwnerRef.current) setComposerHasText(text.trim() !== '')
       const outcome = writeComposerDraft(browserSessionDraftStorage(), sessionId, {
         text,
         images: persistedDraftImages(images),
@@ -1946,6 +3129,7 @@ export function apply(
       const textarea = composerTextareaRef.current
       if (textarea !== null) {
         textarea.value = stored.text
+        setComposerHasText(stored.text.trim() !== '')
         resizeComposerTextarea(textarea)
         setSlashQuery(parseSlashCommandQuery(stored.text))
         setSlashSelection(0)
@@ -1956,7 +3140,8 @@ export function apply(
       replaceDraftImages(draftImagesRef.current.filter(image => image.id !== id))
     }
 
-    const addDraftFiles = async (source: FileList | readonly File[]): Promise<void> => {
+    const addDraftImages = async (source: FileList | readonly File[], owner = currentId): Promise<void> => {
+      const visit = sessionVisitRef.current
       const files = Array.from(source)
       const candidates = files.map(file => {
         const mediaType = imageMediaTypeOf(file)
@@ -1986,11 +3171,68 @@ export function apply(
             previewUrl: `data:${mediaType};base64,${data}`,
           }
         }))
+        if (sessionOwnerRef.current !== owner || sessionVisitRef.current !== visit) return
         setError('')
-        replaceDraftImages([...draftImagesRef.current, ...added.filter((image): image is DraftImage => image !== undefined)])
+        const next = [...draftImagesRef.current, ...added.filter((image): image is DraftImage => image !== undefined)]
+        replaceDraftImages(next, false)
+        persistDraft(composerTextareaRef.current?.value ?? '', next, owner)
       } catch (errorValue: unknown) {
-        setError(`无法读取图片草稿：${errorValue instanceof Error ? errorValue.message : String(errorValue)}`)
+        if (sessionVisitRef.current === visit) setError(`无法读取图片草稿：${errorValue instanceof Error ? errorValue.message : String(errorValue)}`)
       }
+    }
+
+    const replaceDraftFiles = (next: readonly DraftFile[]): void => { draftFilesRef.current = next; setDraftFiles(next) }
+    react.useEffect(() => {
+      const retained = draftFilesRef.current.filter(file => file.owner === currentId)
+      for (const file of draftFilesRef.current) if (file.owner !== currentId) file.controller.abort()
+      replaceDraftFiles(retained)
+    }, [currentId])
+    react.useEffect(() => () => { for (const file of draftFilesRef.current) file.controller.abort() }, [])
+
+    const uploadDraftFile = async (entry: DraftFile): Promise<void> => {
+      const service = ctx.runtimeFiles
+      if (service === undefined) return
+      const update = (patch: Partial<DraftFile>): void => {
+        if (sessionOwnerRef.current !== entry.owner || entry.controller.signal.aborted) return
+        replaceDraftFiles(draftFilesRef.current.map(file => file.id === entry.id && file.controller === entry.controller ? { ...file, ...patch } : file))
+      }
+      try {
+        const result = await service.upload({ sessionId: entry.owner, file: entry.file, name: entry.file.name, signal: entry.controller.signal,
+          onProgress: progress => update({ progress: Math.min(100, Math.max(0, (progress.loaded / Math.max(1, progress.total ?? entry.file.size)) * 100)) }) })
+        if (!result.ok || result.value === undefined) { update({ phase: 'failed', error: result.error?.message ?? '上传未确认，请重试' }); return }
+        update({ phase: 'ready', progress: 100, receipt: result.value })
+      } catch (cause: unknown) { update({ phase: 'failed', error: cause instanceof Error ? cause.message : String(cause) }) }
+    }
+    const cancelDraftFile = (id: string, remove = false): void => {
+      const entry = draftFilesRef.current.find(file => file.id === id)
+      entry?.controller.abort()
+      replaceDraftFiles(remove ? draftFilesRef.current.filter(file => file.id !== id)
+        : draftFilesRef.current.map(file => file.id === id ? { ...file, phase: 'cancelled' } : file))
+    }
+    const retryDraftFile = (id: string): void => {
+      const prior = draftFilesRef.current.find(file => file.id === id)
+      if (prior === undefined || prior.owner !== currentId) return
+      prior.controller.abort()
+      const { receipt: _receipt, error: _error, ...rest } = prior
+      const next: DraftFile = { ...rest, phase: 'uploading', progress: 0, controller: new AbortController() }
+      replaceDraftFiles(draftFilesRef.current.map(file => file.id === id ? next : file))
+      void uploadDraftFile(next)
+    }
+    const addDraftFiles = async (source: FileList | readonly File[]): Promise<void> => {
+      const images = Array.from(source).filter(file => imageMediaTypeOf(file) !== undefined)
+      const files = Array.from(source).filter(file => imageMediaTypeOf(file) === undefined)
+      if (files.length === 0) { if (images.length) await addDraftImages(images); return }
+      if (ctx.runtimeFiles === undefined) { setError('当前运行端未提供文件上传，请更新运行端后重试'); return }
+      const rejection = validateFileBatch([...draftFilesRef.current.map(entry => entry.file), ...files])
+      if (rejection !== undefined) { setError(rejection); return }
+      const priorText = composerTextareaRef.current?.value ?? ''
+      const owner = currentId ?? await createSession()
+      if (owner === undefined || ctx.agentRuntimeSession.getSnapshot().currentSessionId !== owner) return
+      if (currentId === undefined) { persistDraft(priorText, draftImagesRef.current, owner); if (composerTextareaRef.current) composerTextareaRef.current.value = priorText }
+      const entries: DraftFile[] = files.map(file => ({ id: `file-${Date.now()}-${++draftImageSequence}`, owner, file, controller: new AbortController(), phase: 'uploading', progress: 0 }))
+      replaceDraftFiles([...draftFilesRef.current, ...entries])
+      // Mixed batches should show their images immediately, even if an ordinary upload waits.
+      await Promise.all([...entries.map(uploadDraftFile), ...(images.length ? [addDraftImages(images, owner)] : [])])
     }
 
     const encodeDraftImages = (images: readonly DraftImage[]): readonly RuntimeImageInput[] => images.map(image => ({
@@ -2000,23 +3242,32 @@ export function apply(
     }))
 
     const createSession = async (): Promise<string | undefined> => {
+      const visit = sessionVisitRef.current
       setError('')
       setSideMenu(undefined)
       const result = await ctx.sessionCatalog.createLooseSession()
+      if (sessionVisitRef.current !== visit) return undefined
       if (!result.ok || result.value === undefined) { setError(result.error?.message ?? '无法新建会话'); return undefined }
       const opened = ctx.sessionCatalog.openSession(result.value.sessionId)
       if (!opened.ok) { setError(opened.error?.message ?? '新会话无法打开'); return undefined }
+      // Ports may notify before React commits the next render; adopt the new
+      // owner now so immediate upload/send receipts cannot be dropped.
+      sessionOwnerRef.current = result.value.sessionId
+      if (sessionVisitRef.current.id !== result.value.sessionId) sessionVisitRef.current = { id: result.value.sessionId }
       return result.value.sessionId
     }
 
     const submit = async (event: { preventDefault(): void; currentTarget: HTMLFormElement }): Promise<void> => {
       event.preventDefault()
-      if (submittingRef.current || questionInteractions.requests[0] !== undefined || approvals.approvals[0] !== undefined) return
+      if (submittingRef.current || current?.state === 'blocked' || sessionQuestionRequests[0] !== undefined || sessionApprovals[0] !== undefined) return
       setError('')
       const form = event.currentTarget
-      const content = String(new FormData(form).get('content') ?? '').trim()
+      const draftText = String(new FormData(form).get('content') ?? '')
+      const content = draftText.trim()
       const images = draftImagesRef.current
-      if (content === '' && images.length === 0) return
+      const files = draftFilesRef.current.filter(file => file.owner === currentId)
+      if (files.some(file => file.phase !== 'ready' || file.receipt === undefined)) { setError('请等待文件上传完成，或重试／移除未完成的文件'); return }
+      if (content === '' && images.length === 0 && files.length === 0) return
       const commandQuery = parseSlashCommandQuery(content)
       if (commandQuery !== undefined) {
         setSlashQuery(commandQuery)
@@ -2025,29 +3276,67 @@ export function apply(
       }
       submittingRef.current = true
       setSubmitting(true)
+      const mode = current?.state === 'running' ? sendMode : 'queue'
+      let visit = sessionVisitRef.current
+      setSendNotice({ owner: currentId, phase: 'sending', mode })
       try {
         const encodedImages = encodeDraftImages(images)
         const sessionId = currentId ?? await createSession()
         if (sessionId === undefined) return
-        if (currentId === undefined) persistDraft(content, images, sessionId)
-        const result = await ctx.agentRuntimeSession.sendTurn({
-          sessionId, content,
-          ...(encodedImages.length === 0 ? {} : { images: encodedImages }),
-          // A new idle turn enters the normal queue. While the model is
-          // running, the composer becomes an explicit steering channel.
-          mode: current?.state === 'running' ? 'steer' : 'queue',
-        })
-        if (!result.ok) { setError(result.error?.message ?? '任务未发送'); return }
-        form.reset()
+        if (currentId === undefined) visit = sessionVisitRef.current
+        if (currentId === undefined) setSendNotice({ owner: sessionId, phase: 'sending', mode })
+        if (currentId === undefined) persistDraft(draftText, images, sessionId)
+        let result: Result<{ accepted: true }>
+        try {
+          result = await ctx.agentRuntimeSession.sendTurn({
+            sessionId, content,
+            ...(encodedImages.length === 0 ? {} : { images: encodedImages }),
+            ...(files.length === 0 ? {} : { files: files.map(file => file.receipt!) }),
+            // FIFO is the default even while running; steering is a deliberate choice.
+            mode,
+          })
+        } catch (errorValue: unknown) {
+          // A transport failure may happen after the Host accepted the turn;
+          // keep the draft and describe that ambiguity instead of blaming the
+          // earlier, already-completed image encoding step.
+          if (sessionOwnerRef.current === sessionId && sessionVisitRef.current === visit) {
+            setSendNotice({ owner: sessionId, phase: 'unknown', mode })
+            setError(`发送结果不明确，草稿已保留：${errorValue instanceof Error ? errorValue.message : String(errorValue)}`)
+          }
+          return
+        }
+        if (sessionOwnerRef.current !== sessionId || sessionVisitRef.current !== visit) return
+        if (!result.ok) {
+          setSendNotice({ owner: sessionId, phase: sendFailurePhase(result.error), mode })
+          setError(result.error?.message ?? '任务未发送'); return
+        }
+        setSendNotice({ owner: sessionId, phase: 'accepted', mode })
+        const consumed = new Set(files.map(file => file.id))
+        replaceDraftFiles(draftFilesRef.current.filter(file => !consumed.has(file.id)))
         const textarea = form.elements.namedItem('content')
-        if (textarea instanceof HTMLTextAreaElement) resizeComposerTextarea(textarea)
+        // The submitted attachments were consumed even if newer text now occupies the composer.
+        const consumedImages = new Set(images.map(image => image.id))
+        replaceDraftImages(draftImagesRef.current.filter(image => !consumedImages.has(image.id)), false)
+        // Keep anything typed while admission was in flight. Never reset another session's form.
+        if (!(textarea instanceof HTMLTextAreaElement)) return
+        if (!shouldClearAcknowledgedDraft(sessionId, sessionOwnerRef.current, draftText, textarea.value)) {
+          persistDraft(textarea.value, draftImagesRef.current, sessionId)
+          return
+        }
+        textarea.value = ''
+        resizeComposerTextarea(textarea)
         setSlashQuery(undefined)
         setSlashSelection(0)
-        clearDraftImages()
-        clearComposerDraft(browserSessionDraftStorage(), currentId)
-        if (sessionId !== currentId) clearComposerDraft(browserSessionDraftStorage(), sessionId)
+        // Admission consumes only the captured draft. Images read while it was
+        // pending remain unsent and must survive leaving and revisiting this session.
+        if (draftImagesRef.current.length > 0) persistDraft('', draftImagesRef.current, sessionId)
+        else clearComposerDraft(browserSessionDraftStorage(), sessionId)
+        if (sessionId !== currentId) clearComposerDraft(browserSessionDraftStorage(), currentId)
       } catch (errorValue: unknown) {
-        setError(`图片编码失败，草稿已保留：${errorValue instanceof Error ? errorValue.message : String(errorValue)}`)
+        if (sessionOwnerRef.current === currentId && sessionVisitRef.current === visit) {
+          setSendNotice({ owner: currentId, phase: 'failed', mode })
+          setError(`发送准备失败，草稿已保留：${errorValue instanceof Error ? errorValue.message : String(errorValue)}`)
+        }
       } finally {
         submittingRef.current = false
         setSubmitting(false)
@@ -2161,8 +3450,92 @@ export function apply(
     const selectModel = async (selection: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string }): Promise<void> => {
       if (currentId === undefined) { setError('请先新建会话，再选择模型'); return }
       setError('')
-      const result = await ctx.modelCatalog.select({ sessionId: currentId, ...selection })
-      if (!result.ok) setError(result.error?.message ?? '模型切换失败')
+      setModelSelectionNotice(undefined)
+      try {
+        const result = await ctx.modelCatalog.select({ sessionId: currentId, ...selection })
+        if (sessionOwnerRef.current !== currentId) return
+        if (!result.ok) { setError(result.error?.message ?? '模型切换失败'); return }
+        setModelSelectionNotice(modelSelectionPersistenceNotice(result.value?.persistence)
+          ?? (result.value?.effective === 'next-request' ? { tone: 'neutral', message: '已接收设置；从下一次模型请求生效，当前请求不变。' } : undefined))
+      } catch (cause: unknown) {
+        if (sessionOwnerRef.current === currentId) setError(`设置结果未确认：${cause instanceof Error ? cause.message : String(cause)}`)
+      }
+    }
+
+    const openManagementSettings = (sectionId: 'models' | 'memory' | 'runtime'): void => {
+      setOverlayState(value => transitionOverlayState(value, 'close'))
+      const content = document.querySelector<HTMLElement>('[data-xsla-settings-trigger-content]')
+      const trigger = content?.closest<HTMLButtonElement>('button')
+      if (trigger === undefined || trigger === null) {
+        setError('请从左下角“设置”进入“模型与服务商”')
+        return
+      }
+      setChoiceMenu(undefined)
+      // Settings owns its open state. Navigate through its public DOM affordance
+      // after React mounts the panel; a bounded observer avoids guessed delays.
+      const root = content?.closest<HTMLElement>('[data-xiaoshe-legacy-adapted]')
+      if (root !== null && root !== undefined) {
+        const selectSection = (): boolean => {
+          const item = root.querySelector<HTMLButtonElement>(`[data-xs-settings-nav-item="${sectionId}"]`)
+          if (item === null) return false
+          item.click()
+          item.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+          return true
+        }
+        const observer = new MutationObserver(() => { if (selectSection()) { observer.disconnect(); window.clearTimeout(timer) } })
+        const timer = window.setTimeout(() => observer.disconnect(), 2_000)
+        observer.observe(root, { childList: true, subtree: true })
+        trigger.click()
+        if (selectSection()) { observer.disconnect(); window.clearTimeout(timer) }
+        return
+      }
+      trigger.click()
+    }
+    const openModelSettings = (): void => openManagementSettings('models')
+
+    const updateRunQueue = async (itemId: string, kind: 'remove' | 'steer' | 'edit', text?: string): Promise<void> => {
+      if (currentId === undefined || queueBusy !== undefined) return
+      setError('')
+      setQueueBusy(itemId)
+      try {
+        const result = await ctx.runCenter.updateQueue({ sessionId: currentId, itemId, action: kind === 'edit' ? { kind, text: text ?? '' } : { kind } })
+        if (sessionOwnerRef.current !== currentId) return
+        if (!result.ok) setError(result.error?.message ?? '队列操作失败')
+        else setQueueEdit(undefined)
+      } catch (cause: unknown) {
+        if (sessionOwnerRef.current === currentId) setError(`队列操作未确认，请核对队列：${cause instanceof Error ? cause.message : String(cause)}`)
+      } finally { setQueueBusy(undefined) }
+    }
+
+    const openRunSubagent = (childSessionId: string): void => {
+      if (currentId === undefined) return
+      const result = ctx.runCenter.openSubagent({ parentSessionId: currentId, childSessionId })
+      if (!result.ok) setError(result.error?.message ?? '无法打开子任务')
+    }
+
+    const setGoalPhase = async (action: 'pause' | 'resume'): Promise<void> => {
+      if (currentId === undefined || goalBusy || ctx.runCenter.setGoalPhase === undefined) return
+      setGoalBusy(true)
+      setError('')
+      try {
+        const result = await ctx.runCenter.setGoalPhase({ sessionId: currentId, action })
+        if (sessionOwnerRef.current === currentId && !result.ok) setError(result.error?.message ?? '目标状态未确认，请核对任务面板')
+      } catch (cause: unknown) {
+        if (sessionOwnerRef.current === currentId) setError(`目标操作未确认：${cause instanceof Error ? cause.message : String(cause)}`)
+      } finally { setGoalBusy(false) }
+    }
+
+    const interruptRunSubagent = async (childSessionId: string): Promise<void> => {
+      if (currentId === undefined) return
+      setError('')
+      const result = await ctx.runCenter.interruptSubagent({ parentSessionId: currentId, childSessionId })
+      if (!result.ok) setError(result.error?.message ?? '无法停止子任务')
+    }
+
+    const probeProviderRoute = async (provider: string, model: string): Promise<void> => {
+      setError('')
+      const result = await ctx.providerReadiness.probe({ provider, model })
+      if (!result.ok) setError(result.error?.message ?? '模型服务探测失败')
     }
 
     const selectPermission = async (value: string): Promise<void> => {
@@ -2365,7 +3738,11 @@ export function apply(
       const form = new FormData(event.currentTarget)
       let intent: PluginUiIntent
       try {
-        intent = validatePluginIntent({ action: String(form.get('action') ?? ''), profile: MANAGED_PLUGIN_PROFILE, sourceKind: String(form.get('sourceKind') ?? ''), source: String(form.get('source') ?? '') })
+        intent = validatePluginIntent({
+          action: String(form.get('action') ?? ''), profile: MANAGED_PLUGIN_PROFILE,
+          sourceKind: String(form.get('sourceKind') ?? ''), source: String(form.get('source') ?? ''),
+          signaturePath: String(form.get('signaturePath') ?? ''),
+        })
       } catch (validationError) {
         setPluginWorkflow({ step: 'error', message: validationError instanceof Error ? validationError.message : String(validationError) })
         return
@@ -2395,6 +3772,7 @@ export function apply(
     const resetPluginWorkflow = (): void => setPluginWorkflow({ step: 'idle' })
     const closePluginManager = (): void => { setPluginManagerOpen(false); resetPluginWorkflow() }
     const closeOverlays = (): void => {
+      if (inspOverlayOpen) setInspCollapsed(true)
       setOverlayState(value => transitionOverlayState(value, 'close'))
       if (pluginManagerOpen) closePluginManager()
       if (commandOpen) setCommandOpen(false)
@@ -2406,34 +3784,72 @@ export function apply(
       if (memoryEditorExpanded) setMemoryEditorExpanded(false)
     }
 
+    const openInspector = (tab: 'status' | 'memory' | 'system'): void => {
+      if (tab !== 'status') { openManagementSettings(tab === 'memory' ? 'memory' : 'runtime'); return }
+      setWorkbenchView('task')
+      setInspCollapsed(false)
+      setOverlayState(value => transitionOverlayState(value, 'close'))
+    }
+
+    const dialogControls = {
+      // The compact browser is visually an overlay too. Contain keyboard focus
+      // without declaring it aria-modal, which would hide its native page.
+      inspectorOpen: !inspCollapsed && (layoutViewportWidth <= WORKBENCH_OVERLAY_BREAKPOINT || (materialFullscreen && workbenchView === 'materials')),
+      closeInspector: (): void => { if (materialFullscreen) setMaterialFullscreen(false); else { setInspCollapsed(true); setOverlayState(value => transitionOverlayState(value, 'close')) } },
+      closeNative: (): void => {
+        if (commandOpen) setCommandOpen(false)
+        else if (sideRemoval !== undefined) { if (sideMutation === undefined) setSideRemoval(undefined) }
+        else if (permissionChallenge !== undefined) setPermissionChallenge(undefined)
+        else if (memoryEditorExpanded) setMemoryEditorExpanded(false)
+        else closePluginManager()
+      },
+    }
+    const dialogControlsRef = react.useRef(dialogControls)
+    dialogControlsRef.current = dialogControls
     react.useEffect(() => {
       if (typeof document === 'undefined') return
       const root = document.querySelector<HTMLElement>('[data-xiaoshe-legacy-adapted]')
       if (root === null) return
-      const dialogs = Array.from(root.querySelectorAll<HTMLElement>('.modal-layer [role="dialog"]'))
-      const dialog = dialogs[dialogs.length - 1]
-      if (dialog === undefined) return
-
-      const closeDialog = commandOpen
-        ? () => setCommandOpen(false)
-        : sideRemoval !== undefined
-          ? () => { if (sideMutation === undefined) setSideRemoval(undefined) }
-          : permissionChallenge !== undefined
-            ? () => setPermissionChallenge(undefined)
-            : memoryEditorExpanded
-              ? () => setMemoryEditorExpanded(false)
-              : pluginManagerOpen
-                ? closePluginManager
-                : undefined
-      if (closeDialog === undefined) return
-      dialog.tabIndex = -1
-      return mountNativeDialogAccessibility(
-        document,
-        dialog,
-        root.querySelector<HTMLElement>('.app') ?? undefined,
-        closeDialog,
-      )
-    }, [commandOpen, memoryEditorExpanded, permissionChallenge, pluginManagerOpen, sideRemoval?.id, sideMutation])
+      let active: HTMLElement | undefined
+      let release: (() => void) | undefined
+      const reconcile = (): void => {
+        const image = Array.from(root.querySelectorAll<HTMLElement>('.image-lightbox')).at(-1)
+        const native = Array.from(root.querySelectorAll<HTMLElement>('.modal-layer [role="dialog"]')).at(-1)
+        const settings = root.querySelector<HTMLElement>('[data-xs-settings-panel]') ?? undefined
+        const drawer = dialogControlsRef.current.inspectorOpen ? root.querySelector<HTMLElement>('#xsla-insp') ?? undefined : undefined
+        const dialog = image ?? native ?? settings ?? drawer
+        if (dialog === active) return
+        const transferringFocus = active?.contains(document.activeElement) === true && document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+        release?.(); release = undefined; active = dialog
+        if (transferringFocus?.isConnected === true) transferringFocus.focus()
+        if (dialog === undefined) return
+        const close = image !== undefined ? () => image.querySelector<HTMLButtonElement>('[aria-label="关闭图片预览"]')?.click() : native !== undefined
+          ? () => dialogControlsRef.current.closeNative()
+          : settings !== undefined ? () => {
+            settings.querySelector<HTMLButtonElement>('[data-xs-settings-close]')?.click()
+            window.requestAnimationFrame(() => {
+              const trigger = root.querySelector<HTMLElement>('[data-xsla-settings-trigger-content]')?.closest<HTMLElement>('button')
+              if (trigger?.getClientRects().length === 0) root.querySelector<HTMLElement>('.task-mobile-toggle')?.focus()
+            })
+          } : () => dialogControlsRef.current.closeInspector()
+        dialog.tabIndex = -1
+        // Only the uppermost modal owns the keyboard. Inert siblings along
+        // its ancestor path also cover settings mounted inside the sidebar.
+        const backgrounds: HTMLElement[] = []
+        let branch: HTMLElement = dialog
+        while (branch !== root && branch.parentElement !== null) {
+          for (const sibling of Array.from(branch.parentElement.children)) {
+            if (sibling !== branch && sibling instanceof HTMLElement) backgrounds.push(sibling)
+          }
+          branch = branch.parentElement
+        }
+        release = mountInspectorOverlayAccessibility(document, dialog, backgrounds, close)
+      }
+      const observer = new MutationObserver(reconcile)
+      observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-modal', 'class', 'hidden'] })
+      reconcile()
+      return () => { observer.disconnect(); release?.() }
+    }, [])
 
     const updatePanelWidth = (panel: ResizablePanel, requestedWidth: number): void => {
       panelWidthsTouchedRef.current = true
@@ -2514,6 +3930,9 @@ export function apply(
     }
 
     const openSurfaceDock = (): void => {
+      setWorkbenchView('materials')
+      setInspCollapsed(false)
+      setOverlayState(value => transitionOverlayState(value, 'close'))
       if (currentSurfaceItems.length === 0) return
       updateSurfacePreference(currentPreference => {
         let dismissedIds = currentPreference.dismissedIds
@@ -2522,12 +3941,24 @@ export function apply(
           dismissedIds = []
           visible = [...currentSurfaceItems]
         }
-        const activeId = visible.at(-1)?.id
+        const activeId = visible.some(item => item.id === currentPreference.activeId) ? currentPreference.activeId : visible.at(-1)?.id
         return { ...currentPreference, open: activeId !== undefined, ...(activeId === undefined ? {} : { activeId }), dismissedIds }
       })
     }
 
-    const closeSurfaceDock = (): void => updateSurfacePreference(value => ({ ...value, open: false }))
+    const closeWorkbench = (): void => {
+      setInspCollapsed(true)
+      setOverlayState(value => transitionOverlayState(value, 'close'))
+      updateSurfacePreference(value => ({ ...value, open: false }))
+      window.requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-workbench-launcher]')?.focus())
+    }
+
+    const selectWorkbenchView = (view: WorkbenchView): void => {
+      if (view === 'materials') { openSurfaceDock(); return }
+      setWorkbenchView(view)
+      setInspCollapsed(false)
+      setOverlayState(value => transitionOverlayState(value, 'close'))
+    }
 
     const selectSurface = (surfaceId: string): void => updateSurfacePreference(value => ({
       ...value,
@@ -2549,19 +3980,30 @@ export function apply(
     }))
 
     const updateSurfaceWidth = (requestedWidth: number): void => {
-      const chat = typeof document === 'undefined' ? undefined : document.querySelector<HTMLElement>('.xsla-shell .chat')
-      const chatWidth = chat?.getBoundingClientRect().width ?? Number.POSITIVE_INFINITY
-      updateSurfacePreference(value => ({ ...value, width: workSurfaceDockWidth(requestedWidth, chatWidth) }))
+      if (workbenchView === 'task') {
+        panelWidthsTouchedRef.current = true
+        setPanelWidths(value => ({ ...value, inspector: workbenchPanelWidth('task', { task: requestedWidth, materials: surfacePreference.width, browser: browserWidth }, surfaceChatWidth) }))
+        return
+      }
+      if (workbenchView === 'browser') setBrowserWidth(browserDockWidth(requestedWidth, surfaceChatWidth))
+      else updateSurfacePreference(value => ({ ...value, width: workSurfaceDockWidth(requestedWidth, surfaceChatWidth) }))
     }
 
     const handleSurfaceResizeKey = (event: { readonly key: string; readonly shiftKey?: boolean; preventDefault?(): void }): void => {
+      if (workbenchView === 'task') {
+        const requested = panelResizeKeyTarget('inspector', fittedWorkbenchWidth, event.key, event.shiftKey === true, defaultPanelWidths(layoutViewportWidth, typeof window === 'undefined' ? 900 : window.innerHeight).inspector)
+        if (requested !== undefined) { event.preventDefault?.(); updateSurfaceWidth(requested) }
+        return
+      }
+      if (browserOpen && event.key === 'Enter') { event.preventDefault?.(); setBrowserWidth(undefined); return }
       let requested: number | undefined
       if (event.key === 'Home') requested = WORK_SURFACE_DOCK_LIMITS.min
-      if (event.key === 'End') requested = WORK_SURFACE_DOCK_LIMITS.max
+      if (event.key === 'End') requested = browserOpen ? browserDockWidth(Number.MAX_SAFE_INTEGER, surfaceChatWidth) : WORK_SURFACE_DOCK_LIMITS.max
       if (event.key === 'Enter') requested = WORK_SURFACE_DOCK_LIMITS.standard
       const step = event.shiftKey === true ? 32 : 8
-      if (event.key === 'ArrowLeft') requested = surfacePreference.width + step
-      if (event.key === 'ArrowRight') requested = surfacePreference.width - step
+      const visibleWidth = fittedWorkbenchWidth
+      if (event.key === 'ArrowLeft') requested = visibleWidth + step
+      if (event.key === 'ArrowRight') requested = visibleWidth - step
       if (requested === undefined) return
       event.preventDefault?.()
       updateSurfaceWidth(requested)
@@ -2582,7 +4024,7 @@ export function apply(
       }
       surfaceResizeCleanupRef.current?.()
       const startX = event.clientX
-      const startWidth = surfacePreference.width
+      const startWidth = fittedWorkbenchWidth
       const move = (moveEvent: PointerEvent): void => updateSurfaceWidth(startWidth + startX - moveEvent.clientX)
       const detach = (): void => {
         window.removeEventListener('pointermove', move)
@@ -2626,13 +4068,17 @@ export function apply(
     const sessionWindow = windowSessionCatalog(matchingSessions, sessionDisplayLimit, currentId)
     const visibleSessions = sessionWindow.items
     const status = current?.state ?? 'idle'
-    const receipt = current?.completionReceipt?.outcome
+    // A retained receipt describes a previous finished turn while work resumes.
+    const receipt = status === 'running' || status === 'blocked' || stopping || sessionQuestionRequests.length > 0 || sessionApprovals.length > 0
+      ? undefined : current?.completionReceipt?.outcome
+    const runtimeLabel = sessionQuestionRequests.length > 0 ? '需要回答' : sessionApprovals.length > 0 ? '需要确认' : stopping ? '正在停止' : statusLabel(status)
     const contextRow = currentId === undefined ? undefined : context.sessions[currentId]
     const contextView = contextPresentation(contextRow)
-    const modelView = modelPresentation(models)
-    const memoryView = memoryPresentation(memoryState)
-    const productHealthValue = 'value' in productHealth ? productHealth.value : undefined
-    const heartbeatView = heartbeatPresentation(productHealthValue?.heartbeat)
+    const modelView = modelPresentation(sessionModels)
+    const memoryView = memoryPresentation(memoryState, {
+      ...(currentCatalog?.cwd === undefined ? {} : { currentProject: currentCatalog.cwd }),
+    })
+    const heartbeatView = heartbeatHealthPresentation(productHealth)
     const transactionView = pluginTransactionPresentation(pluginState)
     const questionRequest = projectedQuestionRequest
     const activeQuestionFlow = questionFlow.key === questionRequest?.key
@@ -2640,13 +4086,26 @@ export function apply(
       : createQuestionFlowState(questionRequest)
     // Questions own the interaction seat before action approvals, matching the
     // runtime's native precedence while keeping both queues observable.
-    const approval = questionRequest === undefined ? approvals.approvals[0] : undefined
-    const interactionBlocked = questionRequest !== undefined || approval !== undefined
-    const layoutViewportWidth = typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
-    const mainClass = ['main', sideCollapsed ? 'side-collapsed' : '', inspCollapsed ? 'insp-collapsed' : ''].filter(Boolean).join(' ')
+    const approval = questionRequest === undefined ? sessionApprovals[0] : undefined
+    const interactionDetailsReady = questionRequest !== undefined || approval !== undefined
+    // The session list can announce a pending interaction before its live
+    // question/approval binding arrives. Never treat that gap as ready to send.
+    const interactionSyncPending = status === 'blocked' && !interactionDetailsReady
+    const interactionBlocked = interactionDetailsReady || interactionSyncPending
+    const notice = workbenchNotice({ questionCount: sessionQuestionRequests.length, approvalCount: sessionApprovals.length, runCenter: sessionRunCenter, contextView, heartbeat: heartbeatView })
+    const onWorkbenchInteraction = (): void => {
+      if (layoutViewportWidth <= WORKBENCH_OVERLAY_BREAKPOINT) setInspCollapsed(true)
+      setOverlayState(value => transitionOverlayState(value, 'close'))
+      window.requestAnimationFrame(() => {
+        const card = document.querySelector<HTMLElement>(questionRequest === undefined ? '.approval' : '.question-card')
+        card?.scrollIntoView({ block: 'center', behavior: conversationScrollBehavior() })
+        ;(card?.querySelector<HTMLElement>('button:not(:disabled), textarea:not(:disabled), input:not(:disabled)') ?? card)?.focus()
+      })
+    }
+    const mainClass = ['main workbench-layout', sideCollapsed ? 'side-collapsed' : '', inspCollapsed ? 'insp-collapsed' : ''].filter(Boolean).join(' ')
     const mainStyle = {
       '--xsla-side-width': `${panelWidths.side}px`,
-      '--xsla-insp-width': `${panelWidths.inspector}px`,
+      '--xsla-insp-width': `${fittedWorkbenchWidth}px`,
     }
     const commands = shellCommandActions({
       running: status === 'running', hasSession: currentId !== undefined,
@@ -2654,8 +4113,8 @@ export function apply(
       onStop: () => { void stopRun() },
       onFork: () => { void forkCurrent() },
       onCompact: () => { void compactCurrent() },
-      onPanel: tab => { setRightTab(tab); setInspCollapsed(false) },
-      onPlugins: () => { setRightTab('system'); setPluginManagerOpen(true) },
+      onPanel: openInspector,
+      onPlugins: () => openManagementSettings('runtime'),
     })
     const matchingSlashIds = slashQuery === undefined ? [] : filterSlashCommandIds(slashQuery)
     const slashCommands = matchingSlashIds.flatMap(id => {
@@ -2675,7 +4134,7 @@ export function apply(
       command.run()
     }
     const interactionCards = questionRequest === undefined
-      ? approvals.approvals.map(item => renderApproval(e, item, answerApproval))
+      ? sessionApprovals.map(item => renderApproval(e, item, answerApproval))
       : [renderQuestionCard(e, {
         request: questionRequest,
         flow: activeQuestionFlow,
@@ -2688,8 +4147,31 @@ export function apply(
         onCancel: () => { void cancelQuestionRequest(questionRequest) },
       })]
 
+    const nextManagementPages = {
+      memory: e('div', null, e('div', { className: 'xsla-settings-heading' }, e('h2', null, '记忆'), e('p', null, '管理长期偏好和项目事实。关闭设置会保留尚未保存的草稿。')),
+        renderMemoryPanel(e, {
+          memorySummary: memoryView, memoryState, memoryScope, memoryDraft, memoryEditing, memoryBusy, memoryError, currentProject: currentCatalog?.cwd,
+          onMemoryScope: setMemoryScope, onMemoryDraft: setMemoryDraft, onMemoryEdit: beginMemoryEdit, onMemoryCancel: cancelMemoryEdit,
+          onMemorySubmit: submitMemory, onMemoryExpand: () => setMemoryEditorExpanded(true), onMemoryState: (entry, state) => { void changeMemoryState(entry, state) },
+        })),
+      runtime: e('div', null, e('div', { className: 'xsla-settings-heading' }, e('h2', null, '运行与扩展'), e('p', null, '需要排查连接或管理扩展时，在这里查看详情。')),
+        panelSection(e, '当前模型', modelView.value, modelView.detail, modelView.routable === false ? 'warn' : undefined),
+        e('button', { className: 'manager-toggle', type: 'button', onClick: openModelSettings }, '模型与服务商设置'),
+        renderProviderReadinessPanel(e, { providerReadiness, onProbeRoute: (provider, model) => { void probeProviderRoute(provider, model) }, onCancelProbe: () => { ctx.providerReadiness.cancelProbe() } }),
+        panelSection(e, '扩展变更', `${transactionView.total} 笔记录`, transactionView.detail),
+        e('button', { className: 'manager-toggle', type: 'button', onClick: () => setPluginManagerOpen(true) }, '管理插件'),
+        e('details', { className: 'task-disclosure' }, e('summary', null, '扩展运行边界'), e('p', null, '本机扩展与小蛇共同运行，没有独立的系统沙箱。'))),
+    }
+    react.useEffect(() => {
+      managementPages = nextManagementPages
+      for (const listener of managementListeners) listener()
+    }, [nextManagementPages])
+
     return e('div', {
       className: 'xsla-shell', 'data-xiaoshe-legacy-adapted': '', 'data-theme': theme,
+      style: { ...appearanceTokens(appearanceSnapshot.value, themeSnapshot.active.colorScheme), '--xsla-content-font-size': `${Math.max(12, Math.min(22, themeSnapshot.fontSize ?? 14))}px` },
+      'data-appearance-preset': appearanceSnapshot.value.preset,
+      'data-xsla-source-identity': CLIENT_SOURCE_IDENTITY,
       'data-runtime-state': status, 'data-side-overlay': sideOverlayOpen, 'data-insp-overlay': inspOverlayOpen,
       onPointerDownCapture: (event: { target?: EventTarget | null }) => {
         if (!(event.target instanceof Element)) return
@@ -2764,8 +4246,8 @@ export function apply(
           onReset: () => resetPanelWidth('side'),
         }),
         e('section', {
-          className: ['chat', surfaceDockOpen ? 'surface-open' : ''].filter(Boolean).join(' '),
-          style: { '--xsla-surface-width': `${surfacePreference.width}px` },
+          ref: surfaceChatRef,
+          className: ['chat', timeline.items.length === 0 ? 'chat-empty' : '', !inspCollapsed ? 'workbench-open' : '', browserOpen ? 'browser-open' : ''].filter(Boolean).join(' '),
           'aria-label': '对话区',
           'data-surface-resizing': resizingSurface,
         },
@@ -2773,34 +4255,57 @@ export function apply(
             e('h1', {
               className: `chat-title chat-title-frosted${currentCatalog !== undefined && isGenericSessionTitle(currentCatalog.title) ? ' chat-title-generic' : ''}`,
               title: currentCatalog?.title,
-            }, currentCatalog === undefined ? '新会话' : sessionDisplayTitle(currentCatalog.title, currentCatalog.sessionId, currentCatalog.updatedAt)),
+            }, currentCatalog === undefined || (timeline.items.length === 0 && isGenericSessionTitle(currentCatalog.title)) ? '新会话' : sessionDisplayTitle(currentCatalog.title, currentCatalog.sessionId, currentCatalog.updatedAt)),
             e('div', { className: 'right' },
-              e('span', { className: `live head-runtime ${status === 'running' ? 'busy' : ''}`, role: 'status' }, e('i', null), receipt === undefined ? statusLabel(status) : `${statusLabel(status)} · ${receiptLabel(receipt)}`),
-              e('span', { className: 'head-governance' }, `待回答 ${questionInteractions.requests.length} · 待审批 ${approvals.approvals.length} · 压缩 ${contextRow?.compactions?.length ?? 0}`),
-              e('span', { className: 'head-context' }, contextView.short)),
-            e('button', { className: 'icbtn task-mobile-toggle', type: 'button', 'aria-controls': 'xsla-side', 'aria-expanded': sideOverlayOpen, onClick: () => { setSideCollapsed(false); setOverlayState(value => transitionOverlayState(value, 'toggle-side')) } }, '任务'),
-            e('button', { className: 'icbtn inspector-mobile-toggle', type: 'button', 'aria-controls': 'xsla-insp', 'aria-expanded': inspOverlayOpen, onClick: () => { setInspCollapsed(false); setOverlayState(value => transitionOverlayState(value, 'toggle-inspector')) } }, icon(e, 'brain'), e('span', null, '状态面板')),
-            currentSurfaceItems.length === 0 ? null : e('button', {
-              className: `surface-launcher ${surfaceDockOpen ? 'on' : ''}`,
-              type: 'button', title: surfaceDockOpen ? '工作现场已打开' : '打开工作现场',
-              'aria-controls': 'xsla-work-surface-dock', 'aria-expanded': surfaceDockOpen,
-              onClick: surfaceDockOpen ? closeSurfaceDock : openSurfaceDock,
-            }, icon(e, 'surface'), e('span', null, '现场'), e('b', null, String(currentSurfaceItems.length))),
+              e('span', { className: `live head-runtime ${status === 'running' ? 'busy' : ''}`, role: 'status' }, e('i', null), receipt === undefined ? runtimeLabel : `${runtimeLabel} · ${receiptLabel(receipt)}`),
+              sessionQuestionRequests.length + sessionApprovals.length === 0 ? null : e('span', { className: 'head-governance' }, sessionQuestionRequests.length > 0 ? `${sessionQuestionRequests.length} 项问题等待回答` : `${sessionApprovals.length} 项操作等待确认`),
+              contextView.level === 'critical' ? e('span', { className: 'head-context' }, contextView.short) : null),
+            e('button', { className: 'icbtn task-mobile-toggle', type: 'button', 'aria-controls': 'xsla-side', 'aria-expanded': sideOverlayOpen, onClick: () => { setSideCollapsed(false); setOverlayState(value => transitionOverlayState(value, 'toggle-side')) } }, '会话'),
+            e('div', { className: 'surface-launchers' }, e('button', {
+              className: `surface-launcher workbench-launcher ${!inspCollapsed ? 'on' : ''}`,
+              type: 'button', 'data-workbench-launcher': '', 'aria-controls': 'xsla-insp', 'aria-expanded': !inspCollapsed,
+              'aria-label': `切换工作台${notice === undefined ? '' : ` · ${notice.label}`}`,
+              title: '任务进度、工作材料与专用浏览器',
+              onClick: () => { if (inspCollapsed) selectWorkbenchView(workbenchView); else closeWorkbench() },
+            }, icon(e, 'surface'), e('span', null, '工作台'), notice === undefined ? null : e('i', { className: 'workbench-notice-dot', 'aria-hidden': 'true' }))),
             e('button', {
               className: 'theme-toggle', type: 'button',
               'aria-label': theme === 'light' ? '切换为暗色主题' : '切换为亮色主题',
-              title: '切换主题（云白薄荷/暗夜影院）',
+              title: '切换亮色或暗色；更多配色在设置 → 外观',
               onClick: () => ctx.theme.setTheme(theme === 'light' ? 'dark' : 'light'),
             }, theme === 'light' ? icon(e, 'moon') : icon(e, 'sun'))),
           e('div', { className: 'conversation-body' },
             timeline.items.length === 0 ? null : renderConversationGhost(e),
             e('div', { className: 'visually-hidden', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
-              receipt === undefined ? statusLabel(status) : `${statusLabel(status)}，${receiptLabel(receipt)}`),
+              receipt === undefined ? runtimeLabel : `${runtimeLabel}，${receiptLabel(receipt)}`),
             e('div', {
               className: 'stream', ref: streamRef,
               'data-empty': timeline.items.length === 0,
               role: 'log', 'aria-label': '对话记录', 'aria-live': 'off',
+              onWheel: (event: { deltaY: number; currentTarget: HTMLDivElement }) => {
+                // A short initial transcript may not scroll at all. An upward
+                // gesture at its top must still reveal the preceding page.
+                if (event.deltaY < 0 && event.currentTarget.scrollTop <= 0 && !historyError) loadEarlierHistory()
+              },
               onScroll: (event: { currentTarget: HTMLDivElement }) => {
+                // Reader scrolls own bottom-follow: pinned while within the
+                // floor threshold, released the moment the reader moves up.
+                pinnedRef.current = historyPrependRef.current === undefined && isPinnedAtBottom(event.currentTarget)
+                // Native anchoring absorbs late image/content-visibility size
+                // changes while reading; explicit bottom-follow owns the floor.
+                event.currentTarget.style.overflowAnchor = pinnedRef.current ? 'none' : 'auto'
+                const pendingHistory = historyPrependRef.current
+                if (pendingHistory !== undefined && pendingHistory.owner === currentId && pendingHistory.firstKey === timeline.items[0]?.key) {
+                  // A delayed page must respect further user scrolling, not
+                  // restore the obsolete position where the request began.
+                  Object.assign(pendingHistory, historyViewportAnchor(event.currentTarget))
+                }
+                const prefetch = !historyError && shouldPrefetchHistory({
+                  scrollTop: event.currentTarget.scrollTop, previousTop: previousScrollTopRef.current,
+                  clientHeight: event.currentTarget.clientHeight, hasEarlier: timeline.hasEarlier === true,
+                  loading: historyPrependRef.current !== undefined || timeline.loading === true,
+                })
+                previousScrollTopRef.current = event.currentTarget.scrollTop
                 const offerJump = shouldOfferJumpToLatest(event.currentTarget)
                 setShowJumpToLatest(offerJump)
                 if (!offerJump) setUnreadLatestCount(0)
@@ -2808,24 +4313,30 @@ export function apply(
                   ? userTurnNavigation.map(item => event.currentTarget.querySelector<HTMLElement>(`[data-event-index="${item.eventIndex}"]`)?.offsetTop ?? Number.NaN)
                   : []
                 setActiveUserTurnOrdinal(activeUserTurnOrdinalAtScroll(offsets, event.currentTarget.scrollTop, event.currentTarget.clientHeight))
+                if (prefetch) loadEarlierHistory()
               },
             },
-            timeline.hasEarlier === true ? e('button', {
-              className: 'timeline-load-earlier', type: 'button',
-              'aria-label': `加载更早记录，当前显示 ${timeline.items.length} 条，共 ${timeline.total ?? timeline.items.length} 条`,
-              onClick: () => {
-                const stream = streamRef.current
-                const previousHeight = stream?.scrollHeight ?? 0
-                const previousTop = stream?.scrollTop ?? 0
-                ctx.taskTimeline.loadEarlier()
-                if (stream !== null && typeof window !== 'undefined') {
-                  window.requestAnimationFrame(() => {
-                    stream.scrollTop = previousTop + Math.max(0, stream.scrollHeight - previousHeight)
-                  })
-                }
+            timeline.hasEarlier === true || historyLoading || historyError ? e('div', { className: 'timeline-history-status', role: 'status' },
+              historyError ? e('button', { type: 'button', onClick: loadEarlierHistory }, '旧消息暂未接上，点此重试')
+                : historyLoading ? '正在接上更早的消息…' : '向上滚动查看更早消息') : null,
+            timeline.loading === true ? e('p', { role: 'status', className: 'muted', 'aria-live': 'polite' }, '正在恢复对话记录…') : timeline.items.length === 0 ? renderEmptyStage(e, {
+              drafting: composerHasText || draftImages.length > 0 || draftFiles.some(file => file.owner === currentId),
+              needsModelSetup: emptyStageNeedsModelSetup(sessionModels, providerReadiness),
+              onModelSettings: openModelSettings,
+              onStarter: id => {
+                const textarea = composerTextareaRef.current
+                if (textarea === null || submitting || stopping || interactionBlocked) return
+                const draft = taskStarterDraft(textarea.value, draftImagesRef.current.length + draftFilesRef.current.filter(file => file.owner === currentId).length, id)
+                if (draft === undefined) { textarea.focus(); return }
+                restoreComposerText(draft)
               },
-            }, `加载更早记录 · ${timeline.items.length}/${timeline.total ?? timeline.items.length}`) : null,
-            timeline.items.length === 0 ? renderEmptyStage(e) : e('div', { className: 'events' }, ...timeline.items.map((item, eventIndex) => {
+            }) : e('div', { className: 'events' }, ...conversationDisplayEntries(timeline.items).map(entry => {
+              if (entry.kind === 'tools') return e('details', { className: 'tool-disclosure', key: entry.key, 'data-event-key': entry.key },
+                e('summary', null, `执行记录 · ${entry.items.length} 项`, e('span', null, '展开详情')),
+                ...entry.items.map(({ item }) => e('article', { key: item.key, className: 'tool-detail' },
+                  e('b', null, timelineEventPresentation(item, undefined).label), e('pre', null, item.text))))
+              const { item, eventIndex } = entry
+              if (item.kind === 'assistant' && item.text.trim() === '') return null
               const view = timelineEventPresentation(item, current?.completionReceipt?.sourceSeq)
               const failure = item.isError === true || item.kind === 'error'
               const previousUser = failure
@@ -2833,30 +4344,45 @@ export function apply(
                 : undefined
               return e('article', {
                 id: `xsla-event-${eventIndex}`, className: `event event-${item.kind}${view.historical ? ' historical' : ''}`, key: item.key,
-                'data-event-index': String(eventIndex), 'data-kind': item.kind, 'data-error': failure,
+                'data-event-index': String(eventIndex), 'data-event-seq': item.seq, 'data-event-key': item.key, 'data-session-id': timeline.sessionId, 'data-kind': item.kind, 'data-error': failure,
               },
               e('span', { className: 'event-label' }, view.label),
               e('div', { className: 'event-body' },
                 item.kind === 'assistant'
-                  ? e('div', { className: 'event-markdown' }, e(MarkdownText, { text: item.text, streaming: item.key === 'partial' }))
+                  ? e('div', { className: 'event-markdown' }, e(MarkdownText, { text: item.text, streaming: item.key === 'partial', labels: MARKDOWN_LABELS }))
                   : item.text,
-                item.reasoning === undefined || item.reasoning.trim() === '' ? null : e('details', { className: 'event-reasoning' },
-                  e('summary', null, '查看思考过程'), e('p', null, item.reasoning)),
+                item.kind !== 'user' || currentId === undefined || timeline.sessionId !== currentId || !item.images?.length ? null
+                  : e('div', { className: 'history-images', 'aria-label': `历史图片，共 ${item.images.length} 张` },
+                    ...item.images.map((image, index) => e(HistoryImage, { key: `${currentId}:${item.key}:${index}:${image.attachmentId}`, sessionId: currentId, image, ordinal: index + 1 }))),
                 !failure ? null : e('div', { className: 'event-recovery' },
                   view.detail === '' ? null : e('details', null, e('summary', null, '技术详情'), e('code', null, view.detail)),
                   previousUser === undefined ? null : e('button', {
                     className: 'event-restore-button', type: 'button', onClick: () => restoreComposerText(previousUser.text),
                   }, '放回输入框'))))
             })),
+            status !== 'running' && status !== 'blocked' ? null : (() => {
+              const summary = taskProgressSummary({ state: status, items: timeline.items, run: sessionRunCenter })
+              return e('section', { className: 'progress-summary', 'aria-label': '当前进展', role: 'status', 'aria-live': 'polite' },
+                e('div', { className: 'progress-summary-head' }, e('i', { 'aria-hidden': 'true' }), e('b', null, summary.activity)),
+                summary.goal === '' ? null : e('small', null, `目标 · ${summary.goal}`),
+                summary.progress === undefined ? null : e('small', null, summary.progress),
+                summary.warning === undefined ? null : e('p', { className: 'progress-warning' }, summary.warning))
+            })(),
             ...interactionCards),
-            userTurnNavigation.length === 0 ? null : e('nav', { className: 'turn-index', 'aria-label': '我的消息导航' },
-              e('div', { className: 'turn-index-scroll', onScroll: () => setUserTurnPreview(undefined) },
-                ...userTurnNavigation.map(item => e('button', {
+            turnIndex.items.length === 0 ? null : e('nav', { className: 'turn-index', 'aria-label': '我的消息导航' },
+              turnIndex.pageCount <= 1 ? null : e('button', {
+                className: 'turn-index-page', type: 'button', 'data-direction': 'previous',
+                'aria-label': '上一组消息', title: `上一组消息（第 ${turnIndex.page + 1} / ${turnIndex.pageCount} 组）`,
+                disabled: turnIndex.page === 0,
+                onClick: () => { setUserTurnPreview(undefined); setTurnIndexPage(turnIndex.page - 1) },
+              }, icon(e, 'down')),
+              e('div', { className: 'turn-index-marks' },
+                ...turnIndex.items.map(item => e('button', {
                   className: 'turn-index-marker', type: 'button', key: item.key,
                   'data-turn-index': item.ordinal,
                   'data-current': activeUserTurnOrdinal === item.ordinal ? 'true' : undefined,
                   'aria-current': activeUserTurnOrdinal === item.ordinal ? 'location' : undefined,
-                  'aria-controls': `xsla-event-${item.eventIndex}`,
+                  'aria-controls': item.eventIndex < 0 ? undefined : `xsla-event-${item.eventIndex}`,
                   'aria-describedby': userTurnPreview?.key === item.key ? 'xsla-turn-index-preview' : undefined,
                   'aria-label': `跳转到第 ${item.ordinal} 条我的消息：${item.preview}`,
                   onMouseEnter: (event: { currentTarget: HTMLElement }) => {
@@ -2874,19 +4400,35 @@ export function apply(
                   },
                   onBlur: () => setUserTurnPreview(undefined),
                   onClick: () => {
+                    cancelHistoryPrepend()
                     setUserTurnPreview(undefined)
-                    const stream = streamRef.current
-                    const target = stream?.querySelector<HTMLElement>(`[data-event-index="${item.eventIndex}"]`)
-                    if (stream !== null && target !== null && target !== undefined) {
-                      setActiveUserTurnOrdinal(item.ordinal)
-                      stream.scrollTo({
-                        top: Math.max(0, target.offsetTop - stream.clientHeight * 0.34),
-                        behavior: conversationScrollBehavior(),
-                      })
-                    }
+                    pinnedRef.current = false
+                    if (item.seq !== undefined) ctx.taskTimeline.reveal?.(item.seq)
+                    const owner = currentId
+                    window.requestAnimationFrame(() => {
+                      if (sessionOwnerRef.current !== owner) return
+                      const stream = streamRef.current
+                      const selector = item.seq === undefined ? `[data-event-index="${item.eventIndex}"]` : `[data-event-seq="${item.seq}"]`
+                      const target = stream?.querySelector<HTMLElement>(selector)
+                      if (stream !== null && target != null) {
+                        setActiveUserTurnOrdinal(item.ordinal)
+                        const top = Math.max(0, target.offsetTop - stream.clientHeight * 0.34)
+                        // A distant jump is navigation, not upward reading or
+                        // a multi-second animation through hundreds of rows.
+                        previousScrollTopRef.current = top
+                        stream.style.overflowAnchor = 'none'
+                        stream.scrollTo({ top, behavior: Math.abs(stream.scrollTop - top) > stream.clientHeight * 2 ? 'instant' : conversationScrollBehavior() })
+                      }
+                    })
                   },
-                })))),
-            userTurnPreview === undefined || !userTurnNavigation.some(item => item.key === userTurnPreview.key) ? null : e('aside', {
+                }))),
+              turnIndex.pageCount <= 1 ? null : e('button', {
+                className: 'turn-index-page', type: 'button', 'data-direction': 'next',
+                'aria-label': '下一组消息', title: `下一组消息（第 ${turnIndex.page + 1} / ${turnIndex.pageCount} 组）`,
+                disabled: turnIndex.page === turnIndex.pageCount - 1,
+                onClick: () => { setUserTurnPreview(undefined); setTurnIndexPage(turnIndex.page + 1) },
+              }, icon(e, 'down'))),
+            userTurnPreview === undefined || !turnIndex.items.some(item => item.key === userTurnPreview.key) ? null : e('aside', {
               id: 'xsla-turn-index-preview', className: 'turn-index-preview', role: 'tooltip',
               style: { '--xsla-turn-preview-top': `${userTurnPreview.top}px` },
             },
@@ -2897,13 +4439,33 @@ export function apply(
               onClick: () => {
                 const stream = streamRef.current
                 if (stream === null) return
+                cancelHistoryPrepend()
                 stream.scrollTo({ top: stream.scrollHeight, behavior: conversationScrollBehavior() })
                 setShowJumpToLatest(false)
                 setUnreadLatestCount(0)
               },
             }, icon(e, 'down'), unreadLatestCount > 0 ? e('span', { className: 'jump-count', 'aria-hidden': 'true' }, unreadLatestCount > 9 ? '9+' : String(unreadLatestCount)) : null) : null),
           e('footer', { className: 'composer' },
+            interactionSyncPending ? e('p', { className: 'interaction-sync-note', role: 'status' }, '正在同步待处理的问答或确认，可继续编辑草稿。若持续等待，请先另存草稿，再刷新窗口重新连接。') : null,
             error === '' ? null : e('p', { className: 'composer-error', role: 'alert' }, error),
+            sendNotice?.owner !== currentId || sendNotice === undefined ? null : (() => {
+              const notice = sendStatusPresentation(sendNotice.phase, sendNotice.mode)
+              return e('div', { className: 'composer-send-status', role: 'status', 'aria-live': 'polite', 'data-phase': sendNotice.phase },
+                e('b', null, notice.label), e('span', null, notice.detail))
+            })(),
+            sessionRunCenter.queue.length === 0 ? null : e('section', { className: 'composer-queue', 'aria-label': '待发送队列', tabIndex: -1 },
+              e('header', null, e('b', null, `待执行 · ${sessionRunCenter.queue.length}`), e('small', null, '按顺序执行；可单独调整方向')),
+              e('div', { className: 'composer-queue-list' }, ...sessionRunCenter.queue.map((item, index) => e('div', { className: 'composer-queue-item', key: item.id, 'data-composer-queue-id': item.id },
+                e('span', { className: 'queue-ordinal' }, String(index + 1)),
+                queueEdit?.id === item.id ? e('form', { className: 'queue-edit-form', onSubmit: (event: { preventDefault(): void }) => { event.preventDefault(); void updateRunQueue(item.id, 'edit', queueEdit.text) } },
+                  e('textarea', { value: queueEdit.text, rows: 2, 'aria-label': '修改队列消息', disabled: queueBusy !== undefined,
+                    onChange: (event: { currentTarget: HTMLTextAreaElement }) => setQueueEdit({ id: item.id, text: event.currentTarget.value }) }),
+                  e('button', { type: 'submit', disabled: queueBusy !== undefined || queueEdit.text.trim() === '' }, '保存'),
+                  e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => setQueueEdit(undefined) }, '取消')) : e('span', { className: 'queue-preview' }, item.preview),
+                queueEdit?.id === item.id ? null : e('div', { className: 'queue-actions' },
+                  item.editable && item.text != null ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => setQueueEdit({ id: item.id, text: item.text! }) }, '编辑') : null,
+                  item.steerable ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => { void updateRunQueue(item.id, 'steer') } }, '立即调整') : null,
+                  item.removable ? e('button', { type: 'button', disabled: queueBusy !== undefined, onClick: () => { void updateRunQueue(item.id, 'remove') } }, '移除') : null))))),
             e('form', {
               className: 'cbox', 'data-has-images': draftImages.length > 0,
               onSubmit: (event: unknown) => { void submit(event as { preventDefault(): void; currentTarget: HTMLFormElement }) },
@@ -2927,10 +4489,17 @@ export function apply(
                 e('img', { src: image.previewUrl, alt: image.name === '' ? '待发送图片' : image.name }),
                 e('button', { type: 'button', className: 'attachment-remove', 'aria-label': `移除 ${image.name || '图片'}`, onClick: () => removeDraftImage(image.id) }, '×'),
                 e('figcaption', null, image.name || '图片')))),
+            draftFiles.length === 0 ? null : e('div', { className: 'file-attachment-list', 'aria-label': '待发送文件' },
+              ...draftFiles.filter(file => file.owner === currentId).map(file => e('div', { className: 'file-attachment', key: file.id, 'data-upload-state': file.phase },
+                e('div', null, e('b', null, file.file.name), e('small', null, `${formatBytes(file.file.size)} · ${file.phase === 'ready' ? '可以发送' : file.phase === 'uploading' ? `上传 ${Math.round(file.progress)}%` : file.phase === 'cancelled' ? '已取消' : file.error ?? '上传失败'}`)),
+                file.phase === 'uploading' ? e('button', { type: 'button', onClick: () => cancelDraftFile(file.id) }, '取消') : null,
+                file.phase === 'failed' || file.phase === 'cancelled' ? e('button', { type: 'button', onClick: () => retryDraftFile(file.id) }, '重试') : null,
+                e('button', { type: 'button', disabled: submitting, 'aria-label': `移除文件 ${file.file.name}`, onClick: () => cancelDraftFile(file.id, true) }, '×'))),
+              e('small', { className: 'file-draft-boundary' }, '文件仅暂存在当前会话输入区；切换会话或刷新后需重新选择。')),
             e('textarea', {
               ref: composerTextareaRef,
-              name: 'content', rows: 1, disabled: interactionBlocked || submitting || stopping,
-              placeholder: questionRequest !== undefined ? '请先回答上方问题' : approval !== undefined ? '请先处理当前审批' : stopping ? '正在停止…' : submitting ? '正在发送…' : current?.state === 'running' ? '补充信息，调整当前方向…' : '交代小蛇做事…',
+              name: 'content', rows: 1, disabled: interactionDetailsReady,
+              placeholder: questionRequest !== undefined ? '请先回答上方问题' : approval !== undefined ? '请先处理当前审批' : current?.state === 'running' ? (sendMode === 'queue' ? '继续输入，加入下一条任务…' : '补充信息，调整当前方向…') : '交代小蛇做事…',
               'aria-label': '输入消息',
               'aria-autocomplete': 'list',
               'aria-haspopup': 'listbox',
@@ -2993,16 +4562,20 @@ export function apply(
                 }
               },
             })),
+            status !== 'running' ? null : e('div', { className: 'composer-running-options' },
+              e('span', null, '新消息'),
+              e('div', { className: 'send-mode-control', role: 'group', 'aria-label': '发送方式' },
+                ...(['queue', 'steer'] as const).map(mode => e('button', { key: mode, type: 'button', 'aria-pressed': sendMode === mode,
+                  disabled: submitting || stopping, onClick: () => setSendMode(mode) }, mode === 'queue' ? '排队' : '立即调整')))),
             e('div', { className: 'composer-toolbar', 'data-running': status === 'running' ? 'true' : 'false' },
               e('div', { className: 'composer-tools-left' },
-                e('label', { className: 'attachment-control', title: `添加图片（最多 ${imageLimits.maxImagesPerMessage} 张）` },
+                e('label', { className: 'attachment-control', title: `添加图片或文件（每个文件最多 32 MB）` },
                   e('span', { 'aria-hidden': 'true' }, '＋'),
-                  e('span', { className: 'visually-hidden' }, '添加图片'),
+                  e('span', { className: 'visually-hidden' }, '添加图片或文件'),
                   e('input', {
                     className: 'attachment-input', type: 'file', multiple: true,
-                    accept: '.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif',
                     disabled: interactionBlocked || submitting || stopping,
-                    'aria-label': '添加图片',
+                    'aria-label': '添加图片或文件',
                     onChange: (event: { currentTarget: HTMLInputElement }) => {
                       if (event.currentTarget.files !== null) void addDraftFiles(event.currentTarget.files)
                       event.currentTarget.value = ''
@@ -3015,75 +4588,100 @@ export function apply(
                 })),
               e('div', { className: 'cbtns' },
                 renderModelControl(e, {
-                  snapshot: models, disabled: currentId === undefined || interactionBlocked || submitting || stopping, effortOpen: choiceMenu === 'effort',
-                  onToggleEffort: () => setChoiceMenu(value => value === 'effort' ? undefined : 'effort'),
-                  onSelect: selection => { setChoiceMenu(undefined); void selectModel(selection) },
+                  snapshot: sessionModels, providerReadiness,
+                  disabled: currentId === undefined || interactionBlocked || stopping,
+                  running: status === 'running',
+                  open: choiceMenu === 'model',
+                  ...(modelSelectionNotice === undefined ? {} : { selectionNotice: modelSelectionNotice }),
+                  onToggle: () => setChoiceMenu(value => value === 'model' ? undefined : 'model'),
+                  onDismiss: () => setChoiceMenu(undefined),
+                  onSelect: selection => { void selectModel(selection) },
+                  onOpenModelSettings: openModelSettings,
                 }),
                 status === 'running' ? e('button', {
-                  className: 'stop-generation', type: 'button', disabled: submitting || stopping,
+                  className: 'stop-generation', type: 'button', disabled: stopping,
                   title: stopping ? '正在停止' : '停止生成', 'aria-label': stopping ? '正在停止' : '停止生成',
                   onClick: () => { void stopRun() },
                 }, icon(e, 'stop'), e('span', null, stopping ? '停止中' : '停止')) : null,
                 e('button', {
-                  className: `send ${current?.state === 'running' ? 'steer' : ''}`.trim(), type: 'submit',
+                  className: `send ${current?.state === 'running' && sendMode === 'steer' ? 'steer' : ''}`.trim(), type: 'submit',
                   disabled: interactionBlocked || submitting || stopping,
-                  title: submitting ? '正在发送' : current?.state === 'running' ? '调整方向' : '发送',
-                  'aria-label': submitting ? '正在发送' : current?.state === 'running' ? '调整方向' : '发送',
-                }, icon(e, 'send'), current?.state === 'running' ? e('span', null, '调整方向') : null)))),
-            e('div', { className: 'hint' }, e('span', null, enterBehavior === 'ctrl-enter-send' ? 'Ctrl+Enter 发送 · Enter 换行' : 'Enter 发送 · Shift+Enter 换行'), status === 'running' ? e('span', { className: 'runtime-steer-hint' }, '运行中 · 发送将调整方向') : null, e('span', null, '/ 命令'), e('span', null, '粘贴、拖入或 ＋ 添加图片'), questionRequest === undefined ? null : e('span', { className: 'question-shortcut' }, '先完成上方问题'), approval === undefined ? null : e('span', { className: 'approval-shortcuts' }, 'Y 允许一次 · N 拒绝'))),
-          renderWorkSurfaceDock(e, {
+                  title: submitting ? '正在发送' : current?.state === 'running' ? (sendMode === 'queue' ? '加入队列' : '调整方向') : '发送',
+                  'aria-label': submitting ? '正在发送' : current?.state === 'running' ? (sendMode === 'queue' ? '加入队列' : '调整方向') : '发送',
+                }, icon(e, 'send'))))),
+            e('div', { className: 'hint' }, e('span', null, enterBehavior === 'ctrl-enter-send' ? 'Ctrl+Enter 发送 · Enter 换行' : 'Enter 发送 · Shift+Enter 换行'), status === 'running' ? e('span', { className: 'runtime-steer-hint' }, '运行中可继续排队，也可调整下一次请求的思考强度') : null, e('span', null, '/ 命令'), e('span', null, '粘贴图片、拖入或 ＋ 添加文件'), e('span', { className: 'draft-window-boundary' }, COMPOSER_DRAFT_CURRENT_WINDOW_NOTICE), questionRequest === undefined ? null : e('span', { className: 'question-shortcut' }, '先完成上方问题'), approval === undefined ? null : e('span', { className: 'approval-shortcuts' }, 'Y 允许一次 · N 拒绝'))),
+        ),
+        renderInspector(e, {
+          collapsed: inspCollapsed, overlayOpen: inspOverlayOpen, receipt,
+          view: workbenchView, browserAvailable: nativeBrowserBridge() !== undefined,
+          fullscreen: materialFullscreen && workbenchView === 'materials',
+          notice, materialCount: currentSurfaceItems.length,
+          onView: selectWorkbenchView,
+          onTabKey: (view, event) => {
+            const target = workbenchTabKeyTarget(view, event.key, nativeBrowserBridge() !== undefined)
+            if (target === undefined) return
+            event.preventDefault()
+            selectWorkbenchView(target)
+            window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workbench-view="${target}"]`)?.focus())
+          },
+          resizer: e('div', {
+            className: 'surface-resizer workbench-resizer', role: 'separator', tabIndex: 0,
+            'aria-label': '调整工作台宽度', 'aria-orientation': 'vertical',
+            'aria-valuemin': workbenchView === 'task' ? 248 : 320,
+            'aria-valuemax': workbenchPanelWidth(workbenchView, { task: 400, materials: WORK_SURFACE_DOCK_LIMITS.max, browser: Number.MAX_SAFE_INTEGER }, surfaceChatWidth),
+            'aria-valuenow': fittedWorkbenchWidth, title: '拖动调整宽度，双击恢复默认；方向键微调',
+            onPointerDown: beginSurfaceResize, onKeyDown: handleSurfaceResizeKey,
+            onDoubleClick: () => { if (workbenchView === 'browser') setBrowserWidth(undefined); else updateSurfaceWidth(workbenchView === 'task' ? defaultPanelWidths(layoutViewportWidth, typeof window === 'undefined' ? 900 : window.innerHeight).inspector : WORK_SURFACE_DOCK_LIMITS.standard) },
+          }, e('span', { className: 'surface-resizer-grip', 'aria-hidden': 'true' })),
+          materials: renderWorkSurfaceDock(e, {
             open: surfaceDockOpen,
-            items: surfaceItems,
+            items: materialItems,
+            category: showingFiles ? 'files' : 'activity',
+            fileCount: fileTabs.length, activityCount: surfaceItems.length,
+            onCategory: category => { setMaterialCategory(category); setMaterialSplit(false) },
+            fullscreen: materialFullscreen, onFullscreen: () => setMaterialFullscreen(value => !value),
+            split: materialSplit && (materialFullscreen || fittedWorkbenchWidth >= 640) && layoutViewportWidth >= 900,
+            splitAvailable: materialItems.length > 1 && layoutViewportWidth >= 900,
+            onSplit: () => { setMaterialSplit(value => !value); if (!materialSplit) setMaterialFullscreen(true) },
+            ...(secondarySurface === undefined ? {} : { secondary: secondarySurface }),
+            onSecondary: setSecondarySurfaceId,
+            renderContent: surface => fileTabs.some(file => file.id === surface.id) && materialCategory === 'files'
+              ? e(FilePreview, { key: `${surface.sessionId}:${surface.source}`, surface, reloadKey: surfaceReload })
+              : renderWorkSurfaceContent(e, surface, surfacePreference.mode, surfaceReload),
+            hiddenCount: currentSurfaceItems.length - surfaceItems.length,
+            onRestoreHidden: () => updateSurfacePreference(value => ({ ...value, dismissedIds: [] })),
             ...(activeSurface === undefined ? {} : { active: activeSurface }),
-            preference: surfacePreference,
+            preference: { ...surfacePreference, width: fittedSurfaceWidth },
             reloadKey: surfaceReload,
             onSelect: selectSurface,
             onClose: closeSurface,
-            onCloseDock: closeSurfaceDock,
             onTogglePin: toggleSurfacePin,
             onMode: mode => updateSurfacePreference(value => ({ ...value, mode })),
             onRefresh: () => setSurfaceReload(value => value + 1),
             onCopy: surface => { void copySurfaceSource(surface) },
             onExternal: openSurfaceExternally,
-            onPointerDown: beginSurfaceResize,
-            onResizeKey: handleSurfaceResizeKey,
-            onResetWidth: () => updateSurfaceWidth(WORK_SURFACE_DOCK_LIMITS.standard),
-          })),
-        renderPanelResizer(e, {
-          panel: 'inspector', width: panelWidths.inspector,
-          minimum: PANEL_WIDTH_LIMITS.inspector.min,
-          maximum: panelWidthMaximum(panelWidths, 'inspector', layoutViewportWidth),
-          onPointerDown: event => beginPanelResize('inspector', event),
-          onKeyDown: event => handlePanelResizeKey('inspector', event),
-          onReset: () => resetPanelWidth('inspector'),
-        }),
-        renderInspector(e, {
-          collapsed: inspCollapsed, overlayOpen: inspOverlayOpen, tab: rightTab, receipt,
-          receiptSeq: current?.completionReceipt?.sourceSeq, contextRow, contextView, heartbeat: heartbeatView,
-          approval, approvalCount: approvals.approvals.length, memorySummary: memoryView, memoryState,
-          memoryScope, memoryDraft, memoryEditing, memoryBusy, memoryError, currentProject: currentCatalog?.cwd,
-          onMemoryScope: setMemoryScope, onMemoryDraft: setMemoryDraft, onMemoryEdit: beginMemoryEdit,
-          onMemoryCancel: cancelMemoryEdit, onMemorySubmit: submitMemory,
-          onMemoryExpand: () => setMemoryEditorExpanded(true),
-          onMemoryState: (entry, state) => { void changeMemoryState(entry, state) },
-          transactions: transactionView, plugins,
-          model: modelView,
-          pendingRequests: pluginState.pendingRequests, onTab: setRightTab,
-          onCollapse: () => {
-            if (inspOverlayOpen) {
-              setInspCollapsed(false)
-              setOverlayState(value => transitionOverlayState(value, 'close'))
-            } else {
-              setInspCollapsed(value => !value)
-            }
-          },
-          onManage: () => setPluginManagerOpen(true),
+          }),
+          browser: e(BrowserDock, {
+            ownerId: currentId, open: browserOpen, resizing: resizingSurface,
+            onOpen: () => selectWorkbenchView('browser'),
+          }),
+          runtimeState: status, stopping, questionCount: sessionQuestionRequests.length,
+          onInteraction: onWorkbenchInteraction,
+          contextView, heartbeat: heartbeatView, approval, approvalCount: sessionApprovals.length,
+          runCenter: sessionRunCenter, surfaces: currentSurfaceItems,
+          onQueueAction: (itemId, kind) => { void updateRunQueue(itemId, kind) },
+          onQueueFocus: () => document.querySelector<HTMLElement>('.composer-queue')?.focus(),
+          ...(ctx.runCenter.setGoalPhase === undefined ? {} : { onGoalPhase: (action: 'pause' | 'resume') => { void setGoalPhase(action) } }),
+          goalBusy,
+          onOpenSubagent: openRunSubagent,
+          onInterruptSubagent: childSessionId => { void interruptRunSubagent(childSessionId) },
+          onCollapse: () => { if (materialFullscreen) setMaterialFullscreen(false); else closeWorkbench() },
         })),
       renderStatusbar(e, { sessionId: currentId, turns: timeline.items.filter(item => item.kind === 'user').length })),
     sideOverlayOpen || inspOverlayOpen ? e('button', { className: 'overlay-scrim', type: 'button', 'aria-label': '关闭浮层', onClick: closeOverlays }) : null,
     pluginManagerOpen ? e('div', { className: 'modal-layer', role: 'presentation', onMouseDown: closePluginManager },
       e('section', { className: 'confirm-box plugin-manager', role: 'dialog', 'aria-modal': 'true', 'aria-label': '插件管理', onMouseDown: (event: { stopPropagation(): void }) => event.stopPropagation() },
-        pluginManagerPanel(e, { workflow: pluginWorkflow, busy: pluginState.pendingRequests > 0, plugins, onSubmit: beginPluginWorkflow, onPrepare: preparePluginIntent, onConfirm: confirmPluginChange, onReset: resetPluginWorkflow, onClose: closePluginManager }))) : null,
+        pluginManagerPanel(e, { workflow: pluginWorkflow, busy: pluginState.pendingRequests > 0, plugins, transactions: pluginState.transactions, onSubmit: beginPluginWorkflow, onPrepare: preparePluginIntent, onConfirm: confirmPluginChange, onReset: resetPluginWorkflow, onClose: closePluginManager }))) : null,
     memoryEditorExpanded ? renderMemoryEditorModal(e, {
       memoryScope, memoryDraft, memoryEditing, memoryBusy, memoryError, currentProject: currentCatalog?.cwd,
       onMemoryScope: setMemoryScope, onMemoryDraft: setMemoryDraft, onMemoryCancel: cancelMemoryEdit,
@@ -3105,6 +4703,15 @@ export function apply(
   }
 
   const releases = [
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'appearance', order: 5, label: '外观',
+    }, AppearanceSettingsSection)),
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'memory', order: 20, label: '记忆',
+    }, MemorySettingsSection)),
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'runtime', order: 35, label: '运行与扩展',
+    }, RuntimeSettingsSection)),
     ctx.slots.inject('settings.trigger', () => ctx.slots.register({
       name: 'settings.trigger', id: 'xiaoshe-settings-trigger', priority: -1200,
     }, SettingsTriggerContent)),
@@ -3132,6 +4739,9 @@ export function apply(
   ]
   return () => {
     for (const release of [...releases].reverse()) release()
+    unsubscribeAppearance()
+    appearance.dispose()
+    releasePalette?.()
   }
 }
 
@@ -3305,36 +4915,167 @@ function renderSideActionMenu(e: ReactLike['createElement'], options: {
 }
 
 function renderInspector(e: ReactLike['createElement'], options: {
-  readonly collapsed: boolean; readonly overlayOpen: boolean; readonly tab: 'status' | 'memory' | 'system'
-  readonly receipt: string | undefined; readonly receiptSeq: number | undefined; readonly contextRow: ContextSnapshot['sessions'][string] | undefined
+  readonly surfaces: readonly WorkSurface[]
+  readonly runtimeState: string; readonly stopping: boolean; readonly questionCount: number; readonly onInteraction: () => void
+  readonly collapsed: boolean; readonly overlayOpen: boolean
+  readonly fullscreen?: boolean
+  readonly receipt: string | undefined
   readonly contextView: ReturnType<typeof contextPresentation>
   readonly heartbeat: { readonly status: string; readonly detail: string; readonly running: boolean; readonly tone?: 'ok' | 'warn' }
   readonly approval: { readonly key: string; readonly toolName: string; readonly reason?: string } | undefined
   readonly approvalCount: number
-  readonly memorySummary: { readonly value: string; readonly detail: string }
-  readonly memoryState: MemoryLifecycleSnapshot; readonly memoryScope: 'global' | 'project'; readonly memoryDraft: string
-  readonly memoryEditing: MemoryEntry | undefined; readonly memoryBusy: string; readonly memoryError: string; readonly currentProject: string | undefined
-  readonly onMemoryScope: (scope: 'global' | 'project') => void; readonly onMemoryDraft: (value: string) => void
-  readonly onMemoryEdit: (entry: MemoryEntry) => void; readonly onMemoryCancel: () => void
-  readonly onMemorySubmit: (event: { preventDefault(): void }) => Promise<void>
-  readonly onMemoryExpand: () => void
-  readonly onMemoryState: (entry: MemoryEntry, state: 'active' | 'forgotten') => void
-  readonly transactions: { readonly total: number; readonly detail: string }
-  readonly model: ReturnType<typeof modelPresentation>
-  readonly plugins: readonly { readonly moduleName: string; readonly fiberPhase: string | null }[]; readonly pendingRequests: number
-  readonly onTab: (tab: 'status' | 'memory' | 'system') => void; readonly onCollapse: () => void; readonly onManage: () => void
+  readonly runCenter: RunCenterSnapshot
+  readonly onQueueAction: (itemId: string, kind: 'remove' | 'steer') => void
+  readonly onQueueFocus?: () => void
+  readonly onGoalPhase?: (action: 'pause' | 'resume') => void
+  readonly goalBusy?: boolean
+  readonly onOpenSubagent: (childSessionId: string) => void
+  readonly onInterruptSubagent: (childSessionId: string) => void
+  readonly view: WorkbenchView
+  readonly browserAvailable: boolean
+  readonly materialCount: number
+  readonly notice: ReturnType<typeof workbenchNotice>
+  readonly materials: unknown; readonly browser: unknown; readonly resizer: unknown
+  readonly onView: (view: WorkbenchView) => void
+  readonly onTabKey: (view: WorkbenchView, event: { key: string; preventDefault(): void }) => void
+  readonly onCollapse: () => void
 }): unknown {
-  return e('aside', { id: 'xsla-insp', className: `insp${options.collapsed ? ' collapsed' : ''}${options.overlayOpen ? ' mobile-open' : ''}`, 'aria-label': '状态面板' },
-    collapseButton(e, options.collapsed ? '展开状态面板' : '收缩状态面板', 'right', options.collapsed, options.onCollapse),
-    e('div', { className: 'insp-head', role: 'tablist' }, tabButton(e, '状态', 'status', options.tab, options.onTab), tabButton(e, '记忆', 'memory', options.tab, options.onTab), tabButton(e, '能力', 'system', options.tab, options.onTab)),
-    e('div', { className: 'insp-body' },
-      e('section', { id: 'xsla-panel-status', 'aria-labelledby': 'xsla-tab-status', className: `panel${options.tab === 'status' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'status' },
-        panelSection(e, '任务清单', '当前任务', options.receipt === undefined ? '运行事实尚未形成终态凭证' : `${receiptLabel(options.receipt)} · 来源 ${options.receiptSeq ?? '—'}`, options.receipt === 'verified' ? 'ok' : undefined, { 'data-receipt-outcome': options.receipt ?? 'none' }),
-        panelSection(e, '上下文', options.contextView.value, options.contextView.detail, options.contextView.level === 'critical' ? 'warn' : undefined),
-        panelSection(e, '后台任务', options.heartbeat.status, options.heartbeat.detail, options.heartbeat.tone),
-        panelSection(e, '行动与审批', options.approval === undefined ? '当前无待审批行动' : `${options.approvalCount} 项等待确认 · ${options.approval.toolName}`, options.approval?.reason ?? '权限策略由运行时强制', options.approval === undefined ? undefined : 'warn')),
-      e('section', { id: 'xsla-panel-memory', 'aria-labelledby': 'xsla-tab-memory', className: `panel memory-panel${options.tab === 'memory' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'memory' }, renderMemoryPanel(e, options)),
-      e('section', { id: 'xsla-panel-system', 'aria-labelledby': 'xsla-tab-system', className: `panel${options.tab === 'system' ? ' on' : ''}`, role: 'tabpanel', hidden: options.tab !== 'system' }, panelSection(e, '模型路由', options.model.value, options.model.detail, options.model.routable === false ? 'warn' : undefined), panelSection(e, '能力中心', '核心能力可用', '会话 · 工作区 · 模型 · 时间线 · 审批 · 凭证 · 后台检查 · 记忆 · 插件治理'), panelSection(e, '插件事务', `${options.transactions.total} 笔受控变更`, `${options.transactions.detail}\n${options.plugins.length} 个运行组件实例`, options.pendingRequests > 0 ? 'warn' : undefined), e('button', { className: 'manager-toggle', type: 'button', onClick: options.onManage }, '管理插件'), e('div', { className: 'reality-note' }, e('b', null, '安全边界：'), '本机扩展与小蛇共同运行在 Host 进程中，没有独立的系统沙箱。'))))
+  const narrow = typeof window !== 'undefined' && window.innerWidth <= WORKBENCH_OVERLAY_BREAKPOINT
+  const tabs: { view: WorkbenchView; label: string; panel: string }[] = [
+    { view: 'task', label: '任务', panel: 'xsla-panel-status' },
+    { view: 'materials', label: `材料 · ${options.materialCount}`, panel: 'xsla-panel-materials' },
+    ...(options.browserAvailable ? [{ view: 'browser' as const, label: '浏览器', panel: 'xsla-panel-browser' }] : []),
+  ]
+  return e('aside', {
+    id: 'xsla-insp', className: `insp unified-workbench${options.fullscreen ? ' material-fullscreen' : ''}${options.collapsed ? ' collapsed' : ''}${!options.collapsed && narrow ? ' mobile-open' : ''}`,
+    hidden: options.collapsed, 'data-workbench-active': options.view,
+    'aria-label': '工作台', role: options.overlayOpen || options.fullscreen ? 'dialog' : 'complementary',
+    'aria-modal': options.overlayOpen || options.fullscreen ? 'true' : undefined,
+    onKeyDown: (event: { key: string; target: EventTarget; currentTarget: HTMLElement; preventDefault(): void; stopPropagation(): void }) => {
+      if (event.key !== 'Escape' || event.currentTarget.querySelector('[aria-modal="true"]')) return
+      event.preventDefault(); event.stopPropagation(); options.onCollapse()
+    },
+  },
+    options.resizer,
+    e('div', { className: 'workbench-head' }, e('h2', null, '工作台'),
+      e('button', { type: 'button', 'aria-label': '收起工作台', title: '收起面板，不停止任务或关闭网页', onClick: options.onCollapse }, '收起')),
+    options.notice === undefined ? null : e('button', {
+      type: 'button', className: 'workbench-attention', 'data-workbench-notice': options.notice.kind,
+      onClick: options.notice.kind === 'interaction' ? options.onInteraction : () => options.onView('task'),
+    }, e('span', { role: 'status' }, options.notice.label), e('small', null, options.notice.kind === 'interaction' ? '去处理' : '查看')),
+    e('nav', { className: 'workbench-tabs', role: 'tablist', 'aria-label': '工作台视图' }, ...tabs.map(tab => e('button', {
+      key: tab.view, id: `xsla-workbench-tab-${tab.view}`, type: 'button', role: 'tab',
+      'data-workbench-view': tab.view, 'aria-selected': options.view === tab.view, 'aria-controls': tab.panel,
+      tabIndex: options.view === tab.view ? 0 : -1,
+      onClick: () => options.onView(tab.view), onKeyDown: (event: { key: string; preventDefault(): void }) => options.onTabKey(tab.view, event),
+    }, tab.label))),
+    e('section', { id: 'xsla-panel-status', className: 'workbench-view insp-body', role: 'tabpanel', 'aria-labelledby': 'xsla-workbench-tab-task', hidden: options.view !== 'task' }, renderRunCenterPanel(e, options)),
+    e('section', { id: 'xsla-panel-materials', className: 'workbench-view workbench-materials', role: 'tabpanel', 'aria-labelledby': 'xsla-workbench-tab-materials', hidden: options.view !== 'materials' }, options.materials),
+    // Stable position/ancestors keep BrowserDock's owner effect mounted across
+    // tab switches. Only its open prop controls native bounds visibility.
+    e('section', { id: 'xsla-panel-browser', className: 'workbench-view workbench-browser', role: 'tabpanel', 'aria-labelledby': 'xsla-workbench-tab-browser', hidden: options.view !== 'browser' }, options.browser))
+}
+
+function renderRunCenterPanel(e: ReactLike['createElement'], options: {
+  readonly surfaces: readonly WorkSurface[]
+  readonly runtimeState: string; readonly stopping: boolean; readonly questionCount: number; readonly onInteraction: () => void
+  readonly runCenter: RunCenterSnapshot
+  readonly receipt: string | undefined
+  readonly contextView: ReturnType<typeof contextPresentation>
+  readonly heartbeat: { readonly status: string; readonly detail: string; readonly running: boolean; readonly tone?: 'ok' | 'warn' }
+  readonly approval: { readonly key: string; readonly toolName: string; readonly reason?: string } | undefined
+  readonly approvalCount: number
+  readonly onQueueAction: (itemId: string, kind: 'remove' | 'steer') => void
+  readonly onQueueFocus?: () => void
+  readonly onGoalPhase?: (action: 'pause' | 'resume') => void
+  readonly goalBusy?: boolean
+  readonly onOpenSubagent: (childSessionId: string) => void
+  readonly onInterruptSubagent: (childSessionId: string) => void
+}): unknown {
+  const run = options.runCenter
+  const view = runCenterWorkbenchPresentation(run)
+  const pending = view.counts.pending + options.approvalCount + options.questionCount
+  const attention = view.attentionGroups.length > 0 || options.contextView.level === 'critical' || options.heartbeat.tone === 'warn'
+  const state = taskStatePresentation({
+    runtimeState: options.runtimeState, stopping: options.stopping, questionCount: options.questionCount,
+    approvalCount: options.approvalCount, queued: view.counts.pending, active: view.counts.active,
+    loading: run.status === 'loading', attention: attention || run.status === 'error', receipt: options.receipt,
+  })
+  const currentTurnActive = options.runtimeState === 'running' || options.runtimeState === 'blocked' || options.stopping || options.questionCount + options.approvalCount > 0
+  const summaryTitle = run.goal?.objective ?? (currentTurnActive || pending > 0 || attention || view.counts.active > 0 || options.receipt !== undefined ? '当前任务' : '可以开始了')
+  const summaryDetail = run.status === 'error' && !currentTurnActive ? '任务状态暂未连接，不能据此判断执行结果。详细错误见运行信息。' : state.detail
+
+  const section = (title: string, className: string, rows: readonly unknown[], extra: Record<string, unknown> = {}): unknown => rows.length === 0
+    ? null
+    : e('section', { className: `psec task-section ${className}`, ...extra }, e('h4', null, title), e('div', { className: 'task-list' }, ...rows))
+  const groupedRow = (group: RunCenterJobGroup, index: number, kind: 'attention' | 'history'): unknown => e('div', {
+    className: `task-row task-row-${kind}`, key: `${kind}:${group.status}:${group.label}:${index}`,
+    ...(kind === 'history' ? { 'data-run-history-group': group.label, 'data-run-history-count': group.count } : { 'data-run-attention-group': group.label }),
+  }, e('div', { className: 'task-row-main' }, e('b', null, group.label), e('span', { 'data-run-status': group.status }, `${runStatusLabel(group.status)}${group.count > 1 ? ` ×${group.count}` : ''}`)), group.detail === undefined ? null : e('small', null, group.detail))
+
+  const pendingRows: unknown[] = []
+  if (options.questionCount > 0 || options.approval !== undefined) pendingRows.push(e('button', {
+    className: 'task-row task-row-action task-interaction', type: 'button', key: 'interaction',
+    'data-task-interaction': options.questionCount > 0 ? 'question' : 'approval', onClick: options.onInteraction,
+  }, e('div', { className: 'task-row-main' }, e('b', null, options.questionCount > 0 ? `${options.questionCount} 项问题等待回答` : `${options.approvalCount} 项操作等待确认`), e('span', null, options.questionCount > 0 ? '去回答' : '去确认')),
+  options.questionCount > 0 ? null : e('small', null, options.approval?.reason ?? '查看操作详情后决定是否允许。')))
+  if (run.queue.length > 0) pendingRows.push(e('button', { className: 'task-row task-row-action', type: 'button', key: 'queue', onClick: options.onQueueFocus },
+    e('b', null, `${run.queue.length} 条消息待执行`), e('small', null, '在输入区上方查看、编辑或移除排队消息')))
+
+  const activeRows: unknown[] = []
+  for (const job of view.activeJobs) activeRows.push(e('div', { className: 'task-row', key: `job:${job.id}`, 'data-run-job-id': job.id }, e('div', { className: 'task-row-main' }, e('b', null, job.label), e('span', { 'data-run-status': job.status }, runStatusLabel(job.status))), job.detail === undefined ? null : e('small', null, job.detail)))
+  for (const todo of view.activeTodos) activeRows.push(e('div', { className: 'task-row', key: `todo:${todo.id}`, 'data-run-todo-id': todo.id }, e('div', { className: 'task-row-main' }, e('b', null, todo.text), e('span', null, '待办'))))
+  for (const child of view.activeSubagents) activeRows.push(e('div', { className: 'task-row', key: `subagent:${child.id}`, 'data-run-subagent-id': child.id }, e('div', { className: 'task-row-main' }, e('b', null, child.label ?? '子任务'), e('span', null, '正在运行')), e('div', { className: 'run-center-actions' }, e('button', { type: 'button', onClick: () => options.onOpenSubagent(child.id) }, '打开'), child.canInterrupt ? e('button', { type: 'button', onClick: () => options.onInterruptSubagent(child.id) }, '停止') : null)))
+
+  const attentionRows: unknown[] = view.attentionGroups.map((group, index) => groupedRow(group, index, 'attention'))
+  if (options.contextView.level === 'critical') attentionRows.push(e('div', { className: 'task-row task-row-attention', key: 'context-warning' }, e('div', { className: 'task-row-main' }, e('b', null, '上下文空间不足'), e('span', null, options.contextView.value)), e('small', null, options.contextView.detail)))
+  if (options.heartbeat.tone === 'warn') attentionRows.push(e('div', { className: 'task-row task-row-attention', key: 'heartbeat-warning' }, e('div', { className: 'task-row-main' }, e('b', null, '运行巡检'), e('span', null, options.heartbeat.status)), e('small', null, options.heartbeat.detail)))
+
+  return e('div', { className: 'task-workbench' },
+    e('section', { className: 'psec task-overview', ...(state.tone === undefined ? {} : { 'data-tone': state.tone }), 'data-receipt-outcome': options.receipt ?? 'none' },
+      e('h4', null, '本轮'),
+      e('div', { className: 'panel-fact task-summary' },
+        e('div', { className: 'task-summary-head' }, e('b', null, summaryTitle), e('span', null, state.label)),
+        e('small', null, summaryDetail),
+        options.onGoalPhase === undefined || !['active', 'paused'].includes(run.goal?.phase ?? '') ? null : e('div', { className: 'run-center-actions' },
+          e('button', { type: 'button', disabled: options.goalBusy === true,
+            onClick: () => options.onGoalPhase?.(run.goal?.phase === 'paused' ? 'resume' : 'pause') }, run.goal?.phase === 'paused' ? '恢复目标' : '暂停目标')),
+        e('div', { className: 'task-metrics', 'aria-label': '任务摘要' }, pending === 0 ? null : e('span', null, `待处理 ${pending}`), view.counts.active === 0 ? null : e('span', null, `进行中 ${view.counts.active}`)))),
+    section('待处理', 'task-pending', pendingRows),
+    section('需要关注', 'task-attention', attentionRows),
+    section('正在推进', 'task-active', activeRows),
+    run.subagents.every(child => child.kind !== 'child' || child.activity === 'running') ? null : e('details', { className: 'task-disclosure' },
+      e('summary', null, '其他子任务'),
+      ...run.subagents.filter(child => child.kind === 'child' && child.activity !== 'running').map(child => child.kind !== 'child' ? null : e('div', { className: 'task-row', key: child.id, 'data-run-subagent-id': child.id },
+        e('div', { className: 'task-row-main' }, e('b', null, child.label ?? '子任务'), e('span', null, '当前未运行')),
+        e('button', { type: 'button', onClick: () => options.onOpenSubagent(child.id) }, '打开记录')))),
+    view.recentGroups.length === 0 ? null : e('details', { className: 'task-disclosure run-history' },
+      e('summary', null, e('span', null, '最近运行'), e('small', null, `${view.counts.history} 条记录 · 已归并为 ${view.recentGroups.length} 项`)),
+      e('div', { className: 'task-list' }, ...view.recentGroups.map((group, index) => groupedRow(group, index, 'history')))),
+    e('details', { className: 'task-disclosure runtime-facts' },
+      e('summary', null, e('span', null, '运行信息'), e('small', null, `${options.contextView.short} · ${options.heartbeat.status}`)),
+      e('div', { className: 'runtime-fact-list' },
+        run.status !== 'error' ? null : e('div', { className: 'runtime-fact-row task-connection-error' }, e('b', null, '任务连接'), e('small', null, run.error ?? '未提供详细错误')),
+        e('div', { className: 'runtime-fact-row' }, e('b', null, '上下文'), e('span', null, options.contextView.value), e('small', null, options.contextView.detail)),
+        e('div', { className: 'runtime-fact-row' }, e('b', null, '巡检'), e('span', null, options.heartbeat.status), e('small', null, options.heartbeat.detail)))))
+}
+
+function renderProviderReadinessPanel(e: ReactLike['createElement'], options: {
+  readonly providerReadiness: ProviderReadinessSnapshot
+  readonly onProbeRoute: (provider: string, model: string) => void
+  readonly onCancelProbe: () => void
+}): unknown {
+  const readiness = options.providerReadiness
+  const routes = readiness.providers.flatMap(provider => provider.routes.map(route => ({ provider, route })))
+  return e('section', { className: 'psec provider-readiness', 'data-state': readiness.status },
+    e('h4', null, '服务商就绪度'),
+    routes.length === 0
+      ? e('div', { className: 'panel-fact' }, e('b', null, readiness.status === 'loading' ? '正在读取服务商事实' : '暂无可探测模型'), e('span', null, readiness.error ?? '建立会话后显示精确模型路由。'))
+      : e('div', { className: 'provider-route-list' }, ...routes.map(({ provider, route }) => e('article', { className: 'provider-route', key: `${route.provider}:${route.model}` },
+        e('div', { className: 'provider-route-head' }, e('b', null, route.name), e('small', null, provider.displayName)),
+        e('div', { className: 'provider-facts', 'aria-label': '服务商五态事实' }, ...(['catalogued', 'supported', 'configured', 'available', 'verified'] as const).map(fact => e('span', { key: fact, 'data-ready': route.facts[fact] }, providerFactLabel(fact)))),
+        e('div', { className: 'provider-route-meta' }, e('span', null, route.reasons.includes('probe_configuration_changed') ? providerReasonLabel('probe_configuration_changed') : route.probe === undefined ? providerReasonLabel(route.reasons[0]) : probeSummary(route.probe)), e('button', { type: 'button', disabled: readiness.status === 'probing', onClick: () => options.onProbeRoute(route.provider, route.model) }, route.facts.verified ? '重新验证' : '验证'))))),
+    readiness.status === 'probing' ? e('button', { className: 'manager-toggle provider-cancel', type: 'button', onClick: options.onCancelProbe }, '停止当前验证') : null)
 }
 
 interface MemoryPanelOptions {
@@ -3358,11 +5099,8 @@ interface MemoryPanelOptions {
 /** Compact editor over the public Memory lifecycle service; Provider state stays authoritative. */
 function renderMemoryPanel(e: ReactLike['createElement'], options: MemoryPanelOptions): unknown {
   const snapshot = options.memoryState.memory
-  const entries = snapshot?.entries ?? []
+  const groups = memoryPanelEntryGroups(snapshot, options.currentProject)
   const effectiveScope = options.memoryScope === 'project' && options.currentProject === undefined ? 'global' : options.memoryScope
-  const globalEntries = entries.filter(entry => entry.scope === 'global' && entry.state === 'active')
-  const projectEntries = entries.filter(entry => entry.scope === 'project' && entry.state === 'active' && entry.project === options.currentProject)
-  const forgottenEntries = entries.filter(entry => entry.state === 'forgotten' && (entry.scope === 'global' || entry.project === options.currentProject))
   const busy = options.memoryBusy !== ''
   const error = options.memoryError || options.memoryState.error?.message || ''
 
@@ -3404,10 +5142,65 @@ function renderMemoryPanel(e: ReactLike['createElement'], options: MemoryPanelOp
           options.memoryEditing === undefined ? null : e('button', { type: 'button', disabled: busy, onClick: options.onMemoryCancel }, '取消'),
           e('button', { className: 'memory-save', type: 'submit', disabled: busy || options.memoryDraft.trim() === '' }, options.memoryBusy === 'save' ? '保存中…' : options.memoryEditing === undefined ? '记住' : '保存修改')))),
     error === '' ? null : e('p', { className: 'memory-error', role: 'alert' }, error),
-    memoryGroup('长期', globalEntries, '还没有跨项目长期保留的记忆。'),
-    memoryGroup('当前项目', projectEntries, options.currentProject === undefined ? '选择工作区后，这里会显示与该项目精确绑定的记忆。' : '当前项目还没有单独记住的内容。'),
-    memoryGroup('已遗忘', forgottenEntries, '没有可恢复的已遗忘记忆。'),
+    memoryGroup('长期', groups.global, '还没有跨项目长期保留的记忆。'),
+    memoryGroup('当前项目', groups.project, options.currentProject === undefined ? '选择工作区后，这里会显示与该项目精确绑定的记忆。' : '当前项目还没有单独记住的内容。'),
+    memoryGroup('已遗忘', groups.forgotten, '没有可恢复的已遗忘记忆。'),
     (snapshot?.counts.superseded ?? 0) === 0 ? null : e('p', { className: 'memory-history-note' }, `另有 ${snapshot?.counts.superseded ?? 0} 个旧版本保留在审计历史中。`))
+}
+
+/** Group the current memory projection using the Host's canonical project key. */
+export function memoryPanelEntryGroups(
+  snapshot: MemorySnapshot | undefined,
+  currentProject: string | undefined,
+): { readonly global: readonly MemoryEntry[]; readonly project: readonly MemoryEntry[]; readonly forgotten: readonly MemoryEntry[] } {
+  const entries = snapshot?.entries ?? []
+  // New Hosts return the exact canonical key used for filtering. Falling back
+  // to Windows-insensitive comparison keeps rolling upgrades readable. A
+  // retained snapshot from a previously selected project is never displayed.
+  const projectKey = snapshot?.project === undefined
+    ? currentProject
+    : currentProject !== undefined && memoryProjectKeysEqual(snapshot.project, currentProject)
+      ? snapshot.project
+      : undefined
+  const matchesProject = (entry: MemoryEntry): boolean => entry.project !== undefined
+    && projectKey !== undefined
+    && (snapshot?.project === undefined
+      ? memoryProjectKeysEqual(entry.project, projectKey)
+      : entry.project === projectKey)
+  return {
+    global: entries.filter(entry => entry.scope === 'global' && entry.state === 'active'),
+    project: entries.filter(entry => entry.scope === 'project' && entry.state === 'active' && matchesProject(entry)),
+    forgotten: entries.filter(entry => entry.state === 'forgotten'
+      && (entry.scope === 'global' || matchesProject(entry))),
+  }
+}
+
+/** Detect a real project-boundary change while tolerating Windows path aliases. */
+export function memoryProjectContextChanged(
+  previous: MemoryProjectContext,
+  next: MemoryProjectContext,
+): boolean {
+  const cwdChanged = previous.cwd === undefined || next.cwd === undefined
+    ? previous.cwd !== next.cwd
+    : !memoryProjectKeysEqual(previous.cwd, next.cwd)
+  const canonicalChanged = previous.canonical !== undefined
+    && next.canonical !== undefined
+    && !memoryProjectKeysEqual(previous.canonical, next.canonical)
+  return cwdChanged || canonicalChanged
+}
+
+function memoryProjectKeysEqual(left: string, right: string): boolean {
+  if (left === right) return true
+  const comparable = (value: string): string | undefined => {
+    const trimmed = value.trim()
+    if (!/^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/u.test(trimmed)) return undefined
+    return trimmed
+      .replaceAll('\\', '/')
+      .replace(/\/+$/u, '')
+      .toLocaleLowerCase('en-US')
+  }
+  const normalizedLeft = comparable(left)
+  return normalizedLeft !== undefined && normalizedLeft === comparable(right)
 }
 
 interface MemoryEditorModalOptions {
@@ -3431,14 +5224,14 @@ function renderMemoryEditorModal(e: ReactLike['createElement'], options: MemoryE
   return e('div', { className: 'modal-layer memory-modal-layer', role: 'presentation', onMouseDown: options.onClose },
     e('section', { className: 'confirm-box memory-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': '完整记忆编辑器', onMouseDown: (event: { stopPropagation(): void }) => event.stopPropagation() },
       e('div', { className: 'memory-modal-head' },
-        e('div', null, e('h2', null, options.memoryEditing === undefined ? '写入记忆' : '修改记忆'), e('p', null, '编辑的是右侧记忆栏中的同一份草稿。')),
-        e('button', { type: 'button', onClick: options.onClose }, '返回侧栏')),
+        e('div', null, e('h2', null, options.memoryEditing === undefined ? '写入记忆' : '修改记忆'), e('p', null, '编辑的是设置中同一份记忆草稿。')),
+        e('button', { type: 'button', onClick: options.onClose }, '返回设置')),
       e('form', { onSubmit: options.onMemorySubmit },
         e('div', { className: 'memory-scope', role: 'group', 'aria-label': '记忆范围' },
           e('button', { type: 'button', 'aria-pressed': effectiveScope === 'global', disabled: options.memoryEditing !== undefined || busy, onClick: () => options.onMemoryScope('global') }, '长期'),
           e('button', { type: 'button', 'aria-pressed': effectiveScope === 'project', disabled: options.memoryEditing !== undefined || options.currentProject === undefined || busy, title: options.currentProject ?? '选择工作区后可用', onClick: () => options.onMemoryScope('project') }, '当前项目')),
         e('textarea', {
-          value: options.memoryDraft, maxLength: 4_000, disabled: busy, autoFocus: true,
+          value: options.memoryDraft, maxLength: 4_000, disabled: busy,
           placeholder: effectiveScope === 'project' ? '只在当前项目中长期保留的事实…' : '跨项目都适用的偏好或长期事实…',
           'aria-label': '完整记忆内容',
           onChange: (event: { currentTarget: HTMLTextAreaElement }) => options.onMemoryDraft(event.currentTarget.value),
@@ -3457,27 +5250,33 @@ function renderStatusbar(e: ReactLike['createElement'], options: { readonly sess
     e('div', { className: 'r' }, e('span', null, '小蛇桌面端')))
 }
 
-/** Render the official raster asset as a thin gradient outline. */
+/** Render the official raster asset as a theme-visible gradient outline. */
 function renderBrandOutline(e: ReactLike['createElement'], className: string, idPrefix: string): unknown {
   const sheenId = `${idPrefix}-sheen`
   const edgeId = `${idPrefix}-edge`
   const outlineId = `${idPrefix}-outline`
-  return e('svg', { className, viewBox: '0 0 256 256', fill: 'none', 'aria-hidden': 'true' },
+  // A subpixel morphology radius collapses to zero in Chromium when the large
+  // watermark is scaled to a small welcome mark. Extract its outer edge in a
+  // smaller coordinate space, retaining the exact canonical silhouette and a
+  // roughly 1–1.5 CSS-pixel line at the supported welcome sizes (68–96 px).
+  const compact = className === 'stage-symbol'
+  const size = compact ? 64 : 256
+  return e('svg', { className, viewBox: `0 0 ${size} ${size}`, fill: 'none', 'aria-hidden': 'true' },
     e('defs', null,
-      e('linearGradient', { id: sheenId, x1: '0', y1: '256', x2: '256', y2: '0', gradientUnits: 'userSpaceOnUse' },
-        e('stop', { offset: '0', stopColor: 'var(--sheen-1)' }),
-        e('stop', { offset: '.42', stopColor: 'var(--sheen-2)' }),
-        e('stop', { offset: '.72', stopColor: 'var(--sheen-3)' }),
-        e('stop', { offset: '1', stopColor: 'var(--sheen-4)' })),
-      e('filter', { id: edgeId, filterUnits: 'userSpaceOnUse', x: '-6', y: '-6', width: '268', height: '268' },
-        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: '.4', result: 'outer' }),
-        e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: '.4', result: 'inner' }),
-        e('feComposite', { in: 'outer', in2: 'inner', operator: 'out', result: 'outline' }),
+      e('linearGradient', { id: sheenId, x1: '0', y1: String(size), x2: String(size), y2: '0', gradientUnits: 'userSpaceOnUse' },
+        e('stop', { className: 'brand-outline-stop-1', offset: '0', stopColor: 'var(--sheen-1)' }),
+        e('stop', { className: 'brand-outline-stop-2', offset: '.42', stopColor: 'var(--sheen-2)' }),
+        e('stop', { className: 'brand-outline-stop-3', offset: '.72', stopColor: 'var(--sheen-3)' }),
+        e('stop', { className: 'brand-outline-stop-4', offset: '1', stopColor: 'var(--sheen-4)' })),
+      e('filter', { id: edgeId, filterUnits: 'userSpaceOnUse', x: '-6', y: '-6', width: String(size + 12), height: String(size + 12) },
+        e('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: compact ? '1' : '.92', result: 'outer' }),
+        compact ? null : e('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: '.92', result: 'inner' }),
+        e('feComposite', { in: 'outer', in2: compact ? 'SourceAlpha' : 'inner', operator: 'out', result: 'outline' }),
         e('feFlood', { floodColor: '#fff', result: 'white' }),
         e('feComposite', { in: 'white', in2: 'outline', operator: 'in' })),
-      e('mask', { id: outlineId, maskUnits: 'userSpaceOnUse', x: '0', y: '0', width: '256', height: '256', 'mask-type': 'alpha' },
-        e('image', { href: BROWSER_BRAND_RASTER_HREF, x: '0', y: '0', width: '256', height: '256', filter: `url(#${edgeId})` }))),
-    e('rect', { width: '256', height: '256', fill: `url(#${sheenId})`, mask: `url(#${outlineId})` }))
+      e('mask', { id: outlineId, maskUnits: 'userSpaceOnUse', x: '0', y: '0', width: String(size), height: String(size), 'mask-type': 'alpha' },
+        e('image', { href: BROWSER_BRAND_RASTER_HREF, x: '0', y: '0', width: String(size), height: String(size), filter: `url(#${edgeId})` }))),
+    e('rect', { width: String(size), height: String(size), fill: `url(#${sheenId})`, mask: `url(#${outlineId})` }))
 }
 
 function renderStageGhost(e: ReactLike['createElement']): unknown {
@@ -3488,8 +5287,36 @@ function renderConversationGhost(e: ReactLike['createElement']): unknown {
   return renderBrandOutline(e, 'conversation-ghost', 'xsla-conversation-icon')
 }
 
-function renderEmptyStage(e: ReactLike['createElement']): unknown {
-  return e('div', { className: 'stage-empty' }, renderStageGhost(e), e('div', { className: 'stage-cluster' }, e('div', { className: 'stage-badge' }, '小蛇待命 · DESKTOP AGENT'), e('div', { className: 'stage-word' }, '小蛇'), e('p', { className: 'stage-sub' }, '看懂你的屏幕，接手电脑里的任务；关键操作先确认，完成后给出验证。'), e('div', { className: 'stage-chips' }, e('span', { className: 'chip' }, '看得见桌面'), e('span', { className: 'chip' }, '真能动手做'), e('span', { className: 'chip' }, '关键操作可控'))))
+const TASK_STARTERS = [
+  { id: 'organize', label: '整理一份资料', detail: '提炼重点与待确认项', glyph: 'command', draft: '请帮我整理下面的资料，提炼重点和需要确认的事项：\n' },
+  { id: 'research', label: '研究一个问题', detail: '查找资料，比较不同观点', glyph: 'surface', draft: '请研究下面的问题，查找可靠来源，比较不同观点并说明依据：\n' },
+  { id: 'code', label: '检查一段代码', detail: '定位问题，修改并验证', glyph: 'shield', draft: '请检查下面的代码，先定位问题，再给出修改并进行验证：\n' },
+] as const
+
+/** Starters stage text only. Existing text and attachments always belong to the user. */
+export function taskStarterDraft(text: string, imageCount: number, id: string): string | undefined {
+  return text.trim() !== '' || imageCount > 0 ? undefined : TASK_STARTERS.find(item => item.id === id)?.draft
+}
+
+/** Unknown/loading catalogs are not evidence that configuration is missing. */
+export function emptyStageNeedsModelSetup(snapshot: Pick<ModelCatalogSnapshot, 'status' | 'routable' | 'sessionId' | 'current'>, readiness?: ProviderReadinessSnapshot): boolean {
+  if (snapshot.status !== 'ready') return false
+  if (snapshot.routable === false) return true
+  if (snapshot.current === undefined || snapshot.sessionId === undefined || readiness?.sessionId !== snapshot.sessionId || readiness.status !== 'ready') return false
+  const selected = snapshot.current
+  return readiness.providers.flatMap(provider => provider.routes)
+    .find(route => route.provider === selected.provider && route.model === selected.model)?.facts.available === false
+}
+
+export function renderEmptyStage(e: ReactLike['createElement'], options: { readonly drafting?: boolean; readonly needsModelSetup: boolean; readonly onModelSettings: () => void; readonly onStarter: (id: string) => void }): unknown {
+  const drafting = options.drafting === true
+  return e('div', { className: 'stage-empty' }, e('div', { className: 'stage-cluster' },
+    renderBrandOutline(e, 'stage-symbol', 'xsla-welcome-icon'),
+    e('div', { className: 'stage-starters', 'aria-label': '任务草稿', 'aria-hidden': drafting, 'data-drafting': drafting }, ...TASK_STARTERS.map(item => e('button', {
+      type: 'button', key: item.id, 'data-task-starter': item.id, disabled: drafting, tabIndex: drafting ? -1 : 0,
+      onClick: () => { if (!drafting) options.onStarter(item.id) },
+    }, icon(e, item.glyph), e('b', null, item.label), e('small', null, item.detail)))),
+    options.needsModelSetup ? e('div', { className: 'stage-setup', role: 'status' }, e('p', null, '当前模型尚不可用，请先检查模型与服务商设置。'), e('button', { type: 'button', onClick: options.onModelSettings }, '打开模型设置')) : null))
 }
 
 function renderApproval(e: ReactLike['createElement'], approval: { readonly key: string; readonly toolName: string; readonly reason?: string }, answer: (key: string, outcome: 'allowed-once' | 'rejected') => Promise<void>): unknown {
@@ -3578,21 +5405,26 @@ function renderQuestionCard(e: ReactLike['createElement'], options: {
 
 interface WorkSurfaceDockRenderOptions {
   readonly open: boolean
+  readonly category?: 'files' | 'activity'
+  readonly fileCount?: number; readonly activityCount?: number
+  readonly onCategory?: (category: 'files' | 'activity') => void
+  readonly fullscreen?: boolean; readonly onFullscreen?: () => void
+  readonly split?: boolean; readonly splitAvailable?: boolean; readonly onSplit?: () => void
+  readonly secondary?: WorkSurface; readonly onSecondary?: (id: string) => void
+  readonly renderContent?: (surface: WorkSurface) => unknown
   readonly items: readonly WorkSurface[]
+  readonly hiddenCount: number
+  readonly onRestoreHidden: () => void
   readonly active?: WorkSurface
   readonly preference: WorkSurfaceDockPreference
   readonly reloadKey: number
   readonly onSelect: (surfaceId: string) => void
   readonly onClose: (surfaceId: string) => void
-  readonly onCloseDock: () => void
   readonly onTogglePin: (surfaceId: string) => void
   readonly onMode: (mode: WorkSurfaceDockMode) => void
   readonly onRefresh: () => void
   readonly onCopy: (surface: WorkSurface) => void
   readonly onExternal: (surface: WorkSurface) => void
-  readonly onPointerDown: (event: { readonly button?: number; readonly isPrimary?: boolean; readonly clientX: number; readonly pointerId?: number; readonly currentTarget?: { setPointerCapture?(pointerId: number): void }; preventDefault?(): void }) => void
-  readonly onResizeKey: (event: { readonly key: string; readonly shiftKey?: boolean; preventDefault?(): void }) => void
-  readonly onResetWidth: () => void
 }
 
 function workSurfaceKindLabel(kind: WorkSurfaceKind): string {
@@ -3682,8 +5514,29 @@ function renderWorkSurfaceContent(
   return e('div', { className: 'surface-fallback' }, e('b', null, '工具产物'), e('p', null, view.description))
 }
 
+/** Keep identifying context available without pushing long local paths into compact labels. */
+export function workSurfaceTooltip(surface: { readonly title: string; readonly source?: string; readonly view?: WorkSurfaceView }): string {
+  const parts = [surface.title]
+  if (surface.source !== undefined) parts.push(surface.source)
+  if (surface.view?.kind === 'text') {
+    const first = surface.view.lines.at(0)?.number
+    const last = surface.view.lines.at(-1)?.number
+    if (first !== undefined && last !== undefined) parts.push(`第 ${first === last ? first : `${first}–${last}`} 行 · 共 ${surface.view.totalLines} 行`)
+  } else if (surface.view?.kind === 'diff') {
+    parts.push(...surface.view.diffs.map(diff => diff.path))
+  }
+  return [...new Set(parts)].join('\n')
+}
+
 function renderWorkSurfaceDock(e: ReactLike['createElement'], options: WorkSurfaceDockRenderOptions): unknown {
-  if (!options.open || options.active === undefined) return null
+  if (!options.open) return null
+  // Hiding is only a viewing preference. With the duplicate task list removed,
+  // this explicit recovery action keeps every original record reachable.
+  const restoreHidden = options.hiddenCount === 0 ? null : e('button', { type: 'button', 'data-restore-materials': '', onClick: options.onRestoreHidden }, `显示已隐藏的记录（${options.hiddenCount}）`)
+  const categories = options.onCategory === undefined ? null : e('div', { className: 'material-categories', role: 'group', 'aria-label': '材料分类' },
+    e('button', { type: 'button', 'aria-pressed': options.category === 'files', disabled: options.fileCount === 0, onClick: () => options.onCategory?.('files') }, `文件 · ${options.fileCount ?? 0}`),
+    e('button', { type: 'button', 'aria-pressed': options.category === 'activity', onClick: () => options.onCategory?.('activity') }, `执行快照 · ${options.activityCount ?? 0}`))
+  if (options.active === undefined) return e('div', { className: 'workbench-empty', role: 'status' }, categories, e('b', null, '暂无可查看的材料'), e('p', null, '工具运行后，文件、终端记录和预览会集中出现在这里。材料记录不等于已验证的任务结果。'), restoreHidden)
   const active = options.active
   const shellOrigin = typeof window === 'undefined' ? undefined : window.location.origin
   const interactiveAvailable = active.type === 'web' && active.capabilities.interactive && active.view.kind === 'web'
@@ -3691,96 +5544,332 @@ function renderWorkSurfaceDock(e: ReactLike['createElement'], options: WorkSurfa
     && canEmbedWorkSurfaceInShell(active.view.url, shellOrigin)
   const mode: WorkSurfaceDockMode = interactiveAvailable ? options.preference.mode : 'watch'
   const pinned = options.preference.pinnedIds.includes(active.id)
-  return e('div', { className: 'surface-layer', 'data-surface-mode': mode },
-    e('div', {
-      className: 'surface-resizer', role: 'separator', tabIndex: 0,
-      'aria-label': '调整工作现场宽度', 'aria-orientation': 'vertical',
-      'aria-valuemin': WORK_SURFACE_DOCK_LIMITS.min, 'aria-valuemax': WORK_SURFACE_DOCK_LIMITS.max,
-      'aria-valuenow': options.preference.width,
-      onPointerDown: options.onPointerDown,
-      onKeyDown: options.onResizeKey,
-      onDoubleClick: options.onResetWidth,
-    }, e('span', { className: 'surface-resizer-grip', 'aria-hidden': 'true' })),
-    e('section', { id: 'xsla-work-surface-dock', className: 'surface-dock', 'aria-label': '工作现场' },
-      e('header', { className: 'surface-head' },
-        e('div', null, e('span', null, '工作现场'), e('small', null, `${options.items.length} 个当前产物`)),
-        e('button', { type: 'button', title: '关闭工作现场', 'aria-label': '关闭工作现场', onClick: options.onCloseDock }, '×')),
-      e('nav', { className: 'surface-tabs', 'aria-label': '工作现场标签页' },
+  return e('section', { id: 'xsla-work-surface-dock', className: 'surface-dock', 'aria-label': '工作材料', 'data-surface-mode': mode },
+      categories,
+      e('nav', { className: 'surface-tabs', 'aria-label': '工作材料列表' },
         ...options.items.map(surface => e('div', { className: `surface-tab-wrap ${surface.id === active.id ? 'on' : ''}`, key: surface.id },
-          e('button', { className: 'surface-tab', type: 'button', onClick: () => options.onSelect(surface.id), title: surface.title },
+          e('button', { className: 'surface-tab', type: 'button', 'data-run-deliverable-id': surface.id, 'aria-pressed': surface.id === active.id, onClick: () => options.onSelect(surface.id), title: workSurfaceTooltip(surface) },
             e('span', { className: 'surface-tab-kind' }, workSurfaceKindLabel(surface.type)),
             e('span', { className: 'surface-tab-title' }, surface.title),
             options.preference.pinnedIds.includes(surface.id) ? e('i', { title: '已置顶', 'aria-label': '已置顶' }, '•') : null),
-          e('button', { className: 'surface-tab-close', type: 'button', title: `关闭 ${surface.title}`, 'aria-label': `关闭 ${surface.title}`, onClick: () => options.onClose(surface.id) }, '×')))),
+          e('button', { className: 'surface-tab-close', type: 'button', title: `隐藏记录，不删除文件：${surface.title}`, 'aria-label': `隐藏 ${surface.title}`, onClick: () => options.onClose(surface.id) }, '×')))),
       e('div', { className: 'surface-toolbar' },
-        e('div', { className: 'surface-mode', role: 'group', 'aria-label': '工作现场交互方式' },
+        !interactiveAvailable ? null : e('div', { className: 'surface-mode', role: 'group', 'aria-label': '材料预览交互方式' },
           e('button', { type: 'button', 'aria-pressed': mode === 'watch', onClick: () => options.onMode('watch') }, '观察'),
           e('button', { type: 'button', disabled: !interactiveAvailable, 'aria-pressed': mode === 'interact', title: interactiveAvailable ? '由你在内嵌本地页面中操作' : '该产物不支持直接交互', onClick: () => options.onMode('interact') }, '由你操作')),
         e('div', { className: 'surface-actions' },
+          restoreHidden,
           e('button', { type: 'button', 'aria-pressed': pinned, onClick: () => options.onTogglePin(active.id), title: pinned ? '取消置顶' : '置顶标签' }, pinned ? '取消置顶' : '置顶'),
-          e('button', { type: 'button', disabled: !active.capabilities.refresh, onClick: options.onRefresh }, '刷新'),
+          e('button', { type: 'button', disabled: !active.capabilities.refresh && options.category !== 'files', onClick: options.onRefresh }, '刷新'),
+          options.onFullscreen === undefined ? null : e('button', { type: 'button', 'aria-pressed': options.fullscreen === true, onClick: options.onFullscreen }, options.fullscreen ? '退出全屏' : '全屏阅读'),
+          options.onSplit === undefined ? null : e('button', { type: 'button', disabled: !options.splitAvailable, 'aria-pressed': options.split === true, onClick: options.onSplit }, options.split ? '单栏' : '双栏对照'),
           e('button', { type: 'button', disabled: !active.capabilities.copySource, onClick: () => options.onCopy(active) }, '复制来源'),
           e('button', { type: 'button', disabled: !active.capabilities.externalOpen, onClick: () => options.onExternal(active) }, '另行打开'))),
       e('div', { className: 'surface-summary' },
         e('div', null, e('b', null, active.title), e('span', { 'data-status': active.status }, workSurfaceStatusLabel(active.status))),
         active.source === undefined ? null : e('code', { title: active.source }, active.source)),
-      e('div', { className: 'surface-content', 'data-kind': active.type, 'aria-live': active.status === 'running' ? 'polite' : 'off' },
-        renderWorkSurfaceContent(e, active, mode, options.reloadKey))))
+      e('div', { className: `surface-reading-panes${options.split && options.secondary ? ' split' : ''}` },
+        e('div', { className: 'surface-content', 'data-kind': active.type, 'aria-live': active.status === 'running' ? 'polite' : 'off' },
+          options.renderContent?.(active) ?? renderWorkSurfaceContent(e, active, mode, options.reloadKey)),
+        !options.split || options.secondary === undefined ? null : e('section', { className: 'surface-secondary', 'aria-label': '对照材料' },
+          e('select', { value: options.secondary.id, 'aria-label': '选择对照文件', onChange: (event: { currentTarget: HTMLSelectElement }) => options.onSecondary?.(event.currentTarget.value) },
+            ...options.items.filter(item => item.id !== active.id).map(item => e('option', { value: item.id, key: item.id }, item.title))),
+          e('div', { className: 'surface-content' }, options.renderContent?.(options.secondary) ?? renderWorkSurfaceContent(e, options.secondary, 'watch', options.reloadKey)))))
 }
 
-function renderModelControl(e: ReactLike['createElement'], options: {
-  readonly snapshot: ModelCatalogSnapshot
+interface ModelControlOptionView {
+  readonly value: string
+  readonly label: string
+  readonly description: string
+  readonly selected: boolean
+  readonly disabled?: boolean
+  readonly statusLabel?: string
+  readonly statusDetail?: string
+}
+
+interface ModelSelectionNotice {
+  readonly tone: 'neutral' | 'warning'
+  readonly message: string
+}
+
+interface ModelControlView {
+  readonly modelLabel: string
+  readonly effortLabel: string
+  readonly triggerLabel: string
+  readonly currentProvider?: string
+  readonly currentModel?: string
+  readonly modelGroups: readonly {
+    readonly id: string
+    readonly label: string
+    readonly models: readonly (ModelControlOptionView & {
+      readonly provider: string
+      readonly model: string
+      readonly defaultEffort?: string
+    })[]
+  }[]
+  readonly efforts: readonly ModelControlOptionView[]
+}
+
+/**
+ * Keep session-scoped provider facts from leaking across rapid conversation
+ * switches. Untagged legacy payloads are deliberately treated as unknown.
+ */
+export function providerReadinessForSession(snapshot: ProviderReadinessSnapshot, sessionId: string | undefined): ProviderReadinessSnapshot {
+  if (sessionId !== undefined && snapshot.sessionId === sessionId) return snapshot
+  if (sessionId === undefined) return { status: 'idle', providers: [] }
+  if (snapshot.sessionId === undefined) {
+    return { status: 'error', providers: [], error: '当前 Host 未标注服务商状态所属会话；已忽略这份状态。' }
+  }
+  return { sessionId, status: 'loading', providers: [], error: '正在读取当前会话的服务商状态。' }
+}
+
+/**
+ * Never let a directory from one conversation drive controls for another.
+ * Untagged legacy Hosts remain diagnosable through the recovery panel, but
+ * their routes are not presented as selectable facts for the current session.
+ */
+export function modelCatalogForSession(snapshot: ModelCatalogSnapshot, sessionId: string | undefined): ModelCatalogSnapshot {
+  if (sessionId === undefined) return { status: 'idle', routable: false, groups: [], failures: [] }
+  if (snapshot.sessionId === sessionId) return snapshot
+  if (snapshot.sessionId === undefined) {
+    return {
+      sessionId, status: 'error', routable: false, groups: [], failures: [],
+      error: '当前 Host 未标注模型目录所属会话；已忽略这份目录。请前往 设置 → 模型与服务商 检查配置。',
+    }
+  }
+  return {
+    sessionId, status: 'loading', routable: false, groups: [], failures: [],
+    error: '正在读取当前会话的模型目录。',
+  }
+}
+
+/**
+ * Project the combined control exclusively from Host-advertised model facts.
+ * In particular, absence of an explicit effort is "default", not "off";
+ * an off position only exists when the adapter actually advertises it.
+ */
+export function modelControlPresentation(snapshot: ModelCatalogSnapshot, readiness?: ProviderReadinessSnapshot): ModelControlView {
+  const scopedReadiness = readiness === undefined ? undefined : providerReadinessForSession(readiness, snapshot.sessionId)
+  const current = snapshot.current
+  const group = current === undefined ? undefined : snapshot.groups.find(item => item.id === current.provider)
+  const model = current === undefined ? undefined : group?.models.find(item => item.id === current.model)
+  const modelLabel = model?.name ?? current?.model ?? (snapshot.status === 'loading' ? '正在读取模型' : '选择模型')
+  const effortValue = current?.reasoningEffort ?? model?.defaultEffort
+  const selectedEffort = model?.efforts.find(effort => effort.id === effortValue)
+  const effortLabel = effortValue === undefined ? '默认' : reasoningEffortLabel(effortValue, selectedEffort?.name)
+  return {
+    modelLabel,
+    effortLabel,
+    triggerLabel: `${modelLabel} · ${effortLabel}`,
+    ...(current === undefined ? {} : { currentProvider: current.provider, currentModel: current.model }),
+    modelGroups: snapshot.groups.map(item => ({
+      id: item.id,
+      label: item.name,
+      models: item.models.map(candidate => {
+        const route = modelRouteReadiness(scopedReadiness, item.id, candidate.id)
+        return {
+          value: modelRouteKey(item.id, candidate.id),
+          provider: item.id,
+          model: candidate.id,
+          label: candidate.name,
+          description: candidate.description ?? `${item.name} 提供`,
+          selected: current?.provider === item.id && current.model === candidate.id,
+          disabled: route.disabled,
+          statusLabel: route.label,
+          statusDetail: route.detail,
+          ...(candidate.defaultEffort === undefined ? {} : { defaultEffort: candidate.defaultEffort }),
+        }
+      }),
+    })),
+    efforts: (model?.efforts ?? []).map(effort => ({
+      value: effort.id,
+      label: reasoningEffortLabel(effort.id, effort.name),
+      description: effort.description ?? reasoningEffortDescription(effort.id),
+      selected: effort.id === effortValue,
+    })),
+  }
+}
+
+function modelRouteReadiness(readiness: ProviderReadinessSnapshot | undefined, provider: string, model: string): {
   readonly disabled: boolean
-  readonly effortOpen: boolean
-  readonly onToggleEffort: () => void
+  readonly label: string
+  readonly detail: string
+} {
+  const route = readiness?.providers.flatMap(item => item.routes).find(item => item.provider === provider && item.model === model)
+  if (route === undefined) return { disabled: false, label: '状态未确认', detail: readiness?.error ?? '旧版 Host 或当前目录未提供这条路线的运行事实' }
+  if (!route.facts.catalogued) return { disabled: true, label: '未收录', detail: providerReasonLabel(route.reasons[0]) }
+  if (!route.facts.supported) return { disabled: true, label: '不受支持', detail: providerReasonLabel(route.reasons[0]) }
+  if (!route.facts.configured) return { disabled: true, label: '未配置', detail: providerReasonLabel(route.reasons[0]) }
+  if (!route.facts.available) return { disabled: true, label: '当前不可用', detail: providerReasonLabel(route.reasons[0]) }
+  if (route.facts.verified) return { disabled: false, label: '已验证', detail: route.probe === undefined ? 'Host 已确认此路线可用' : probeSummary(route.probe) }
+  return { disabled: false, label: '可用 · 未验证', detail: providerReasonLabel(route.reasons[0]) }
+}
+
+/** Translate the Host persistence receipt without exposing unbounded error text. */
+export function modelSelectionPersistenceNotice(persistence: { readonly status: 'saved' | 'session-only'; readonly warning?: string } | undefined): ModelSelectionNotice | undefined {
+  if (persistence?.status === 'saved') return undefined
+  if (persistence === undefined) return { tone: 'neutral', message: '当前会话已切换；旧版 Host 未报告默认保存状态。' }
+  const warning = boundedSingleLineText(persistence.warning, 180)
+  return {
+    tone: 'warning',
+    message: `当前会话已切换，但默认选择未保存。${warning ?? '请稍后在设置中重新保存。'}`,
+  }
+}
+
+function boundedSingleLineText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  if (normalized === '' || normalized.length > maxLength || /[\r\n\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)) return undefined
+  return normalized
+}
+
+/** Arrow-key movement for the model list and discrete reasoning rail. */
+export function modelControlKeyboardIndex(key: string, current: number, count: number): number | undefined {
+  if (count <= 0) return undefined
+  if (key === 'Home') return 0
+  if (key === 'End') return count - 1
+  if (key === 'ArrowRight' || key === 'ArrowDown') return (Math.max(0, current) + 1) % count
+  if (key === 'ArrowLeft' || key === 'ArrowUp') return (Math.max(0, current) - 1 + count) % count
+  return undefined
+}
+
+function handleModelControlRadioKey(event: {
+  readonly key: string
+  readonly currentTarget: HTMLElement
+  readonly target: EventTarget | null
+  preventDefault(): void
+  stopPropagation(): void
+}): void {
+  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'))
+  const current = buttons.indexOf(event.target as HTMLButtonElement)
+  const target = modelControlKeyboardIndex(event.key, current, buttons.length)
+  if (target === undefined) return
+  event.preventDefault()
+  event.stopPropagation()
+  buttons[target]?.focus()
+  buttons[target]?.click()
+}
+
+export function renderModelControl(e: ReactLike['createElement'], options: {
+  readonly snapshot: ModelCatalogSnapshot
+  readonly providerReadiness?: ProviderReadinessSnapshot
+  readonly disabled: boolean
+  readonly running?: boolean
+  readonly disabledReason?: string
+  readonly open: boolean
+  readonly selectionNotice?: ModelSelectionNotice
+  readonly onToggle: () => void
+  readonly onDismiss: () => void
   readonly onSelect: (selection: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string }) => void
+  readonly onOpenModelSettings?: () => void
 }): unknown {
+  const view = modelControlPresentation(options.snapshot, options.providerReadiness)
   const current = options.snapshot.current
-  const currentGroup = current === undefined ? undefined : options.snapshot.groups.find(group => group.id === current.provider)
-  const currentModel = current === undefined ? undefined : currentGroup?.models.find(model => model.id === current.model)
-  const modelDisabled = options.disabled || options.snapshot.status === 'loading' || options.snapshot.status === 'selecting' || options.snapshot.groups.length === 0
-  const routeValue = current === undefined ? '' : modelRouteKey(current.provider, current.model)
-  const modelLabel = currentModel?.name ?? current?.model ?? (options.snapshot.status === 'loading' ? '正在读取模型' : '选择模型')
-  const effortValue = current?.reasoningEffort ?? currentModel?.defaultEffort ?? ''
-  const effortLabel = reasoningEffortLabel(effortValue, currentModel?.efforts.find(effort => effort.id === effortValue)?.name)
-  const modelSelect = e('label', { className: 'model-select-wrap', title: `模型：${modelLabel}` },
-    e('span', { className: 'model-name' }, modelLabel),
-    e('span', { className: 'model-chevron', 'aria-hidden': 'true' }, '⌄'),
-    e('select', {
-      className: 'model-select', value: routeValue, disabled: modelDisabled,
-      'aria-label': `模型：${modelLabel}`,
-      onChange: (event: { currentTarget: HTMLSelectElement }) => {
-        const route = parseModelRouteKey(event.currentTarget.value)
-        if (route === undefined) return
-        const group = options.snapshot.groups.find(item => item.id === route.provider)
-        const model = group?.models.find(item => item.id === route.model)
-        options.onSelect({ provider: route.provider, model: route.model, ...(model?.defaultEffort === undefined ? {} : { reasoningEffort: model.defaultEffort }) })
+  const advertisedModels = view.modelGroups.flatMap(group => group.models)
+  const enabledModels = advertisedModels.filter(model => !model.disabled)
+  const hasSelectedModel = enabledModels.some(model => model.selected)
+  const firstModelValue = enabledModels[0]?.value
+  const currentRouteDisabled = advertisedModels.some(model => model.selected && model.disabled)
+  const availabilityId = options.disabledReason === undefined ? undefined : 'xsla-model-reasoning-availability'
+  // A running-task lock remains focusable so keyboard and assistive-technology
+  // users can discover why switching is unavailable. Hard prerequisites such
+  // as a missing session still use native disabled semantics.
+  const triggerDisabled = options.disabled && options.disabledReason === undefined
+  const actionDisabled = options.disabled || options.snapshot.status === 'loading' || options.snapshot.status === 'selecting'
+  const directoryMessages = [options.snapshot.error, options.providerReadiness?.error, ...options.snapshot.failures.map(failure => `${failure.name}：${failure.message}`)]
+    .map(message => boundedSingleLineText(message, 240)).filter((message): message is string => message !== undefined)
+  const showDirectoryState = options.snapshot.status === 'error' || advertisedModels.length === 0 || directoryMessages.length > 0
+  const restoreTriggerFocus = (event?: { currentTarget?: HTMLElement }): void => {
+    const trigger = event?.currentTarget?.closest<HTMLElement>('[data-choice-popover-root]')
+      ?.querySelector<HTMLElement>('button[aria-haspopup="dialog"]')
+    queueMicrotask(() => trigger?.focus())
+  }
+  return e('div', { className: 'model-controls choice-control', 'data-status': options.snapshot.status, 'data-choice-popover-root': '' },
+    e('button', {
+      className: 'model-reasoning-trigger', type: 'button', disabled: triggerDisabled,
+      title: options.disabledReason ?? `模型与思考强度：${view.triggerLabel}`,
+      'aria-label': `模型 ${view.modelLabel}，思考强度 ${view.effortLabel}`,
+      'aria-disabled': options.disabled,
+      'aria-describedby': availabilityId,
+      'aria-haspopup': 'dialog', 'aria-expanded': options.open, 'aria-controls': options.open ? 'xsla-model-reasoning-popover' : undefined,
+      onClick: options.onToggle,
+    }, icon(e, 'brain'),
+    e('span', { className: 'model-reasoning-label' }, e('b', null, view.modelLabel), e('small', null, view.effortLabel)),
+    e('span', { className: 'model-chevron', 'aria-hidden': 'true' }, '⌃')),
+    availabilityId === undefined ? null : e('span', { id: availabilityId, className: 'visually-hidden' }, options.disabledReason),
+    options.open ? e('section', {
+      id: 'xsla-model-reasoning-popover', className: 'model-reasoning-popover', role: 'dialog',
+      'aria-modal': 'false', 'aria-label': '选择模型与思考强度', 'data-placement': 'top',
+      onKeyDown: (event: { key: string; currentTarget: HTMLElement; preventDefault(): void; stopPropagation(): void }) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        event.stopPropagation()
+        options.onDismiss()
+        restoreTriggerFocus(event)
       },
     },
-    current === undefined ? e('option', { value: '' }, options.snapshot.status === 'loading' ? '读取模型…' : '选择模型') : null,
-    ...options.snapshot.groups.map(group => e('optgroup', { label: group.name, key: group.id }, ...group.models.map(model => e('option', { key: `${group.id}:${model.id}`, value: modelRouteKey(group.id, model.id) }, model.name))))))
-  const effortControl = current === undefined || currentModel === undefined || currentModel.efforts.length === 0 ? null : e('div', { className: 'choice-control effort-control', 'data-choice-popover-root': '' },
-    e('button', {
-      className: 'effort-select-wrap', type: 'button', title: `推理档位：${effortLabel}`, disabled: modelDisabled,
-      'aria-label': `思考强度：${effortLabel}`, 'aria-haspopup': 'menu', 'aria-expanded': options.effortOpen,
-      onClick: options.onToggleEffort,
-    }, icon(e, 'brain'), e('span', { className: 'choice-current-label' }, effortLabel)),
-    options.effortOpen ? renderChoiceMenu(e, {
-      label: '选择思考强度', currentValue: effortValue,
-      options: [
-        currentModel.efforts.some(effort => effort.id === 'off')
-          ? { value: 'off', label: '关闭', description: '关闭额外推理，直接生成回答' }
-          : { value: '', label: '关闭', description: '不额外指定思考强度，使用模型默认行为' },
-        ...currentModel.efforts.filter(effort => effort.id !== 'off').map(effort => ({
-          value: effort.id,
-          label: reasoningEffortLabel(effort.id, effort.name),
-          description: effort.description ?? reasoningEffortDescription(effort.id),
-        })),
-      ],
-      onSelect: value => options.onSelect({ provider: current.provider, model: current.model, ...(value === '' ? {} : { reasoningEffort: value }) }),
-      onDismiss: options.onToggleEffort,
-    }) : null)
-  return e('div', { className: 'model-controls', 'data-status': options.snapshot.status }, modelSelect, effortControl)
+    e('header', { className: 'model-reasoning-head' },
+      e('div', null, e('b', null, '模型与思考'), e('small', null, options.running ? '强度从下一次请求生效；当前请求保持不变' : '选择模型与思考强度')),
+      e('button', { type: 'button', className: 'model-reasoning-close', 'aria-label': '关闭模型选择器', onClick: (event?: { currentTarget?: HTMLElement }) => { options.onDismiss(); restoreTriggerFocus(event) } }, '×')),
+    options.disabledReason === undefined ? null : e('div', {
+      className: 'model-control-lock-note', role: 'status', 'aria-live': 'polite',
+    }, options.disabledReason),
+    options.selectionNotice === undefined ? null : e('div', {
+      className: 'model-selection-notice', role: 'status', 'aria-live': 'polite', 'data-tone': options.selectionNotice.tone,
+    }, options.selectionNotice.message),
+    showDirectoryState ? e('div', {
+      className: 'model-directory-state', role: options.snapshot.status === 'error' ? 'alert' : 'status',
+    },
+    e('b', null, options.snapshot.status === 'loading' ? '正在读取模型目录' : advertisedModels.length === 0 ? '暂时没有可选模型' : '部分模型目录不可用'),
+    ...directoryMessages.map((message, index) => e('p', { key: `${index}:${message}` }, message)),
+    e('small', null, '请检查 设置 → 模型与服务商'),
+    options.onOpenModelSettings === undefined ? null : e('button', {
+      type: 'button', 'data-action': 'open-model-settings', autoFocus: advertisedModels.length === 0,
+      onClick: options.onOpenModelSettings,
+    }, '打开设置')) : null,
+    e('div', { className: 'model-choice-scroll', role: 'radiogroup', 'aria-label': '选择模型', onKeyDown: handleModelControlRadioKey },
+      ...view.modelGroups.map(group => e('section', { className: 'model-choice-group', key: group.id, 'aria-label': group.label },
+        e('div', { className: 'model-choice-provider' }, group.label),
+        ...group.models.map(model => e('button', {
+          className: `model-choice-option${model.selected ? ' selected' : ''}`,
+          type: 'button', role: 'radio', key: model.value, disabled: actionDisabled || options.running === true || model.disabled,
+          'aria-checked': model.selected, 'data-model-route': model.value,
+          tabIndex: !model.disabled && (model.selected || (!hasSelectedModel && model.value === firstModelValue)) ? 0 : -1,
+          autoFocus: !model.disabled && (model.selected || (!hasSelectedModel && model.value === firstModelValue)),
+          onClick: () => {
+            if (actionDisabled || options.running === true || model.disabled) return
+            options.onSelect({
+              provider: model.provider,
+              model: model.model,
+              ...(model.selected && current?.reasoningEffort !== undefined
+                ? { reasoningEffort: current.reasoningEffort }
+                : model.defaultEffort === undefined ? {} : { reasoningEffort: model.defaultEffort }),
+            })
+          },
+        },
+        e('span', { className: 'model-choice-mark', 'aria-hidden': 'true' }, model.selected ? '✓' : ''),
+        e('span', { className: 'model-choice-copy' },
+          e('span', { className: 'model-choice-title' }, e('b', null, model.label), e('em', { 'data-route-state': model.disabled ? 'blocked' : 'available', title: model.statusDetail }, model.statusLabel)),
+          e('small', null, model.description))))))),
+    e('section', { className: 'effort-rail-section', 'aria-labelledby': 'xsla-effort-rail-title' },
+      e('div', { className: 'effort-rail-head' },
+        e('div', null, e('b', { id: 'xsla-effort-rail-title' }, '思考强度'), e('small', null, view.efforts.find(item => item.selected)?.description ?? (view.efforts.length === 0 ? '当前模型不提供可调档位' : '选择当前任务需要的推理深度'))),
+        e('strong', null, view.effortLabel)),
+      view.efforts.length === 0 || current === undefined
+        ? e('p', { className: 'effort-rail-empty' }, current === undefined ? '先选择一个模型' : '此模型使用自身默认策略')
+        : e('div', { className: 'effort-rail', role: 'radiogroup', 'aria-label': '选择思考强度', onKeyDown: handleModelControlRadioKey },
+          e('span', { className: 'effort-rail-line', 'aria-hidden': 'true' }),
+          ...view.efforts.map((effort, index) => e('button', {
+            className: `effort-rail-option${effort.selected ? ' selected' : ''}`,
+            type: 'button', role: 'radio', key: effort.value, disabled: actionDisabled || currentRouteDisabled,
+            title: effort.description, 'aria-label': `${effort.label}：${effort.description}`,
+            'aria-checked': effort.selected, 'data-effort': effort.value,
+            tabIndex: effort.selected || (!view.efforts.some(item => item.selected) && index === 0) ? 0 : -1,
+            onClick: () => {
+              if (actionDisabled || currentRouteDisabled) return
+              options.onSelect({ provider: current.provider, model: current.model, reasoningEffort: effort.value })
+            },
+          }, e('span', { className: 'effort-rail-dot', 'aria-hidden': 'true' }), e('span', null, effort.label)))))) : null)
 }
 
 function permissionPresetLabel(value: string | undefined, fallback?: string): string {
@@ -3799,8 +5888,57 @@ function permissionPresetDescription(value: string): string {
   return '由权限插件提供的会话策略'
 }
 
+export interface NetworkCapabilityView {
+  readonly state: 'available' | 'unavailable' | 'unconfirmed'
+  readonly label: string
+  readonly detail: string
+}
+
+/**
+ * Derive network availability only from the current product facts and Host
+ * inventory. Absence of a trustworthy inventory is unknown, not permission.
+ */
+export function networkCapabilityPresentation(input: {
+  readonly desktop?: Readonly<Record<string, unknown>> | undefined
+  readonly plugins?: readonly Pick<HostPluginFact, 'entryId' | 'moduleName' | 'enabled' | 'fiberPhase'>[] | undefined
+}): NetworkCapabilityView {
+  const preset = firstBoundedRuntimeText(input.desktop?.preset, input.desktop?.agent_preset, input.desktop?.agentPreset) ?? '未确认'
+  if (input.plugins === undefined) {
+    return {
+      state: 'unconfirmed',
+      label: '未确认',
+      detail: `当前预设：${preset} · 来源：尚未读到可信运行组件事实 · 网络能力独立于文件权限`,
+    }
+  }
+  const module = (name: string): Pick<HostPluginFact, 'entryId' | 'moduleName' | 'enabled' | 'fiberPhase'> | undefined => input.plugins?.find(plugin => plugin.moduleName.trim().toLocaleLowerCase() === name)
+  const tool = module('@deepseek-ai/dsh-tool-web')
+  const fetchProvider = module('@deepseek-ai/dsh-web-fetch-http')
+  const ready = (plugin: typeof tool): boolean => plugin?.enabled === true && plugin.fiberPhase === 'active'
+  if (ready(tool) && ready(fetchProvider)) {
+    return {
+      state: 'available',
+      label: '已确认可用',
+      detail: `当前预设：${preset} · 来源：Host 运行组件（tool-web + web-fetch-http） · 范围：匿名读取公开 HTTP(S) 正文，不携带浏览器 Cookie；搜索需要另行配置提供端 · 不等同于文件权限`,
+    }
+  }
+  const state = (plugin: typeof tool): string => plugin === undefined
+    ? '缺失'
+    : plugin.enabled !== true ? '已禁用' : plugin.fiberPhase === 'active' ? '可用' : plugin.fiberPhase ?? '未启动'
+  return {
+    state: 'unavailable',
+    label: '当前不可用',
+    detail: `当前预设：${preset} · 来源：Host 运行组件 · tool-web ${state(tool)}，web-fetch-http ${state(fetchProvider)} · 网络能力独立于文件权限`,
+  }
+}
+
+function firstBoundedRuntimeText(...values: readonly unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === 'string' && value.trim() !== '' && value.length <= 100)?.trim()
+}
+
 function reasoningEffortDescription(value: string): string {
+  if (value === 'off') return '关闭额外推理，直接生成回答'
   if (value === 'low') return '更快的简短思考'
+  if (value === 'medium') return '平衡分析深度与响应速度'
   if (value === 'high') return '更充分地分析任务'
   if (value === 'max') return '最深入推理，耗时更长'
   return '由当前模型提供的推理档位'
@@ -3865,11 +6003,10 @@ function mountNativeDialogAccessibility(
 
   const focusable = (): HTMLElement[] => Array.from(dialog.querySelectorAll<HTMLElement>(
     'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
-  )).filter(element => element.getAttribute('aria-hidden') !== 'true')
-  const preferred = dialog.querySelector<HTMLElement>(
-    'input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [autofocus]',
-  )
-  ;(preferred ?? focusable()[0] ?? dialog).focus()
+  )).filter(element => element.closest('[hidden], [inert], [aria-hidden="true"]') === null && element.getClientRects().length > 0)
+  // Hidden tab panels remain mounted to preserve drafts, but cannot receive focus.
+  const preferred = focusable().find(element => element.matches('input, textarea, select, [autofocus]'))
+  if (!dialog.contains(ownerDocument.activeElement)) (preferred ?? focusable()[0] ?? dialog).focus()
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
@@ -3902,6 +6039,35 @@ function mountNativeDialogAccessibility(
       else background.setAttribute('aria-hidden', backgroundState.ariaHidden)
     }
     if (previouslyFocused?.isConnected === true) previouslyFocused.focus()
+  }
+}
+
+/** Trap a mobile inspector like a dialog while leaving the inspector itself operable. */
+function mountInspectorOverlayAccessibility(
+  ownerDocument: Document,
+  inspector: HTMLElement,
+  backgrounds: readonly HTMLElement[],
+  onClose: () => void,
+): () => void {
+  const previous = backgrounds.map(element => ({
+    element,
+    inert: element.hasAttribute('inert'),
+    ariaHidden: element.getAttribute('aria-hidden'),
+  }))
+  for (const { element } of previous) {
+    element.setAttribute('inert', '')
+    element.setAttribute('aria-hidden', 'true')
+  }
+  const unmountDialog = mountNativeDialogAccessibility(ownerDocument, inspector, undefined, onClose)
+  return () => {
+    for (const state of previous) {
+      if (state.inert) state.element.setAttribute('inert', '')
+      else state.element.removeAttribute('inert')
+      if (state.ariaHidden === null) state.element.removeAttribute('aria-hidden')
+      else state.element.setAttribute('aria-hidden', state.ariaHidden)
+    }
+    // Restore the background before returning focus to its trigger.
+    unmountDialog()
   }
 }
 
@@ -4059,7 +6225,8 @@ function renderCommandPalette(e: ReactLike['createElement'], options: {
 }
 
 function pluginManagerPanel(e: ReactLike['createElement'], options: {
-  readonly workflow: PluginWorkflow; readonly busy: boolean; readonly plugins: readonly { readonly moduleName: string; readonly fiberPhase: string | null }[]
+  readonly workflow: PluginWorkflow; readonly busy: boolean; readonly plugins: readonly HostPluginFact[]
+  readonly transactions: readonly PublicPluginTransaction[]
   readonly onSubmit: (event: { preventDefault(): void; currentTarget: HTMLFormElement }) => Promise<void>
   readonly onPrepare: (intent: PluginUiIntent, candidate?: PublicCandidate) => Promise<void>; readonly onConfirm: () => Promise<void>
   readonly onReset: () => void; readonly onClose: () => void
@@ -4067,6 +6234,7 @@ function pluginManagerPanel(e: ReactLike['createElement'], options: {
   const workflow = options.workflow
   const showForm = workflow.step === 'idle' || workflow.step === 'error'
   const inventory = pluginInventoryPresentation(options.plugins)
+  const history = pluginTransactionHistoryPresentation(options.transactions)
   const candidateView = workflow.step === 'audited' && workflow.candidate !== undefined
     ? pluginCandidatePresentation(workflow.candidate)
     : undefined
@@ -4077,18 +6245,27 @@ function pluginManagerPanel(e: ReactLike['createElement'], options: {
     showForm ? e('form', { id: 'xsla-plugin-form', className: 'manager-form', onSubmit: (event: unknown) => { void options.onSubmit(event as { preventDefault(): void; currentTarget: HTMLFormElement }) } },
       e('label', { className: 'confirm-field' }, '动作', e('select', { name: 'action', defaultValue: 'add', disabled: options.busy }, e('option', { value: 'add' }, '安装'), e('option', { value: 'update' }, '更新'), e('option', { value: 'remove' }, '卸载'))),
       e('label', { className: 'confirm-field' }, '候选来源', e('select', { name: 'sourceKind', defaultValue: 'registry', disabled: options.busy }, e('option', { value: 'registry' }, '软件源版本'), e('option', { value: 'tarball' }, '本地安装包'), e('option', { value: 'directory' }, '本地文件夹'))),
-      e('label', { className: 'confirm-field' }, '来源或卸载包名', e('input', { name: 'source', required: true, maxLength: 2_000, placeholder: '@scope/plugin@1.0.0', disabled: options.busy }))) : null,
+      e('label', { className: 'confirm-field' }, '来源或卸载包名', e('input', { name: 'source', required: true, maxLength: 2_000, placeholder: '@scope/plugin@1.0.0', disabled: options.busy })),
+      e('label', { className: 'confirm-field' }, 'Ed25519 签名旁路文件（可选）', e('input', { name: 'signaturePath', maxLength: 2_000, placeholder: '本机 .signature.json 绝对路径', disabled: options.busy }))) : null,
     candidateView !== undefined && workflow.intent !== undefined ? e('div', { className: 'candidate-facts' }, e('b', null, candidateView.heading), ...candidateView.facts.map((fact, index) => e('span', { key: `candidate-fact:${index}` }, fact))) : null,
     workflow.step === 'prepared' && workflow.challenge !== undefined
       ? renderPluginChallenge(e, pluginChallengePresentation(workflow.challenge))
       : null,
-    workflow.step === 'completed' && workflow.transaction !== undefined ? e('div', { className: 'candidate-facts' }, e('b', null, `${workflow.transaction.packageName}@${workflow.transaction.version}`), e('span', null, `${pluginActionLabel(workflow.transaction.action)} · ${pluginTransactionStateLabel(workflow.transaction.state)}`), e('span', null, `${workflow.transaction.consent.confirmed ? '已确认' : '未确认'} · 系统沙箱未启用`)) : null,
+    workflow.step === 'completed' && workflow.transaction !== undefined ? e('div', { className: 'candidate-facts' }, e('b', null, `${workflow.transaction.packageName}@${workflow.transaction.version}`), e('span', null, `${pluginActionLabel(workflow.transaction.action)} · ${pluginTransactionStateLabel(workflow.transaction.state)}`), e('span', null, `${workflow.transaction.consent.confirmed ? '已确认' : '未确认'} · 系统沙箱未启用`), ...pluginTransactionFactLines(workflow.transaction).map((fact, index) => e('span', { key: `transaction-fact:${index}` }, fact))) : null,
     e('details', { className: 'plugin-inventory', open: true },
       e('summary', null, inventory.length === 0 ? '运行组件仍在读取' : `运行组件 ${inventory.length} 类 · ${options.plugins.length} 个实例`),
       inventory.length === 0 ? e('p', { className: 'plugin-inventory-empty' }, '清单为空或仍在读取。') : e('div', { className: 'plugin-inventory-groups' },
         ...inventory.map(group => e('details', { className: 'plugin-inventory-group', key: group.key },
           e('summary', { className: 'plugin-inventory-group-head' }, e('b', null, group.name), e('span', null, group.active === group.instances ? `${group.instances} 个可用` : `${group.active}/${group.instances} 可用`)),
-          e('p', null, group.description))))),
+          e('p', null, group.description),
+          ...group.duplicates.map(duplicate => e('p', { className: 'plugin-inventory-duplicate', key: duplicate.moduleName }, `同名组件 ${duplicate.moduleName}：${duplicate.entries.map(entry => `${entry.entryId}（${entry.fiberPhase ?? '未知'}）`).join('、')}`)))))),
+    e('details', { className: 'plugin-history' },
+      e('summary', null, `事务记录 ${options.transactions.length} 笔${options.transactions.length > history.length ? `（最近 ${history.length} 笔）` : ''}`),
+      history.length === 0
+        ? e('p', { className: 'plugin-inventory-empty' }, '暂无受控变更记录。')
+        : e('div', { className: 'plugin-history-list' }, ...history.map((row, index) => e('article', { className: 'candidate-facts', key: `${row.id}:${index}`, 'data-transaction-id': row.id },
+          e('b', null, row.heading),
+          ...row.facts.map((fact, factIndex) => e('span', { key: `${row.id}:fact:${factIndex}` }, fact)))))),
     e('div', { className: 'confirm-acts' },
       e('button', { className: 'confirm-cancel', type: 'button', onClick: options.onClose }, '关闭'),
       workflow.step === 'audited' && workflow.intent !== undefined ? e('button', { className: 'confirm-go', type: 'button', disabled: options.busy, onClick: () => { void options.onPrepare(workflow.intent!, workflow.candidate) } }, '准备一次性确认') : null,
@@ -4177,7 +6354,7 @@ export function platformLogLocation(platform: unknown): string {
   return '等待桌面桥识别平台'
 }
 
-function icon(e: ReactLike['createElement'], name: 'brain' | 'shield' | 'stop' | 'moon' | 'sun' | 'image' | 'command' | 'send' | 'down' | 'surface'): unknown {
+function icon(e: ReactLike['createElement'], name: 'brain' | 'shield' | 'stop' | 'moon' | 'sun' | 'image' | 'command' | 'send' | 'down' | 'right' | 'surface'): unknown {
   const paths: Record<string, readonly string[]> = {
     brain: ['M12 4.5A2.8 2.8 0 0 0 9.2 7a3 3 0 0 0-2 5 3 3 0 0 0 1.6 4.8A3 3 0 0 0 12 19.5a3 3 0 0 0 3.2-2.7A3 3 0 0 0 16.8 12a3 3 0 0 0-2-5A2.8 2.8 0 0 0 12 4.5Z', 'M12 4.5v15'],
     shield: ['M12 3 19 6v5c0 4.6-2.8 8.1-7 10-4.2-1.9-7-5.4-7-10V6l7-3Z', 'M9.5 12.2 11.2 14l3.6-4'],
@@ -4188,20 +6365,31 @@ function icon(e: ReactLike['createElement'], name: 'brain' | 'shield' | 'stop' |
     surface: ['M3 4h18v16H3z', 'M15 4v16', 'M17.5 8h1M17.5 12h1M17.5 16h1'],
     send: ['M21 3 10.5 13.5', 'm21 3-6.8 18-3.7-8.5L2 8.8 21 3Z'],
     down: ['m6.5 9.5 5.5 5 5.5-5'],
+    right: ['m9 6 6 6-6 6'],
   }
   return e('svg', { className: 'ic', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '1.5', strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' }, ...paths[name]!.map((path, index) => e('path', { d: path, key: `${name}:${index}` })))
 }
 
-function memoryPresentation(value: MemoryLifecycleSnapshot): { readonly value: string; readonly detail: string } {
+export function memoryPresentation(
+  value: MemoryLifecycleSnapshot,
+  context?: { readonly currentProject?: string },
+): { readonly value: string; readonly detail: string } {
   const memory = value.memory
-  if (value.status === 'loading') return { value: '正在读取', detail: '由独立 Memory 插件提供' }
   if (value.status === 'error') return { value: '读取失败', detail: '请检查 Memory 服务状态' }
-  if (value.status !== 'ready' || memory === undefined) return { value: '尚未读取', detail: '由独立 Memory 插件提供' }
+  if (context !== undefined && memory?.project !== undefined
+    && (context.currentProject === undefined || !memoryProjectKeysEqual(memory.project, context.currentProject))) {
+    return { value: '正在读取', detail: '正在切换项目记忆' }
+  }
+  if (value.status === 'loading') return { value: '正在读取', detail: '由独立 Memory 插件提供' }
+  if ((value.status !== 'ready' && value.status !== 'degraded') || memory === undefined) return { value: '尚未读取', detail: '由独立 Memory 插件提供' }
   const active = memory.entries?.filter(entry => entry.state === 'active')
   const activeCount = active?.length ?? memory.counts.active
   const globalCount = active?.filter(entry => entry.scope === 'global').length ?? memory.counts.global
   const projectCount = active?.filter(entry => entry.scope === 'project').length ?? memory.counts.project
-  return { value: `${activeCount} 条可用`, detail: `revision ${memory.revision}\n全局 ${globalCount} · 项目 ${projectCount} · 已忘记 ${memory.counts.forgotten}` }
+  const facts = `revision ${memory.revision}\n全局 ${globalCount} · 项目 ${projectCount} · 已忘记 ${memory.counts.forgotten}`
+  return value.status === 'degraded'
+    ? { value: `${activeCount} 条可用 · 需注意`, detail: `持久化降级 · 最近写入尚未确认\n${facts}` }
+    : { value: `${activeCount} 条可用`, detail: facts }
 }
 
 export function heartbeatPresentation(value: unknown): { readonly status: string; readonly detail: string; readonly running: boolean; readonly tone?: 'ok' | 'warn' } {
@@ -4212,24 +6400,56 @@ export function heartbeatPresentation(value: unknown): { readonly status: string
     if (typeof check?.id !== 'string' || typeof check.status !== 'string' || typeof check.intervalMs !== 'number' || typeof check.failureCount !== 'number') return []
     return [{ id: check.id, status: check.status, intervalMs: check.intervalMs, failureCount: check.failureCount, ...(typeof check.nextRunAt === 'number' ? { nextRunAt: check.nextRunAt } : {}) }]
   })
-  const tone = input.status === 'healthy'
+  const persistenceDegraded = input.persistenceStatus === 'degraded'
+  const tone = persistenceDegraded
+    ? 'warn'
+    : input.status === 'healthy'
     ? 'ok'
     : ['lost', 'delayed', 'backoff'].includes(input.status) ? 'warn' : undefined
   const stateLabel = runtimeFactLabel(input.status)
+  const checksDetail = checks.length === 0
+    ? '没有后台检查在运行'
+    : checks.map(check => `${friendlyCheckName(check.id)} · ${runtimeFactLabel(check.status)} · 失败 ${check.failureCount}${check.nextRunAt === undefined ? '' : ` · 下次 ${formatClockTime(check.nextRunAt)}`}`).join('\n')
   return {
-    status: stateLabel,
+    status: persistenceDegraded ? '持久化降级' : stateLabel,
     running: input.running,
-    detail: checks.length === 0
-      ? '没有后台检查在运行'
-      : checks.map(check => `${friendlyCheckName(check.id)} · ${runtimeFactLabel(check.status)} · 失败 ${check.failureCount}${check.nextRunAt === undefined ? '' : ` · 下次 ${formatClockTime(check.nextRunAt)}`}`).join('\n'),
+    detail: persistenceDegraded ? `持久化降级 · 最近状态可能未可靠保存\n${checksDetail}` : checksDetail,
     ...(tone === undefined ? {} : { tone }),
   }
+}
+
+/** Combine transport health with the retained heartbeat value shown by the shell. */
+export function heartbeatHealthPresentation(value: ProductHealthSnapshot): ReturnType<typeof heartbeatPresentation> {
+  const heartbeat = 'value' in value ? value.value?.heartbeat : undefined
+  const sourceError = heartbeatReadError(value)
+  if (sourceError === undefined) return heartbeatPresentation(heartbeat)
+  const retained = heartbeatPresentation(heartbeat)
+  const retainedDetail = retained.status === '不可用'
+    ? ''
+    : `\n上次状态：${retained.status}\n${retained.detail}`
+  return {
+    status: '读取降级',
+    detail: `后台状态读取失败：${sourceError}${retainedDetail}`,
+    running: false,
+    tone: 'warn',
+  }
+}
+
+function heartbeatReadError(snapshot: ProductHealthSnapshot): string | undefined {
+  if (!('errors' in snapshot)) return undefined
+  const error = snapshot.errors.find(item => item.source === 'heartbeat'
+    && item.kind !== 'HEARTBEAT_CHECK_DEGRADED'
+    && item.kind !== 'HEARTBEAT_PERSISTENCE_DEGRADED')
+  return error === undefined ? undefined : formatHealthSourceError(error)
 }
 
 function healthSourceError(snapshot: ProductHealthSnapshot, source: ProductHealthSourceError['source']): string | undefined {
   if (!('errors' in snapshot)) return undefined
   const error = snapshot.errors.find(item => item.source === source)
-  if (error === undefined) return undefined
+  return error === undefined ? undefined : formatHealthSourceError(error)
+}
+
+function formatHealthSourceError(error: ProductHealthSourceError): string {
   const facts = [error.kind, error.status === undefined ? undefined : `HTTP ${error.status}`].filter((value): value is string => value !== undefined)
   return `${error.message}${facts.length === 0 ? '' : `（${facts.join(' · ')}）`}`
 }
@@ -4240,12 +6460,62 @@ export function pluginTransactionPresentation(value: PluginGovernanceSnapshot): 
   return { total: value.transactions.length, detail: value.status === 'error' ? `事务读取失败${value.error === undefined ? '' : `：${value.error}`}` : counts.size === 0 ? value.status === 'loading' ? '正在读取事务' : '暂无受控变更记录' : [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([state, count]) => `${pluginTransactionStateLabel(state)} ${count}`).join(' · ') }
 }
 
+/** Surface transaction evidence rather than reducing degraded outcomes to one state label. */
+export function pluginTransactionFactLines(value: Pick<PublicPluginTransaction, 'health' | 'rollback' | 'events'>): readonly string[] {
+  const facts: string[] = []
+  if (value.health !== undefined && value.health.length > 0) {
+    facts.push(`健康门禁：${value.health.map(gate => `${gate.gate} ${gate.ok ? '通过' : '失败'}${gate.detail === '' ? '' : `（${gate.detail}）`}`).join('；')}`)
+  }
+  if (value.rollback !== undefined) {
+    const rollback = value.rollback
+    const rollbackFacts = [
+      `回滚：${rollback.attempted ? rollback.succeeded ? '成功' : '失败' : '未尝试'}`,
+      rollback.operation === undefined ? undefined : `操作 ${rollback.operation}`,
+      rollback.restoredSpec === undefined ? undefined : `恢复 ${rollback.restoredSpec}`,
+      rollback.health === undefined || rollback.health.length === 0
+        ? undefined
+        : `验证 ${rollback.health.map(gate => `${gate.gate} ${gate.ok ? '通过' : '失败'}${gate.detail === '' ? '' : `（${gate.detail}）`}`).join('、')}`,
+      rollback.residuals.length === 0 ? undefined : `残留 ${rollback.residuals.join('、')}`,
+    ].filter((fact): fact is string => fact !== undefined)
+    facts.push(rollbackFacts.join('；'))
+  }
+  const latestEvent = value.events === undefined || value.events.length === 0 ? undefined : value.events[value.events.length - 1]
+  if (latestEvent !== undefined) facts.push(`最近事件：${latestEvent.kind} · ${latestEvent.message}`)
+  return facts
+}
+
+export interface PluginTransactionHistoryRow {
+  readonly id: string
+  readonly heading: string
+  readonly facts: readonly string[]
+}
+
+/** Keep recent lifecycle receipts individually addressable without an unbounded modal. */
+export function pluginTransactionHistoryPresentation(
+  transactions: readonly Pick<PublicPluginTransaction, 'id' | 'action' | 'packageName' | 'version' | 'state' | 'health' | 'rollback' | 'events'>[],
+  limit = 20,
+): readonly PluginTransactionHistoryRow[] {
+  const boundedLimit = Number.isSafeInteger(limit) ? Math.max(1, Math.min(50, limit)) : 20
+  return Object.freeze(transactions.slice(0, boundedLimit).map(transaction => Object.freeze({
+    id: transaction.id,
+    heading: `${transaction.packageName}@${transaction.version} · 事务 ${transaction.id}`,
+    facts: Object.freeze([
+      `${pluginActionLabel(transaction.action)} · ${pluginTransactionStateLabel(transaction.state)}`,
+      ...pluginTransactionFactLines(transaction),
+    ]),
+  })))
+}
+
 export interface PluginInventoryGroup {
   readonly key: string
   readonly name: string
   readonly description: string
   readonly instances: number
   readonly active: number
+  readonly duplicates: readonly {
+    readonly moduleName: string
+    readonly entries: readonly { readonly entryId: string; readonly fiberPhase: string | null }[]
+  }[]
 }
 
 const HOST_MODULE_GROUPS: readonly {
@@ -4265,14 +6535,16 @@ const HOST_MODULE_GROUPS: readonly {
 
 /** Collapse implementation modules into stable product capabilities for people. */
 export function pluginInventoryPresentation(
-  entries: readonly { readonly moduleName: string; readonly fiberPhase: string | null }[],
+  entries: readonly Pick<HostPluginFact, 'entryId' | 'moduleName' | 'fiberPhase'>[],
 ): readonly PluginInventoryGroup[] {
   const groups = new Map<string, PluginInventoryGroup>()
   const seen = new Set<string>()
+  const moduleEntries = new Map<string, Map<string, { moduleName: string; entries: { entryId: string; fiberPhase: string | null }[] }>>()
   for (const entry of entries) {
     const normalized = entry.moduleName.trim().toLocaleLowerCase()
-    if (normalized === '' || seen.has(`${normalized}:${entry.fiberPhase ?? ''}`)) continue
-    seen.add(`${normalized}:${entry.fiberPhase ?? ''}`)
+    const entryId = entry.entryId.trim()
+    if (normalized === '' || entryId === '' || seen.has(entryId)) continue
+    seen.add(entryId)
     const matched = HOST_MODULE_GROUPS.find(group => group.matches.some(fragment => normalized.includes(fragment)))
       ?? { key: 'runtime', name: '基础运行组件', description: '连接、同步与兼容层', matches: [] }
     const current = groups.get(matched.key)
@@ -4281,10 +6553,21 @@ export function pluginInventoryPresentation(
       key: matched.key, name: matched.name, description: matched.description,
       instances: (current?.instances ?? 0) + 1,
       active: (current?.active ?? 0) + active,
+      duplicates: current?.duplicates ?? [],
     })
+    const groupedModules = moduleEntries.get(matched.key) ?? new Map()
+    const module = groupedModules.get(normalized) ?? { moduleName: entry.moduleName.trim(), entries: [] }
+    module.entries.push({ entryId, fiberPhase: entry.fiberPhase })
+    groupedModules.set(normalized, module)
+    moduleEntries.set(matched.key, groupedModules)
   }
   const order = [...HOST_MODULE_GROUPS.map(group => group.key), 'runtime']
-  return [...groups.values()].sort((left, right) => order.indexOf(left.key) - order.indexOf(right.key))
+  return [...groups.values()].map(group => Object.freeze({
+    ...group,
+    duplicates: Object.freeze([...moduleEntries.get(group.key)?.values() ?? []]
+      .filter(module => module.entries.length > 1)
+      .map(module => Object.freeze({ moduleName: module.moduleName, entries: Object.freeze(module.entries.map(entry => Object.freeze({ ...entry }))) }))),
+  })).sort((left, right) => order.indexOf(left.key) - order.indexOf(right.key))
 }
 
 export function contextPresentation(value: ContextSnapshot['sessions'][string] | undefined): {
@@ -4340,6 +6623,194 @@ export function modelPresentation(value: ModelCatalogSnapshot): { readonly value
   }
 }
 
+function runStatusLabel(value: string): string {
+  return ({ running: '正在运行', stopping: '正在停止', completed: '已完成', killed: '已终止', failed: '失败' } as Record<string, string>)[value] ?? value
+}
+
+export interface RunCenterJobGroup {
+  readonly label: string
+  readonly status: string
+  readonly count: number
+  readonly detail?: string
+}
+
+export interface RunCenterWorkbenchPresentation {
+  readonly activeJobs: readonly RunCenterSnapshot['jobs'][number][]
+  readonly activeTodos: readonly RunCenterSnapshot['todos'][number][]
+  readonly activeSubagents: readonly Extract<RunCenterSnapshot['subagents'][number], { readonly kind: 'child' }>[]
+  readonly attentionGroups: readonly RunCenterJobGroup[]
+  readonly recentGroups: readonly RunCenterJobGroup[]
+  readonly counts: {
+    readonly active: number
+    readonly pending: number
+    readonly deliverables: number
+    readonly history: number
+    readonly historyGroups: number
+    readonly attentionGroups: number
+  }
+}
+
+const COMPLETED_TODO_STATES = new Set(['done', 'completed', 'complete', 'verified', 'cancelled', 'canceled'])
+export const RUN_CENTER_VISIBLE_ITEM_LIMIT = 20
+export const RUN_CENTER_HISTORY_GROUP_LIMIT = 12
+
+/**
+ * Turn an append-only run ledger into a compact task view. Maintenance jobs
+ * stay available as grouped evidence, while live work and failures retain
+ * their individual meaning.
+ */
+export function runCenterWorkbenchPresentation(run: RunCenterSnapshot): RunCenterWorkbenchPresentation {
+  const activeJobsAll = orderRunCenterJobs(run.jobs)
+    .map(({ job }) => job)
+    .filter(job => job.status === 'running' || job.status === 'stopping')
+    .map(presentRunCenterJob)
+  const activeTodosAll = run.todos.filter(todo => !COMPLETED_TODO_STATES.has(todo.status.trim().toLocaleLowerCase()))
+  const activeSubagentsAll = run.subagents.filter((child): child is Extract<RunCenterSnapshot['subagents'][number], { readonly kind: 'child' }> => child.kind === 'child' && child.activity === 'running')
+  const activeJobs = Object.freeze(activeJobsAll.slice(0, RUN_CENTER_VISIBLE_ITEM_LIMIT))
+  const activeTodos = Object.freeze(activeTodosAll.slice(0, RUN_CENTER_VISIBLE_ITEM_LIMIT))
+  const activeSubagents = Object.freeze(activeSubagentsAll.slice(0, RUN_CENTER_VISIBLE_ITEM_LIMIT))
+  const unresolvedFailureIds = new Set<string>()
+  const byOperation = new Map<string, RunCenterSnapshot['jobs'][number][]>()
+  for (const { job } of orderRunCenterJobs(run.jobs)) {
+    const identity = runCenterJobIdentity(job)
+    const rows = byOperation.get(identity) ?? []
+    rows.push(job)
+    byOperation.set(identity, rows)
+  }
+  for (const rows of byOperation.values()) {
+    for (const job of rows) {
+      // A retry that is only running has not repaired a recorded failure yet.
+      // Only a later success for this exact operation clears older failures.
+      if (job.status === 'completed') break
+      if (job.status === 'failed') unresolvedFailureIds.add(job.id)
+    }
+  }
+  const failedJobs = run.jobs.filter(job => unresolvedFailureIds.has(job.id))
+  const historicalJobs = run.jobs.filter(job => (job.status === 'completed' || job.status === 'killed' || job.status === 'failed') && !unresolvedFailureIds.has(job.id))
+  const attentionGroups = groupRunCenterJobs(failedJobs)
+  const recentGroups = groupRunCenterJobs(historicalJobs)
+  return Object.freeze({
+    activeJobs,
+    activeTodos,
+    activeSubagents,
+    attentionGroups: Object.freeze(attentionGroups.slice(0, RUN_CENTER_VISIBLE_ITEM_LIMIT)),
+    recentGroups: Object.freeze(recentGroups.slice(0, RUN_CENTER_HISTORY_GROUP_LIMIT)),
+    counts: Object.freeze({
+      active: activeJobsAll.length + activeTodosAll.length + activeSubagentsAll.length,
+      pending: run.queue.length,
+      deliverables: run.deliverables.length,
+      history: historicalJobs.length,
+      historyGroups: recentGroups.length,
+      attentionGroups: attentionGroups.length,
+    }),
+  })
+}
+
+/** Do not expose actions or outputs from a retained snapshot after session navigation. */
+export function runCenterForSession(run: RunCenterSnapshot, currentSessionId: string | undefined): RunCenterSnapshot {
+  if (currentSessionId !== undefined && run.sessionId === currentSessionId) return run
+  return Object.freeze({
+    ...(currentSessionId === undefined ? {} : { sessionId: currentSessionId }),
+    status: currentSessionId === undefined ? 'idle' : 'loading',
+    jobs: Object.freeze([]),
+    subagents: Object.freeze([]),
+    queue: Object.freeze([]),
+    todos: Object.freeze([]),
+    skills: Object.freeze([]),
+    deliverables: Object.freeze([]),
+  })
+}
+
+/** External stores update independently; expose interaction rows only after their session identity catches up. */
+export function sessionScopedRows<T>(
+  rows: readonly T[],
+  snapshotSessionId: string | undefined,
+  currentSessionId: string | undefined,
+): readonly T[] {
+  return currentSessionId !== undefined && snapshotSessionId === currentSessionId
+    ? rows
+    : Object.freeze([])
+}
+
+function presentRunCenterJob(job: RunCenterSnapshot['jobs'][number]): RunCenterSnapshot['jobs'][number] {
+  const detail = friendlyRunJobDetail(job)
+  const { detail: _rawDetail, ...facts } = job
+  return Object.freeze({
+    ...facts,
+    label: friendlyRunJobLabel(job),
+    ...(detail === undefined ? {} : { detail }),
+  })
+}
+
+function groupRunCenterJobs(jobs: readonly RunCenterSnapshot['jobs'][number][]): readonly RunCenterJobGroup[] {
+  const ordered = orderRunCenterJobs(jobs)
+  const groups = new Map<string, RunCenterJobGroup>()
+  for (const { job } of ordered) {
+    const label = friendlyRunJobLabel(job)
+    const key = `${job.status}:${label}`
+    const current = groups.get(key)
+    if (current !== undefined) {
+      groups.set(key, Object.freeze({ ...current, count: current.count + 1 }))
+      continue
+    }
+    const detail = friendlyRunJobDetail(job)
+    groups.set(key, Object.freeze({ label, status: job.status, count: 1, ...(detail === undefined ? {} : { detail }) }))
+  }
+  return Object.freeze([...groups.values()])
+}
+
+function orderRunCenterJobs(jobs: readonly RunCenterSnapshot['jobs'][number][]): readonly { readonly job: RunCenterSnapshot['jobs'][number]; readonly index: number }[] {
+  return jobs.map((job, index) => ({ job, index })).sort((left, right) => {
+    const leftAt = left.job.finishedAt ?? left.job.startedAt ?? left.index
+    const rightAt = right.job.finishedAt ?? right.job.startedAt ?? right.index
+    return rightAt - leftAt || right.index - left.index
+  })
+}
+
+/** Keep recovery state separate even when several maintenance checks share one friendly label. */
+function runCenterJobIdentity(job: Pick<RunCenterSnapshot['jobs'][number], 'kind' | 'label'>): string {
+  return `${job.kind?.trim() ?? ''}\u0000${job.label.trim()}`
+}
+
+function friendlyRunJobLabel(job: Pick<RunCenterSnapshot['jobs'][number], 'kind' | 'label'>): string {
+  return job.kind === 'xiaoshe-heartbeat' || /^Xiaoshe check(?:\s|$)/iu.test(job.label.trim())
+    ? '运行巡检'
+    : job.label.trim()
+}
+
+function friendlyRunJobDetail(job: Pick<RunCenterSnapshot['jobs'][number], 'kind' | 'label' | 'detail'>): string | undefined {
+  const detail = job.detail?.trim()
+  if (detail === undefined || detail === '') return undefined
+  if (job.kind === 'xiaoshe-heartbeat' || /^Xiaoshe check(?:\s|$)/iu.test(job.label.trim())) {
+    if (/check completed/iu.test(detail)) return undefined
+    if (/did not complete/iu.test(detail)) return '巡检未完成'
+  }
+  return detail
+}
+
+function providerFactLabel(value: 'catalogued' | 'supported' | 'configured' | 'available' | 'verified'): string {
+  return ({ catalogued: '已收录', supported: '受支持', configured: '已配置', available: '可用', verified: '已验证' } as const)[value]
+}
+
+function providerReasonLabel(value: string | undefined): string {
+  return ({
+    provider_not_catalogued: '服务商尚未收录', route_unsupported: '当前路由不受支持', settings_missing: '缺少服务商设置',
+    credential_missing: '缺少凭据', route_unavailable: '路由当前不可用', probe_missing: '尚未执行真实验证',
+    probe_running: '正在验证', probe_failed: '上次验证失败', probe_cancelled: '上次验证已取消',
+    probe_expired: '验证结果已过期', probe_route_mismatch: '验证结果不属于当前路由',
+    probe_configuration_changed: '模型配置已更改，请重新验证',
+  } as Record<string, string>)[value ?? ''] ?? '等待运行事实'
+}
+
+function probeSummary(value: { readonly status: string; readonly latencyMs?: number; readonly contextWindow?: number; readonly error?: { readonly message: string } }): string {
+  if (value.status === 'running') return '正在验证'
+  if (value.status === 'failed') return value.error?.message ?? '验证失败'
+  if (value.status === 'cancelled') return '验证已取消'
+  const latency = value.latencyMs === undefined ? '' : `${Math.round(value.latencyMs)} ms`
+  const context = value.contextWindow === undefined ? '' : `上下文 ${formatTokens(value.contextWindow)}`
+  return [latency, context].filter(Boolean).join(' · ') || '验证通过'
+}
+
 /** Opaque select value; model/provider ids may themselves contain slashes. */
 export function modelRouteKey(provider: string, model: string): string {
   return JSON.stringify([provider, model])
@@ -4356,7 +6827,7 @@ export function parseModelRouteKey(value: string): { readonly provider: string; 
 }
 
 function statusLabel(value: string): string {
-  return ({ running: '正在处理', blocked: '等待确认', completed: '任务结束', idle: '已连接', blank: '新会话' } as Record<string, string>)[value] ?? value
+  return ({ running: '正在处理', blocked: '等待交互信息', completed: '任务结束', idle: '已连接', blank: '新会话' } as Record<string, string>)[value] ?? value
 }
 
 function runtimeFactLabel(value: string): string {
@@ -4373,7 +6844,7 @@ function friendlyCheckName(value: string): string {
 }
 
 function pluginTransactionStateLabel(value: string): string {
-  return ({ healthy: '运行正常', 'rolled-back': '已回滚', failed: '失败', prepared: '待确认', committed: '已完成', pending: '处理中' } as Record<string, string>)[value] ?? '其他状态'
+  return ({ prepared: '待确认', pending: '处理中', running: '处理中', committed: '已完成', healthy: '运行正常', 'partial-health': '健康不完整', failed: '失败', 'rolled-back': '已回滚', 'rollback-failed': '回滚失败' } as Record<string, string>)[value] ?? '未知状态'
 }
 
 function pluginActionLabel(value: string): string {
@@ -4386,7 +6857,23 @@ function pluginRiskLabel(value: unknown): string {
 }
 
 function pluginSourceAssuranceLabel(value: CandidateProvenance['assurance']): string {
-  return value === 'unverified' ? '未签名' : '未知'
+  return ({ unverified: '未签名', 'signed-untrusted': '签名有效但未信任', 'verified-publisher': '发布者已验证', 'invalid-signature': '签名无效' } as const)[value]
+}
+
+function pluginSignatureStatusLabel(value: PublicCandidate['signature']['status']): string {
+  return ({ unsigned: '未签名', invalid: '无效', 'valid-untrusted': '有效但未信任', trusted: '有效且受信' } as const)[value]
+}
+
+function pluginPolicyFacts(audit: Readonly<Record<string, unknown>>): readonly string[] {
+  const policy = typeof audit.policy === 'object' && audit.policy !== null ? audit.policy as Readonly<Record<string, unknown>> : undefined
+  if (policy === undefined) return []
+  const permissions = Array.isArray(policy.permissions) ? policy.permissions.filter((row): row is string => typeof row === 'string') : []
+  const capabilities = Array.isArray(policy.capabilities) ? policy.capabilities.filter((row): row is string => typeof row === 'string') : []
+  return Object.freeze([
+    `权限清单：${permissions.length === 0 ? '未声明' : permissions.join(', ')}`,
+    `能力声明：${capabilities.length === 0 ? '未声明' : capabilities.join(', ')}`,
+    `隔离声明：${typeof policy.isolation === 'string' ? policy.isolation : '未声明'}（实际为共享本机进程）`,
+  ])
 }
 
 function pluginSourceSelectionLabel(value: CandidateProvenance['selection']): string {
@@ -4404,8 +6891,26 @@ function modelCatalogStatusLabel(value: ModelCatalogSnapshot['status']): string 
   return ({ idle: '待命', loading: '读取中', ready: '可用', selecting: '切换中', error: '异常' } as const)[value]
 }
 
+/** Prioritize human action and the current turn over retained receipts and telemetry. */
+export function taskStatePresentation(input: {
+  readonly runtimeState: string; readonly stopping: boolean; readonly questionCount: number; readonly approvalCount: number
+  readonly queued: number; readonly active: number; readonly loading: boolean; readonly attention: boolean; readonly receipt?: string | undefined
+}): { readonly label: string; readonly detail: string; readonly tone?: 'ok' | 'warn' } {
+  if (input.questionCount > 0) return { label: '需要回答', detail: '回答问题后，小蛇会继续执行。', tone: 'warn' }
+  if (input.approvalCount > 0) return { label: '需要确认', detail: '查看操作详情，决定是否允许继续。', tone: 'warn' }
+  if (input.stopping || input.runtimeState === 'stopping') return { label: '正在停止', detail: '正在结束当前执行，请稍候。' }
+  if (input.runtimeState === 'blocked') return { label: '等待交互信息', detail: '正在同步需要回答的问题或确认的操作。', tone: 'warn' }
+  if (input.runtimeState === 'running') return { label: '正在执行', detail: '可以随时补充要求，或停止当前任务。', tone: 'ok' }
+  if (input.attention) return { label: '需要关注', detail: '有运行事项需要关注，请查看下方详情。', tone: 'warn' }
+  if (input.queued > 0) return { label: '等待处理', detail: '补充要求正在等待处理，可在下方调整或移除。', tone: 'warn' }
+  if (input.active > 0) return { label: '正在推进', detail: '下方事项正在推进，可以查看进展和工作材料。', tone: 'ok' }
+  if (input.receipt === 'completed') return { label: '已结束', detail: '本轮执行已结束，任务结果请看回复中的证据。命令自动分类未覆盖不等于任务失败，也不代表所有执行影响均已独立验证。' }
+  if (input.receipt !== undefined) return { label: receiptLabel(input.receipt), detail: `${receiptLabel(input.receipt)}。工作材料包含过程记录，请以本轮结果说明为准。`, ...(input.receipt === 'verified' ? { tone: 'ok' as const } : {}) }
+  return input.loading ? { label: '正在读取', detail: '正在读取本轮任务信息，请稍候。' } : { label: '等待任务', detail: '发送一项任务后，在这里查看进展和工作材料。' }
+}
+
 function receiptLabel(value: string): string {
-  return ({ verified: '已验证', partial: '部分验证', blocked: '受阻', failed: '失败', not_run: '未执行', release_held: '待发布', running: '执行中' } as Record<string, string>)[value] ?? value
+  return ({ completed: '已结束', verified: '已验证', partial: '部分验证', blocked: '受阻', failed: '失败', not_run: '未执行', release_held: '待发布', running: '执行中' } as Record<string, string>)[value] ?? value
 }
 
 function eventLabel(value: string): string {

@@ -12,6 +12,7 @@ const HEARTBEAT_API_PATH = '/api/xiaoshe/heartbeat'
 const DESKTOP_STATUS_PATH = '/xiaoshe/desktop/status'
 const MAX_RESPONSE_BYTES = 256 * 1024
 const HEARTBEAT_STATUSES = new Set(['idle', 'running', 'healthy', 'delayed', 'lost', 'paused', 'backoff'])
+const DEGRADED_HEARTBEAT_STATUSES = new Set(['delayed', 'lost', 'backoff'])
 
 export type ProductHealthFetch = (input: string, init?: RequestInit) => Promise<Response>
 
@@ -65,11 +66,25 @@ export class ProductHealthProvider implements ProductHealth {
     const errors = Object.freeze([
       ...(heartbeatResult.status === 'rejected' ? [sourceError('heartbeat', heartbeatResult.reason)] : []),
       ...(desktopResult.status === 'rejected' ? [sourceError('desktop', desktopResult.reason)] : []),
+      ...(heartbeatResult.status === 'fulfilled' && heartbeatResult.value.persistenceStatus === 'degraded'
+        ? [Object.freeze({
+            source: 'heartbeat' as const,
+            message: 'heartbeat persistence is degraded',
+            kind: 'HEARTBEAT_PERSISTENCE_DEGRADED',
+          })]
+        : []),
+      ...(heartbeatResult.status === 'fulfilled' && DEGRADED_HEARTBEAT_STATUSES.has(heartbeatResult.value.status)
+        ? [Object.freeze({
+            source: 'heartbeat' as const,
+            message: `heartbeat check status is ${heartbeatResult.value.status}`,
+            kind: 'HEARTBEAT_CHECK_DEGRADED',
+          })]
+        : []),
     ])
     const successful = Number(heartbeatResult.status === 'fulfilled') + Number(desktopResult.status === 'fulfilled')
-    const next = successful === 2
+    const next = successful === 2 && errors.length === 0
       ? freezeSnapshot({ status: 'ready', value: value as Required<ProductHealthValue> })
-      : successful === 1
+      : successful >= 1
         ? freezeSnapshot({ status: 'degraded', value, errors })
         : freezeSnapshot({ status: 'error', ...(Object.keys(value).length === 0 ? {} : { value }), errors })
     this.publish(next)
@@ -128,7 +143,9 @@ async function readBoundedJson(response: Response): Promise<unknown> {
 
 function parseHeartbeatSnapshot(value: unknown): ProductHeartbeatSnapshot {
   if (!isRecord(value) || value.schemaVersion !== 2 || !isHeartbeatStatus(value.status)
-    || typeof value.running !== 'boolean' || !Array.isArray(value.checks)) {
+    || typeof value.running !== 'boolean' || !Array.isArray(value.checks)
+    || (value.persistenceStatus !== 'ready'
+      && value.persistenceStatus !== 'degraded')) {
     throw new TypeError('heartbeat response has an invalid envelope or missing collections')
   }
   if (value.checks.length > 200) throw new RangeError('heartbeat response exceeds collection limits')
@@ -147,7 +164,27 @@ function parseHeartbeatSnapshot(value: unknown): ProductHeartbeatSnapshot {
       ...(item.nextRunAt === undefined ? {} : { nextRunAt: item.nextRunAt }),
     })
   }))
-  return Object.freeze({ schemaVersion: 2, status: value.status, running: value.running, checks })
+  const derivedStatus = aggregateHeartbeatStatus(checks)
+  const derivedRunning = checks.some(check => check.status === 'running')
+  if (value.status !== derivedStatus || value.running !== derivedRunning) {
+    throw new TypeError('heartbeat response top-level facts contradict its checks')
+  }
+  return Object.freeze({
+    schemaVersion: 2,
+    status: value.status,
+    running: value.running,
+    persistenceStatus: value.persistenceStatus,
+    checks,
+  })
+}
+
+/** Keep the Client trust boundary aligned with the Host's aggregate contract. */
+function aggregateHeartbeatStatus(checks: readonly ProductHeartbeatCheck[]): ProductHeartbeatSnapshot['status'] {
+  const statuses = new Set(checks.map(check => check.status))
+  for (const status of ['lost', 'delayed', 'backoff', 'running', 'healthy', 'paused'] as const) {
+    if (statuses.has(status)) return status
+  }
+  return 'idle'
 }
 
 function parseDesktopDiagnostic(value: unknown): ProductDesktopDiagnostic {

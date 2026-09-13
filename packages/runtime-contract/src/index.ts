@@ -1,4 +1,6 @@
 export { RUNTIME_COMMANDS } from './commands.js'
+export { RUNTIME_FILE_LIMITS } from './files.js'
+export type { RuntimeFileReceipt, RuntimeFileUploadInput, RuntimeFileReadInput, RuntimeFileContent, RuntimeFiles } from './files.js'
 export { parseSessionCatalogSnapshot } from './catalog.js'
 export type { SessionCatalog, SessionCatalogEntry, SessionCatalogSnapshot, SessionSearchItem } from './catalog.js'
 export { deriveCompactionCheckpoints, deriveContextBudget, parseContextGovernanceSnapshot } from './context.js'
@@ -9,7 +11,8 @@ export type {
   ContextGovernanceEntry,
   ContextGovernanceSnapshot,
 } from './context.js'
-export type { TaskTimeline, TaskTimelineItem, TaskTimelineSnapshot } from './timeline.js'
+export { parseTaskTimelineImage } from './timeline.js'
+export type { TaskTimeline, TaskTimelineImage, TaskTimelineItem, TaskTimelineSnapshot } from './timeline.js'
 export type {
   ProductDesktopDiagnostic,
   ProductHealth,
@@ -22,6 +25,7 @@ export type {
 export type {
   WorkSurface,
   WorkSurfaceCapabilities,
+  WorkSurfaceContributionRegistry,
   WorkSurfaceDiff,
   WorkSurfaceKind,
   WorkSurfaceRegistry,
@@ -38,7 +42,21 @@ export type {
   ModelProviderGroup,
   ModelReasoningEffort,
   ModelSelection,
+  ModelSelectionPersistence,
 } from './model.js'
+export { deriveProviderReadinessFacts } from './provider-readiness.js'
+export type {
+  DeriveProviderReadinessInput,
+  ProviderProbeCost,
+  ProviderProbeRecord,
+  ProviderProbeUsage,
+  ProviderReadiness,
+  ProviderReadinessFacts,
+  ProviderReadinessProvider,
+  ProviderReadinessReason,
+  ProviderReadinessRoute,
+  ProviderReadinessSnapshot,
+} from './provider-readiness.js'
 export type {
   WorkspaceCatalog,
   WorkspaceCatalogEntry,
@@ -57,6 +75,21 @@ export type {
   StopRunInput,
 } from './commands.js'
 export type { AgentRuntimeSession } from './service.js'
+export { parseRunCenterSnapshot } from './run-center.js'
+export type {
+  RunCenter,
+  RunCenterDeliverable,
+  RunCenterGoal,
+  RunCenterJob,
+  RunCenterPlan,
+  RunCenterQueueAction,
+  RunCenterQueueItem,
+  RunCenterSkill,
+  RunCenterSnapshot,
+  RunCenterSubagent,
+  RunCenterTodo,
+  RunJobStatus,
+} from './run-center.js'
 export type { SessionCommand, SessionCommandInput } from './session-command.js'
 export type {
   UserQuestionAnswer,

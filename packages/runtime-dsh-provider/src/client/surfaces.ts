@@ -1,11 +1,14 @@
 import type {
   WorkSurface,
   WorkSurfaceCapabilities,
+  WorkSurfaceContributionRegistry,
   WorkSurfaceDiff,
   WorkSurfaceRegistry,
   WorkSurfaceRegistrySnapshot,
   WorkSurfaceTrust,
 } from '@xiaoshe/runtime-contract'
+import { WORK_SURFACE_VIEW } from './surface-view.js'
+export { registerWorkSurfaceView } from './surface-view.js'
 
 const MAX_SURFACES = 24
 const MAX_TEXT_LINES = 2_000
@@ -27,6 +30,7 @@ interface SurfaceSessionFacePort {
   getSnapshot?(): {
     readonly nodes?: readonly unknown[]
     readonly runningCalls?: readonly unknown[]
+    readonly views?: { get(target: string): unknown }
   }
   subscribe?(listener: () => void): () => void
 }
@@ -83,11 +87,12 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /** Public current-session SurfaceRegistry backed only by DSH's replayable Client snapshot. */
-export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
+export class DshWorkSurfaceRegistry implements WorkSurfaceContributionRegistry {
   private readonly listeners = new Set<() => void>()
   private readonly unsubscribeList: () => void
   private unsubscribeSession: (() => void) | undefined
   private snapshot: WorkSurfaceRegistrySnapshot = { items: [] }
+  private readonly contributions = new Map<string, { readonly sessionId: string; readonly items: readonly WorkSurface[] }>()
   private disposed = false
 
   constructor(private readonly sessions: SurfaceSessionsPort) {
@@ -103,11 +108,28 @@ export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
     return () => { this.listeners.delete(listener) }
   }
 
+  publishContribution(namespace: string, sessionId: string, items: readonly WorkSurface[]): () => void {
+    if (this.disposed) throw new Error('WorkSurfaceRegistry provider is disposed')
+    if (!/^[a-z][a-z0-9._-]{0,79}$/u.test(namespace)) throw new TypeError('surface contribution namespace is invalid')
+    if (sessionId === '' || sessionId.length > 512 || /[\r\n\0]/u.test(sessionId)) throw new TypeError('surface contribution session is invalid')
+    const bounded = Object.freeze(items.slice(-MAX_SURFACES).filter(item => item.sessionId === sessionId))
+    this.contributions.set(namespace, { sessionId, items: bounded })
+    this.publish()
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this.contributions.delete(namespace)
+      this.publish()
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.unsubscribeSession?.()
     this.unsubscribeList()
+    this.contributions.clear()
     this.listeners.clear()
   }
 
@@ -131,7 +153,14 @@ export class DshWorkSurfaceRegistry implements WorkSurfaceRegistry {
   private project(sessionId: string | undefined, face: SurfaceSessionFacePort | undefined): WorkSurfaceRegistrySnapshot {
     if (sessionId === undefined || face === undefined) return { items: [] }
     const cwd = this.sessions.list.getSnapshot().byId[sessionId]?.cwd
-    return { sessionId, items: projectDshWorkSurfaces(sessionId, cwd, face.getSnapshot?.()) }
+    const durable = projectDshWorkSurfaces(sessionId, cwd, face.getSnapshot?.())
+    const contributed = [...this.contributions.values()].flatMap(row => row.sessionId === sessionId ? row.items : [])
+    const merged = new Map<string, WorkSurface>()
+    for (const item of [...durable, ...contributed]) {
+      const previous = merged.get(item.id)
+      if (previous === undefined || previous.updatedAt <= item.updatedAt) merged.set(item.id, item)
+    }
+    return { sessionId, items: [...merged.values()].sort((left, right) => left.updatedAt - right.updatedAt || left.seq - right.seq).slice(-MAX_SURFACES) }
   }
 }
 
@@ -142,11 +171,17 @@ export function projectDshWorkSurfaces(
   snapshot: { readonly nodes?: readonly unknown[]; readonly runningCalls?: readonly unknown[] } | undefined,
 ): readonly WorkSurface[] {
   const projected: WorkSurface[] = []
-  for (const row of flattenToolBlocks(snapshot?.nodes ?? [], MAX_SUBCALL_DEPTH)) {
+  // Generic chat is deliberately absent from the product composition. Prefer
+  // the independently registered tool-only view, retaining the old public
+  // snapshot fallback for older DSH clients and other shells.
+  const data = record((snapshot as ReturnType<NonNullable<SurfaceSessionFacePort['getSnapshot']>>)?.views?.get(WORK_SURFACE_VIEW))
+  const nodes = Array.isArray(data?.nodes) ? data.nodes : snapshot?.nodes ?? []
+  const runningCalls = Array.isArray(data?.runningCalls) ? data.runningCalls : snapshot?.runningCalls ?? []
+  for (const row of flattenToolBlocks(nodes, MAX_SUBCALL_DEPTH)) {
     if (row.kind !== 'tool-result') continue
     projected.push(...surfacesForResult(sessionId, cwd, row))
   }
-  for (const row of flattenToolBlocks(snapshot?.runningCalls ?? [], MAX_SUBCALL_DEPTH)) {
+  for (const row of flattenToolBlocks(runningCalls, MAX_SUBCALL_DEPTH)) {
     if (row.kind === 'tool-result') continue
     projected.push(...surfacesForRunningCall(sessionId, cwd, row))
   }
@@ -155,9 +190,46 @@ export function projectDshWorkSurfaces(
     const previous = deduped.get(surface.id)
     if (previous === undefined || previous.updatedAt <= surface.updatedAt) deduped.set(surface.id, surface)
   }
-  return [...deduped.values()]
+  return withFileMaterialTitles([...deduped.values()]
     .sort((left, right) => left.updatedAt - right.updatedAt || left.seq - right.seq || left.id.localeCompare(right.id))
-    .slice(-MAX_SURFACES)
+    .slice(-MAX_SURFACES), cwd)
+}
+
+/** Label only validated read/diff evidence, never parse a tool's prose title.
+ * Paths, evidence and counts stay unchanged; sibling filenames receive the
+ * shortest distinguishing parent suffix within this bounded session window.
+ */
+function withFileMaterialTitles(items: readonly WorkSurface[], cwd: string | undefined): readonly WorkSurface[] {
+  const files = items.flatMap(item => {
+    if ((item.view.kind !== 'text' && item.view.kind !== 'diff') || !validFileSource(item.source)) return []
+    const path = normalizedPath(isAbsolutePath(item.source) || cwd === undefined ? item.source : `${cwd}/${item.source}`)
+    const parts = path.split('/').filter(Boolean)
+    const basename = parts.at(-1)
+    if (basename === undefined) return []
+    const windows = /^[a-z]:\//iu.test(path)
+    const key = windows ? path.toLocaleLowerCase('en-US') : path
+    return [{ item, basename, key, parents: parts.slice(0, -1), nameKey: windows ? basename.toLocaleLowerCase('en-US') : basename, windows }]
+  })
+  const titles = new Map<string, string>()
+  for (const file of files) {
+    const peers = files.filter(other => other.nameKey === file.nameKey && other.key !== file.key)
+    let directory = ''
+    if (peers.length > 0) {
+      for (let depth = 1; depth <= Math.max(1, file.parents.length); depth++) {
+        directory = file.parents.slice(-depth).join('/') || '.'
+        const equal = (other: typeof file): boolean => {
+          const suffix = other.parents.slice(-depth).join('/') || '.'
+          return file.windows ? suffix.toLocaleLowerCase('en-US') === directory.toLocaleLowerCase('en-US') : suffix === directory
+        }
+        if (!peers.some(equal)) break
+      }
+    }
+    const view = file.item.view
+    const operation = view.kind === 'text' ? '读取' : '改动'
+    const fileCount = view.kind === 'diff' ? new Set(view.diffs.map(diff => normalizedPath(diff.path))).size : 1
+    titles.set(file.item.id, bounded(`${file.basename}${directory === '' ? '' : ` · ${directory}`} · ${operation}${fileCount > 1 ? `（${fileCount} 个文件）` : ''}`, 160))
+  }
+  return items.map(item => titles.has(item.id) ? { ...item, title: titles.get(item.id) as string } : item)
 }
 
 function surfacesForResult(sessionId: string, cwd: string | undefined, row: Record<string, unknown>): WorkSurface[] {
@@ -178,13 +250,14 @@ function surfacesForResult(sessionId: string, cwd: string | undefined, row: Reco
     if (rawUrl !== undefined) surfaces.push(webSurface(base, `${callId}:web`, title, rawUrl))
   }
 
-  if (resultView?.card === 'read' && typeof resultView.path === 'string') {
+  if (resultView?.card === 'read' && validFileSource(resultView.path)) {
     const rawLines = Array.isArray(resultView.lines) ? resultView.lines : []
+    let lineTextTruncated = false
     const lines = rawLines.slice(0, MAX_TEXT_LINES + 1).flatMap(value => {
       const line = record(value)
-      return typeof line?.number === 'number' && typeof line.text === 'string'
-        ? [{ number: Math.max(1, Math.floor(line.number)), text: bounded(line.text, 32_768) }]
-        : []
+      if (typeof line?.number !== 'number' || typeof line.text !== 'string') return []
+      lineTextTruncated ||= line.text.length > 32_768
+      return [{ number: Math.max(1, Math.floor(line.number)), text: bounded(line.text, 32_768) }]
     })
     const boundedLines = boundLines(lines, MAX_TEXT_LINES, MAX_TEXT_BYTES)
     const source = bounded(resultView.path, 4_096)
@@ -196,7 +269,7 @@ function surfacesForResult(sessionId: string, cwd: string | undefined, row: Reco
         kind: 'text', lines: boundedLines.lines,
         totalLines: Math.max(boundedLines.lines.length, Math.floor(number(resultView.totalLines) ?? boundedLines.lines.length)),
         ...(typeof resultView.lang === 'string' ? { language: bounded(resultView.lang, 40) } : {}),
-        truncated: boundedLines.truncated || lines.length > boundedLines.lines.length || rawLines.length > lines.length,
+        truncated: lineTextTruncated || boundedLines.truncated || lines.length > boundedLines.lines.length || rawLines.length > lines.length,
       },
     })
   }
@@ -205,7 +278,7 @@ function surfacesForResult(sessionId: string, cwd: string | undefined, row: Reco
     const allDiffs = projectDiffs(resultView.diffs)
     const boundedDiffs = boundDiffs(allDiffs)
     const source = boundedDiffs.diffs[0]?.path
-    surfaces.push({
+    if (boundedDiffs.diffs.length > 0) surfaces.push({
       ...base, id: `${sessionId}:${callId}:diff`, type: 'file', title,
       ...(source === undefined ? {} : { source }), trust: source === undefined ? 'unknown' : pathTrust(source, cwd),
       capabilities: passiveCapabilities(source !== undefined),
@@ -214,8 +287,10 @@ function surfacesForResult(sessionId: string, cwd: string | undefined, row: Reco
   }
 
   if (resultView?.card === 'terminal' || callView?.card === 'terminal') {
-    const rawOutput = string(resultView?.output) ?? contentText(row.content)
-    const output = boundText(rawOutput ?? '', MAX_TERMINAL_BYTES)
+    const rawOutput = string(resultView?.output)
+    // Generic error presenters fall back to content blocks; preserve their
+    // earlier byte/block truncation instead of reclassifying clipped text.
+    const output = rawOutput === undefined ? contentText(row.content) : boundText(rawOutput, MAX_TERMINAL_BYTES)
     const source = string(callView?.cwd) ?? cwd
     surfaces.push({
       ...base, id: `${sessionId}:${callId}:terminal`, type: 'terminal', title,
@@ -322,7 +397,7 @@ function locationSurfaces(
   const locations = Array.isArray(callView?.locations) ? callView.locations : []
   return locations.slice(0, 4).flatMap((value, index): WorkSurface[] => {
     const source = string(record(value)?.path)
-    if (source === undefined) return []
+    if (!validFileSource(source)) return []
     const kind = fileKind(source)
     const view: WorkSurface['view'] = kind === 'image' || kind === 'video' || kind === 'pdf'
       ? { kind: 'media', mediaType: kind, description: '工具已登记该文件；浏览器端没有绕过工作区权限直接读取本地路径。' }
@@ -368,7 +443,7 @@ function projectDiffs(value: unknown): WorkSurfaceDiff[] {
   if (!Array.isArray(value)) return []
   return value.flatMap(row => {
     const diff = record(row)
-    if (typeof diff?.path !== 'string' || typeof diff.newText !== 'string' || !(typeof diff.oldText === 'string' || diff.oldText === null)) return []
+    if (!validFileSource(diff?.path) || typeof diff?.newText !== 'string' || !(typeof diff.oldText === 'string' || diff.oldText === null)) return []
     return [{ path: bounded(diff.path, 4_096), oldText: diff.oldText, newText: diff.newText }]
   })
 }
@@ -376,15 +451,19 @@ function projectDiffs(value: unknown): WorkSurfaceDiff[] {
 function boundDiffs(value: readonly WorkSurfaceDiff[]): { readonly diffs: readonly WorkSurfaceDiff[]; readonly truncated: boolean } {
   const output: WorkSurfaceDiff[] = []
   let bytes = 0
+  let textTruncated = false
   for (const diff of value.slice(0, MAX_DIFFS)) {
     const old = boundText(diff.oldText ?? '', Math.max(0, MAX_DIFF_BYTES - bytes))
     bytes += byteLength(old.text)
     const next = boundText(diff.newText, Math.max(0, MAX_DIFF_BYTES - bytes))
     bytes += byteLength(next.text)
+    textTruncated ||= old.truncated || next.truncated
     output.push({ path: diff.path, oldText: diff.oldText === null ? null : old.text, newText: next.text })
     if (bytes >= MAX_DIFF_BYTES) break
   }
-  return { diffs: output, truncated: output.length < value.length || bytes >= MAX_DIFF_BYTES }
+  // Reaching the budget exactly need not omit anything; conversely UTF-8
+  // boundaries can leave a few unused bytes after text was already clipped.
+  return { diffs: output, truncated: textTruncated || output.length < value.length }
 }
 
 function boundLines(value: readonly { readonly number: number; readonly text: string }[], maxLines: number, maxBytes: number): {
@@ -393,15 +472,18 @@ function boundLines(value: readonly { readonly number: number; readonly text: st
 } {
   const lines: { number: number; text: string }[] = []
   let bytes = 0
+  let textTruncated = false
   for (const line of value.slice(0, maxLines)) {
     const remaining = maxBytes - bytes
     if (remaining <= 0) break
-    const text = boundText(line.text, remaining).text
-    lines.push({ number: line.number, text })
-    bytes += byteLength(text)
+    const text = boundText(line.text, remaining)
+    // A byte cap can shorten the last retained line without dropping a row.
+    textTruncated ||= text.truncated
+    lines.push({ number: line.number, text: text.text })
+    bytes += byteLength(text.text)
     if (bytes >= maxBytes) break
   }
-  return { lines, truncated: lines.length < value.length }
+  return { lines, truncated: textTruncated || lines.length < value.length }
 }
 
 function contentBlocks(value: unknown): Record<string, unknown>[] {
@@ -412,18 +494,19 @@ function contentBlocks(value: unknown): Record<string, unknown>[] {
   })
 }
 
-function contentText(value: unknown): string {
+function contentText(value: unknown): { readonly text: string; readonly truncated: boolean } {
   let output = ''
+  let truncated = Array.isArray(value) && value.length > MAX_CONTENT_BLOCKS
   for (const block of contentBlocks(value)) {
     if (typeof block.text !== 'string') continue
     const separator = output === '' ? '' : '\n'
     const remaining = MAX_TERMINAL_BYTES - byteLength(output) - byteLength(separator)
-    if (remaining <= 0) break
+    if (remaining <= 0) { truncated = true; break }
     const part = boundText(block.text, remaining)
     output += `${separator}${part.text}`
-    if (part.truncated) break
+    if (part.truncated) { truncated = true; break }
   }
-  return output
+  return { text: output, truncated }
 }
 
 function loopbackUrls(value: string): readonly string[] {
@@ -446,9 +529,10 @@ function fileKind(path: string): 'file' | 'image' | 'video' | 'pdf' {
 }
 
 function pathTrust(path: string, cwd: string | undefined): WorkSurfaceTrust {
-  if (!isAbsolutePath(path)) return cwd === undefined ? 'unknown' : 'workspace'
+  if (!validFileSource(path)) return 'unknown'
+  if (!isAbsolutePath(path) && cwd === undefined) return 'unknown'
   if (cwd === undefined) return 'local'
-  const source = normalizedPath(path)
+  const source = normalizedPath(isAbsolutePath(path) ? path : `${cwd}/${path}`)
   const root = normalizedPath(cwd).replace(/\/$/u, '')
   const windows = /^[a-z]:\//iu.test(root)
   const left = windows ? source.toLocaleLowerCase('en-US') : source
@@ -457,7 +541,20 @@ function pathTrust(path: string, cwd: string | undefined): WorkSurfaceTrust {
 }
 
 function isAbsolutePath(value: string): boolean { return value.startsWith('/') || /^[a-z]:[\\/]/iu.test(value) }
-function normalizedPath(value: string): string { return value.replace(/\\/gu, '/').replace(/\/{2,}/gu, '/') }
+/** A file presenter cannot turn a credential-bearing URL into a copyable path. */
+function validFileSource(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && !/[\u0000-\u001f]/u.test(value)
+    && (!/^[a-z][a-z0-9+.-]*:/iu.test(value) || /^[a-z]:[\\/]/iu.test(value))
+}
+function normalizedPath(value: string): string {
+  const parts: string[] = []
+  for (const part of value.replace(/\\/gu, '/').split('/')) {
+    if (part === '.') continue
+    if (part === '..' && parts.length > 0 && parts.at(-1) !== '..') parts.pop()
+    else if (part !== '' || parts.length === 0) parts.push(part)
+  }
+  return parts.join('/')
+}
 function stableToken(value: string): string {
   let hash = 2166136261
   for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619)
@@ -470,9 +567,13 @@ function boundText(value: string, maxBytes: number): { readonly text: string; re
   // At most `maxBytes` UTF-16 code units are needed to fill `maxBytes` UTF-8 bytes.
   if (value.length <= maxBytes && byteLength(value) <= maxBytes) return { text: value, truncated: false }
   const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
   const candidate = value.slice(0, maxBytes)
-  return { text: `${decoder.decode(encoder.encode(candidate).slice(0, Math.max(0, maxBytes - 3)))}…`, truncated: true }
+  if (maxBytes < 3) return { text: '.'.repeat(maxBytes), truncated: true }
+  // encodeInto never splits a multi-byte character; decoding a sliced byte
+  // sequence could insert U+FFFD and exceed the advertised UTF-8 budget.
+  const buffer = new Uint8Array(maxBytes - 3)
+  const { written } = encoder.encodeInto(candidate, buffer)
+  return { text: `${new TextDecoder().decode(buffer.subarray(0, written))}…`, truncated: true }
 }
 function byteLength(value: string): number { return new TextEncoder().encode(value).byteLength }
 function record(value: unknown): Record<string, unknown> | undefined { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined }

@@ -49,6 +49,7 @@ export interface HistoryEntry {
 export interface SessionHistory {
   readonly events: readonly HistoryEntry[]
   readonly hasMore: boolean
+  readonly throughSeq?: number
   readonly projections?: SessionProjectionBlock
 }
 

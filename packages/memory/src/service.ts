@@ -14,6 +14,7 @@ const MAX_TEXT_LENGTH = 4_000
 const MAX_PROJECT_LENGTH = 240
 const MAX_ID_LENGTH = 128
 const MAX_INJECTION_ITEMS = 100
+const MAX_SETTINGS_CONFLICT_RETRIES = 8
 
 export type MemoryScope = 'global' | 'project'
 export type MemoryState = 'active' | 'forgotten' | 'superseded'
@@ -49,9 +50,21 @@ export interface MemoryUsageRecord {
   readonly last_project?: string
 }
 
+export interface MemoryDiagnostics {
+  /** Whether the settings namespace itself is currently schema-valid. */
+  readonly persistence_status: 'ready' | 'degraded'
+  /** Usage bookkeeping is best-effort and must never gate prompt assembly. */
+  readonly usage_audit_status: 'ready' | 'degraded'
+  readonly usage_persistence_failures: number
+  readonly last_usage_persistence_error?: 'MEMORY_USAGE_PERSISTENCE_FAILED'
+  readonly last_usage_persistence_error_at?: string
+}
+
 export interface MemorySnapshot {
   readonly api_version: 1
   readonly revision: number
+  /** Canonical key of the project boundary applied to this projection. */
+  readonly project?: string
   readonly counts: {
     readonly active: number
     readonly global: number
@@ -62,6 +75,7 @@ export interface MemorySnapshot {
   readonly entries: readonly MemoryEntry[]
   readonly audit: readonly MemoryAuditEvent[]
   readonly usage: readonly MemoryUsageRecord[]
+  readonly diagnostics: MemoryDiagnostics
 }
 
 export interface RememberMemoryInput {
@@ -97,6 +111,8 @@ interface MemoryServiceOptions {
   readonly now?: () => Date
   /** Test seam and embedded-host override for filesystem identity lookup. */
   readonly realpath?: (value: string) => string
+  /** Fixed-message Host observer; storage errors are deliberately not exposed. */
+  readonly onUsageAuditFailure?: () => void
 }
 
 interface StoredState {
@@ -104,6 +120,12 @@ interface StoredState {
   readonly entries: readonly MemoryEntry[]
   readonly audit: readonly MemoryAuditEvent[]
   readonly usage: readonly MemoryUsageRecord[]
+}
+
+interface ObservedState {
+  readonly state: StoredState
+  readonly settingsRevision?: number
+  readonly persistenceStatus: 'ready' | 'degraded'
 }
 
 /** Strict persisted shape for the profile-owned Xiaoshe memory namespace. */
@@ -186,21 +208,24 @@ export function createMemoryToolDefinitions(service: MemoryService): ToolDefinit
   return [
     {
       name: 'xiaoshe_memory_list',
-      description: '列出当前小蛇 Profile 中的长期或项目记忆。项目记忆必须提供准确的 project 键；这是只读操作。',
+      description: '列出全局记忆或当前会话项目的记忆。兼容旧调用的 all 也只表示全局加当前项目；这是只读操作。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          scope: { type: 'string', enum: ['global', 'project', 'all'], default: 'all' },
+          scope: { type: 'string', enum: ['global', 'project', 'all'] },
           project: { type: 'string', minLength: 1, maxLength: MAX_PROJECT_LENGTH },
           include_inactive: { type: 'boolean', default: false },
         },
       },
       output,
-      async execute(args) {
+      async execute(args, exec) {
         const input = toolArgs(args, ['scope', 'project', 'include_inactive'])
-        const scope = input.scope ?? 'all'
-        if (scope !== 'global' && scope !== 'project' && scope !== 'all') {
+        const explicitScope = input.scope
+        if (explicitScope !== undefined
+          && explicitScope !== 'global'
+          && explicitScope !== 'project'
+          && explicitScope !== 'all') {
           throw new TypeError('scope must be global, project or all')
         }
         if (input.project !== undefined && typeof input.project !== 'string') {
@@ -209,9 +234,34 @@ export function createMemoryToolDefinitions(service: MemoryService): ToolDefinit
         if (input.include_inactive !== undefined && typeof input.include_inactive !== 'boolean') {
           throw new TypeError('include_inactive must be a boolean')
         }
+        if (explicitScope === 'project' && input.project === undefined) {
+          throw new TypeError('project must be provided when scope is project')
+        }
+        const callerProject = canonicalProjectKey(exec.agent?.session?.header?.cwd)
+        const requestedProject = input.project === undefined
+          ? undefined
+          : canonicalProjectKey(input.project)
+        if (input.project !== undefined && requestedProject === undefined) {
+          throw new TypeError('project key is invalid')
+        }
+        if (explicitScope === 'global' && input.project !== undefined) {
+          throw new TypeError('global scope must not include a project')
+        }
+        if (requestedProject !== undefined
+          && (callerProject === undefined || requestedProject !== callerProject)) {
+          throw new TypeError('memory tool can only access its current project')
+        }
+        // Tool arguments are model-controlled. Keep the legacy `all` spelling,
+        // but bind it to the caller's session project. The service snapshot API
+        // remains the explicit trusted Product/management aggregation port.
+        const scope = explicitScope === 'global'
+          ? 'global'
+          : explicitScope === 'project'
+            ? 'project'
+            : callerProject === undefined ? 'global' : 'all'
         return service.snapshot({
           scope,
-          ...(input.project === undefined ? {} : { project: input.project }),
+          ...(scope === 'global' || callerProject === undefined ? {} : { project: callerProject }),
           include_inactive: input.include_inactive === true,
         }) as unknown as JsonValue
       },
@@ -232,14 +282,28 @@ export function createMemoryToolDefinitions(service: MemoryService): ToolDefinit
         },
       },
       output,
-      async execute(args) {
+      async execute(args, exec) {
         const input = toolArgs(args, ['expected_revision', 'scope', 'project', 'text', 'replaces_id'])
+        const expectedRevision = toolRevision(input)
+        let project = input.project
+        if (input.scope === 'project' && typeof input.project === 'string') {
+          const requestedProject = canonicalProjectKey(input.project)
+          if (requestedProject !== undefined) {
+            const callerProject = canonicalProjectKey(exec.agent?.session?.header?.cwd)
+            if (callerProject === undefined || requestedProject !== callerProject) {
+              throw new TypeError('memory tool can only access its current project')
+            }
+            // Persist the execution context's canonical identity, never the
+            // model-controlled spelling that merely proved equivalent to it.
+            project = callerProject
+          }
+        }
         return await service.remember({
           scope: input.scope as never,
-          ...(input.project === undefined ? {} : { project: input.project as never }),
+          ...(project === undefined ? {} : { project: project as never }),
           text: input.text as never,
           ...(input.replaces_id === undefined ? {} : { replaces_id: input.replaces_id as never }),
-        }, toolRevision(input)) as unknown as JsonValue
+        }, expectedRevision) as unknown as JsonValue
       },
     },
     {
@@ -256,12 +320,28 @@ export function createMemoryToolDefinitions(service: MemoryService): ToolDefinit
         },
       },
       output,
-      async execute(args) {
+      async execute(args, exec) {
         const input = toolArgs(args, ['expected_revision', 'id', 'state'])
         if (typeof input.id !== 'string' || (input.state !== 'active' && input.state !== 'forgotten')) {
           throw new TypeError('id and active or forgotten state are required')
         }
-        return await service.setState(input.id, input.state, toolRevision(input)) as unknown as JsonValue
+        const expectedRevision = toolRevision(input)
+        const callerProject = canonicalProjectKey(exec.agent?.session?.header?.cwd)
+        // Scope the model-facing ID lookup before entering the trusted mutation
+        // service. Direct service and Product HTTP callers retain their existing
+        // profile-wide management capability.
+        const visible = service.snapshot({
+          scope: callerProject === undefined ? 'global' : 'all',
+          ...(callerProject === undefined ? {} : { project: callerProject }),
+          include_inactive: true,
+        })
+        if (visible.revision !== expectedRevision) {
+          throw new MemoryRevisionConflictError(expectedRevision, visible.revision)
+        }
+        if (!visible.entries.some(entry => entry.id === input.id)) {
+          throw new TypeError('memory tool can only access its current project')
+        }
+        return await service.setState(input.id, input.state, expectedRevision) as unknown as JsonValue
       },
     },
   ]
@@ -278,6 +358,10 @@ export function createMemoryService(
     ...(options.realpath === undefined ? {} : { realpath: options.realpath }),
   })
   let mutation: Promise<void> = Promise.resolve()
+  let usageAuditStatus: MemoryDiagnostics['usage_audit_status'] = 'ready'
+  let usagePersistenceFailures = 0
+  let lastUsagePersistenceErrorAt: string | undefined
+  let lastPersistenceWriteFailed = false
 
   function serialize<T>(operation: () => Promise<T>): Promise<T> {
     const next = mutation.then(operation, operation)
@@ -285,152 +369,277 @@ export function createMemoryService(
     return next
   }
 
+  function diagnostics(persistenceStatus: MemoryDiagnostics['persistence_status']): MemoryDiagnostics {
+    return {
+      persistence_status: persistenceStatus,
+      usage_audit_status: usageAuditStatus,
+      usage_persistence_failures: usagePersistenceFailures,
+      ...(lastUsagePersistenceErrorAt === undefined
+        ? {}
+        : {
+            last_usage_persistence_error: 'MEMORY_USAGE_PERSISTENCE_FAILED' as const,
+            last_usage_persistence_error_at: lastUsagePersistenceErrorAt,
+          }),
+    }
+  }
+
+  function currentPersistenceStatus(
+    observedStatus: MemoryDiagnostics['persistence_status'] = scopePersistenceStatus(settings),
+  ): MemoryDiagnostics['persistence_status'] {
+    return lastPersistenceWriteFailed || observedStatus === 'degraded' ? 'degraded' : 'ready'
+  }
+
+  function markUsageAuditFailure(): void {
+    usageAuditStatus = 'degraded'
+    usagePersistenceFailures = Math.min(usagePersistenceFailures + 1, Number.MAX_SAFE_INTEGER)
+    try {
+      lastUsagePersistenceErrorAt = now().toISOString()
+    } catch {
+      // A broken injected clock must not hide the original audit failure or
+      // prevent the Host from observing degradation.
+      lastUsagePersistenceErrorAt = new Date().toISOString()
+    }
+    try { options.onUsageAuditFailure?.() } catch {
+      // Diagnostics must remain available even when a Host logger is faulty.
+    }
+  }
+
+  async function persistTracked(state: StoredState, expectedSettingsRevision?: number): Promise<void> {
+    try {
+      await persist(settings, state, expectedSettingsRevision)
+      lastPersistenceWriteFailed = false
+    } catch (error) {
+      if (isSettingsConflict(error)) throw error
+      throw new MemoryPersistenceError()
+    }
+  }
+
+  function rethrowPersistenceFailure(error: unknown): never {
+    if (error instanceof MemoryPersistenceError) {
+      lastPersistenceWriteFailed = true
+      throw error
+    }
+    if (isSettingsConflict(error)) lastPersistenceWriteFailed = true
+    throw error
+  }
+
   return {
     snapshot(query = {}) {
-      return project(readState(settings), query, normalizeProject)
+      const observed = observeState(settings)
+      return project(observed.state, query, normalizeProject, diagnostics(currentPersistenceStatus(observed.persistenceStatus)))
     },
 
     remember(input, expectedRevision) {
       return serialize(async () => {
-        const current = readState(settings)
-        if (expectedRevision !== current.revision) {
-          throw new MemoryRevisionConflictError(expectedRevision, current.revision)
+        try {
+          const initial = observeState(settings)
+          assertMemoryRevision(expectedRevision, initial.state.revision)
+          const normalized = normalizeRememberInput(input, normalizeProject)
+          const timestamp = now().toISOString()
+          const id = createId()
+          validateIdentifier(id, 'generated memory id')
+          return await retrySettingsConflicts(settings, initial, async (observed) => {
+            const current = observed.state
+            assertMemoryRevision(expectedRevision, current.revision)
+            if (current.entries.length >= MAX_ENTRIES) {
+              throw new RangeError(`memory store is limited to ${MAX_ENTRIES} entries`)
+            }
+            if (current.entries.some(entry => entry.id === id)) {
+              throw new Error('generated memory id already exists')
+            }
+            const replaced = normalized.replaces_id === undefined
+              ? undefined
+              : current.entries.find(entry => entry.id === normalized.replaces_id && entry.state === 'active')
+            if (normalized.replaces_id !== undefined && replaced === undefined) {
+              throw new TypeError('memory to replace is missing or inactive')
+            }
+            if (replaced !== undefined
+              && (replaced.scope !== normalized.scope
+                || normalizeProject(replaced.project) !== normalized.project)) {
+              throw new TypeError('replacement must keep the original memory scope')
+            }
+            const entry: MemoryEntry = {
+              id,
+              scope: normalized.scope,
+              ...(normalized.project === undefined ? {} : { project: normalized.project }),
+              text: normalized.text,
+              state: 'active',
+              version: replaced === undefined ? 1 : replaced.version + 1,
+              created_at: timestamp,
+              updated_at: timestamp,
+              ...(replaced === undefined ? {} : { supersedes: replaced.id }),
+            }
+            const next: StoredState = {
+              revision: current.revision + 1,
+              entries: [
+                ...current.entries.map(item => item.id === replaced?.id
+                  ? { ...item, state: 'superseded' as const, updated_at: timestamp, superseded_by: id }
+                  : item),
+                entry,
+              ],
+              audit: appendAudit(current.audit, {
+                revision: current.revision + 1,
+                action: replaced === undefined ? 'create' : 'edit',
+                entry_id: id,
+                ...(replaced === undefined ? {} : { previous_entry_id: replaced.id }),
+                at: timestamp,
+              }),
+              usage: current.usage,
+            }
+            await persistTracked(next, observed.settingsRevision)
+            return project(
+              next,
+              mutationProjection(normalized.scope, normalized.project),
+              normalizeProject,
+              diagnostics(currentPersistenceStatus()),
+            )
+          })
+        } catch (error) {
+          return rethrowPersistenceFailure(error)
         }
-        if (current.entries.length >= MAX_ENTRIES) {
-          throw new RangeError(`memory store is limited to ${MAX_ENTRIES} entries`)
-        }
-        const normalized = normalizeRememberInput(input, normalizeProject)
-        const timestamp = now().toISOString()
-        const replaced = normalized.replaces_id === undefined
-          ? undefined
-          : current.entries.find(entry => entry.id === normalized.replaces_id && entry.state === 'active')
-        if (normalized.replaces_id !== undefined && replaced === undefined) {
-          throw new TypeError('memory to replace is missing or inactive')
-        }
-        if (replaced !== undefined
-          && (replaced.scope !== normalized.scope
-            || normalizeProject(replaced.project) !== normalized.project)) {
-          throw new TypeError('replacement must keep the original memory scope')
-        }
-        const id = createId()
-        validateIdentifier(id, 'generated memory id')
-        const entry: MemoryEntry = {
-          id,
-          scope: normalized.scope,
-          ...(normalized.project === undefined ? {} : { project: normalized.project }),
-          text: normalized.text,
-          state: 'active',
-          version: replaced === undefined ? 1 : replaced.version + 1,
-          created_at: timestamp,
-          updated_at: timestamp,
-          ...(replaced === undefined ? {} : { supersedes: replaced.id }),
-        }
-        const next: StoredState = {
-          revision: current.revision + 1,
-          entries: [
-            ...current.entries.map(item => item.id === replaced?.id
-              ? { ...item, state: 'superseded' as const, updated_at: timestamp, superseded_by: id }
-              : item),
-            entry,
-          ],
-          audit: appendAudit(current.audit, {
-            revision: current.revision + 1,
-            action: replaced === undefined ? 'create' : 'edit',
-            entry_id: id,
-            ...(replaced === undefined ? {} : { previous_entry_id: replaced.id }),
-            at: timestamp,
-          }),
-          usage: current.usage,
-        }
-        await persist(settings, next)
-        return project(next, {}, normalizeProject)
       })
     },
 
     setState(id, state, expectedRevision) {
       return serialize(async () => {
-        const current = readState(settings)
-        if (expectedRevision !== current.revision) {
-          throw new MemoryRevisionConflictError(expectedRevision, current.revision)
+        try {
+          const initial = observeState(settings)
+          assertMemoryRevision(expectedRevision, initial.state.revision)
+          validateIdentifier(id, 'memory id')
+          const timestamp = now().toISOString()
+          return await retrySettingsConflicts(settings, initial, async (observed) => {
+            const current = observed.state
+            assertMemoryRevision(expectedRevision, current.revision)
+            const existing = current.entries.find(entry => entry.id === id)
+            if (existing === undefined || existing.state === 'superseded') {
+              throw new TypeError('memory is missing or cannot change state')
+            }
+            if (existing.state === state) {
+              return project(
+                current,
+                { ...mutationProjection(existing.scope, normalizeProject(existing.project)), include_inactive: true },
+                normalizeProject,
+                diagnostics(currentPersistenceStatus(observed.persistenceStatus)),
+              )
+            }
+            const next: StoredState = {
+              revision: current.revision + 1,
+              entries: current.entries.map(entry => entry.id === id
+                ? { ...entry, state, updated_at: timestamp }
+                : entry),
+              audit: appendAudit(current.audit, {
+                revision: current.revision + 1,
+                action: state === 'forgotten' ? 'forget' : 'restore',
+                entry_id: id,
+                at: timestamp,
+              }),
+              usage: current.usage,
+            }
+            await persistTracked(next, observed.settingsRevision)
+            return project(
+              next,
+              { ...mutationProjection(existing.scope, normalizeProject(existing.project)), include_inactive: true },
+              normalizeProject,
+              diagnostics(currentPersistenceStatus()),
+            )
+          })
+        } catch (error) {
+          return rethrowPersistenceFailure(error)
         }
-        const existing = current.entries.find(entry => entry.id === id)
-        if (existing === undefined || existing.state === 'superseded') {
-          throw new TypeError('memory is missing or cannot change state')
-        }
-        if (existing.state === state) return project(current, {}, normalizeProject)
-        const timestamp = now().toISOString()
-        const next: StoredState = {
-          revision: current.revision + 1,
-          entries: current.entries.map(entry => entry.id === id
-            ? { ...entry, state, updated_at: timestamp }
-            : entry),
-          audit: appendAudit(current.audit, {
-            revision: current.revision + 1,
-            action: state === 'forgotten' ? 'forget' : 'restore',
-            entry_id: id,
-            at: timestamp,
-          }),
-          usage: current.usage,
-        }
-        await persist(settings, next)
-        return project(next, {}, normalizeProject)
       })
     },
 
     injection(projectKey) {
+      const observed = observeState(settings)
       return selectMemoryInjectionWith(
-        project(readState(settings), { include_inactive: true }, normalizeProject),
+        project(
+          observed.state,
+          { include_inactive: true },
+          normalizeProject,
+          diagnostics(currentPersistenceStatus(observed.persistenceStatus)),
+        ),
         projectKey,
         normalizeProject,
       )
     },
 
     recordInjection(input) {
-      const normalized = normalizeInjectionInput(input, now, normalizeProject)
-      if (normalized.itemIds.length === 0) return Promise.resolve()
       return serialize(async () => {
-        const current = readState(settings)
-        const entries = new Map(current.entries.map(entry => [entry.id, entry]))
-        for (const id of normalized.itemIds) {
-          const entry = entries.get(id)
-          if (entry === undefined || entry.state !== 'active') {
-            throw new TypeError(`injected memory is missing or inactive: ${id}`)
-          }
-          if (entry.scope === 'project' && normalizeProject(entry.project) !== normalized.project) {
-            throw new TypeError(`project memory does not belong to the injected project: ${id}`)
-          }
-        }
-        const touched = new Set(normalized.itemIds)
-        const existing = new Map(current.usage.map(row => [row.entry_id, row]))
-        const usage = current.usage.map((row): MemoryUsageRecord => {
-          if (!touched.has(row.entry_id)) return row
-          if (row.count >= Number.MAX_SAFE_INTEGER) throw new RangeError('memory usage count is exhausted')
-          return {
-            entry_id: row.entry_id,
-            count: row.count + 1,
-            last_used_at: normalized.at,
-            last_session_id: normalized.sessionId,
-            ...(normalized.project === undefined ? {} : { last_project: normalized.project }),
-          }
-        })
-        for (const id of normalized.itemIds) {
-          if (existing.has(id)) continue
-          usage.push({
-            entry_id: id,
-            count: 1,
-            last_used_at: normalized.at,
-            last_session_id: normalized.sessionId,
-            ...(normalized.project === undefined ? {} : { last_project: normalized.project }),
+        try {
+          const normalized = normalizeInjectionInput(input, now, normalizeProject)
+          if (normalized.itemIds.length === 0) return
+          await retrySettingsConflicts(settings, observeState(settings), async (observed) => {
+            const current = observed.state
+            const entries = new Map(current.entries.map(entry => [entry.id, entry]))
+            for (const id of normalized.itemIds) {
+              const entry = entries.get(id)
+              if (entry === undefined || entry.state !== 'active') {
+                throw new TypeError(`injected memory is missing or inactive: ${id}`)
+              }
+              if (entry.scope === 'project' && normalizeProject(entry.project) !== normalized.project) {
+                throw new TypeError(`project memory does not belong to the injected project: ${id}`)
+              }
+            }
+            const touched = new Set(normalized.itemIds)
+            const existing = new Map(current.usage.map(row => [row.entry_id, row]))
+            const usage = current.usage.map((row): MemoryUsageRecord => {
+              if (!touched.has(row.entry_id)) return row
+              if (row.count >= Number.MAX_SAFE_INTEGER) throw new RangeError('memory usage count is exhausted')
+              return {
+                entry_id: row.entry_id,
+                count: row.count + 1,
+                last_used_at: normalized.at,
+                last_session_id: normalized.sessionId,
+                ...(normalized.project === undefined ? {} : { last_project: normalized.project }),
+              }
+            })
+            for (const id of normalized.itemIds) {
+              if (existing.has(id)) continue
+              usage.push({
+                entry_id: id,
+                count: 1,
+                last_used_at: normalized.at,
+                last_session_id: normalized.sessionId,
+                ...(normalized.project === undefined ? {} : { last_project: normalized.project }),
+              })
+            }
+            await persistTracked({ ...current, usage }, observed.settingsRevision)
           })
+          usageAuditStatus = 'ready'
+        } catch (error) {
+          markUsageAuditFailure()
+          if (error instanceof MemoryPersistenceError || isSettingsConflict(error)) {
+            return rethrowPersistenceFailure(error)
+          }
+          throw error
         }
-        await persist(settings, { ...current, usage })
       })
     },
   }
 }
 
-function readState(settings: SettingsScopeLike): StoredState {
-  const raw = memorySettingsSchema(settings.get())
+function observeState(settings: SettingsScopeLike): ObservedState {
+  const snapshot = settings.getSnapshot?.()
+  if (snapshot === undefined) {
+    // A legacy or third-party scope can supply values without proving that
+    // durable storage is healthy. Keep the data usable but fail health closed.
+    return { state: parseStoredState(settings.get()), persistenceStatus: 'degraded' }
+  }
+  if (!isNonNegativeInteger(snapshot.revision)) {
+    throw new TypeError('settings snapshot revision must be a non-negative integer')
+  }
+  if (snapshot.status !== 'ready' && snapshot.status !== 'degraded') {
+    throw new TypeError('settings snapshot status must be ready or degraded')
+  }
+  return {
+    state: parseStoredState(snapshot.value),
+    settingsRevision: snapshot.revision,
+    persistenceStatus: snapshot.status,
+  }
+}
+
+function parseStoredState(value: unknown): StoredState {
+  const raw = memorySettingsSchema(value)
   return {
     revision: typeof raw.revision === 'number' && Number.isSafeInteger(raw.revision) && raw.revision >= 0
       ? raw.revision
@@ -445,38 +654,121 @@ function project(
   state: StoredState,
   query: MemoryQuery,
   normalizeProject: (value: string | undefined) => string | undefined = canonicalProjectKey,
+  diagnostics: MemoryDiagnostics = {
+    persistence_status: 'ready',
+    usage_audit_status: 'ready',
+    usage_persistence_failures: 0,
+  },
 ): MemorySnapshot {
   const queryProject = normalizeProject(query.project)
-  const visible = state.entries.filter((entry) => {
-    if (query.include_inactive !== true && entry.state !== 'active') return false
+  // Build one scope boundary first, then derive every public collection from
+  // it. Filtering entries alone would still disclose another project's ids
+  // through audit rows and its aggregate state through counts.
+  const scopedEntries = state.entries.filter((entry) => {
     if (query.scope !== undefined && query.scope !== 'all' && entry.scope !== query.scope) return false
     if (entry.scope === 'project' && query.project !== undefined
       && normalizeProject(entry.project) !== queryProject) return false
     return true
   })
+  const scopedIds = new Set(scopedEntries.map(entry => entry.id))
+  const visible = scopedEntries.filter(entry => query.include_inactive === true || entry.state === 'active')
+  const visibleIds = new Set(visible.map(entry => entry.id))
+  const crossProjectMetadataAllowed = query.project === undefined
+    && (query.scope === undefined || query.scope === 'all')
   return {
     api_version: 1,
     revision: state.revision,
+    ...(queryProject === undefined ? {} : { project: queryProject }),
     counts: {
-      active: state.entries.filter(entry => entry.state === 'active').length,
-      global: state.entries.filter(entry => entry.state === 'active' && entry.scope === 'global').length,
-      project: state.entries.filter(entry => entry.state === 'active' && entry.scope === 'project').length,
-      forgotten: state.entries.filter(entry => entry.state === 'forgotten').length,
-      superseded: state.entries.filter(entry => entry.state === 'superseded').length,
+      active: scopedEntries.filter(entry => entry.state === 'active').length,
+      global: scopedEntries.filter(entry => entry.state === 'active' && entry.scope === 'global').length,
+      project: scopedEntries.filter(entry => entry.state === 'active' && entry.scope === 'project').length,
+      forgotten: scopedEntries.filter(entry => entry.state === 'forgotten').length,
+      superseded: scopedEntries.filter(entry => entry.state === 'superseded').length,
     },
     entries: visible,
-    audit: state.audit,
-    usage: state.usage.filter(row => visible.some(entry => entry.id === row.entry_id)),
+    audit: state.audit.filter(row => scopedIds.has(row.entry_id)
+      && (row.previous_entry_id === undefined || scopedIds.has(row.previous_entry_id))),
+    usage: state.usage.flatMap((row): MemoryUsageRecord[] => {
+      if (!visibleIds.has(row.entry_id)) return []
+      if (row.last_project !== undefined && !crossProjectMetadataAllowed
+        && (queryProject === undefined || normalizeProject(row.last_project) !== queryProject)) {
+        const { last_project: _hiddenProject, ...safe } = row
+        return [safe]
+      }
+      return [row]
+    }),
+    diagnostics,
   }
 }
 
-async function persist(settings: SettingsScopeLike, state: StoredState): Promise<void> {
-  await settings.update({
+/** Keep mutation responses useful to their caller without returning another project. */
+function mutationProjection(scope: MemoryScope, project: string | undefined): MemoryQuery {
+  return scope === 'global'
+    ? { scope: 'global' }
+    : { scope: 'all', ...(project === undefined ? {} : { project }) }
+}
+
+async function persist(
+  settings: SettingsScopeLike,
+  state: StoredState,
+  expectedSettingsRevision?: number,
+): Promise<void> {
+  const section = {
     revision: state.revision,
     entries: state.entries as unknown as JsonValue,
     audit: state.audit as unknown as JsonValue,
     usage: state.usage as unknown as JsonValue,
-  })
+  }
+  if (settings.replace !== undefined) {
+    await settings.replace(section, expectedSettingsRevision)
+    return
+  }
+  await settings.update(section, expectedSettingsRevision)
+}
+
+function assertMemoryRevision(expectedRevision: number, currentRevision: number): void {
+  if (expectedRevision !== currentRevision) {
+    throw new MemoryRevisionConflictError(expectedRevision, currentRevision)
+  }
+}
+
+/**
+ * Rebuild a whole-section mutation from the newest durable snapshot whenever
+ * another provider wins the namespace CAS. The retry is bounded so sustained
+ * contention becomes an explicit failure rather than an infinite busy loop.
+ */
+async function retrySettingsConflicts<T>(
+  settings: SettingsScopeLike,
+  initial: ObservedState,
+  operation: (observed: ObservedState) => Promise<T>,
+): Promise<T> {
+  let observed = initial
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation(observed)
+    } catch (error) {
+      if (!isSettingsConflict(error) || attempt >= MAX_SETTINGS_CONFLICT_RETRIES - 1) throw error
+      observed = observeState(settings)
+    }
+  }
+}
+
+function scopePersistenceStatus(settings: SettingsScopeLike): MemoryDiagnostics['persistence_status'] {
+  return settings.getSnapshot?.().status === 'ready' ? 'ready' : 'degraded'
+}
+
+function isSettingsConflict(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { readonly code?: unknown }).code === 'SETTINGS_CONFLICT'
+}
+
+export class MemoryPersistenceError extends Error {
+  readonly name = 'MemoryPersistenceError'
+
+  constructor() { super('memory persistence failed') }
 }
 
 function normalizeInjectionInput(

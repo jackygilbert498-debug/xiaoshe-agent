@@ -3,6 +3,13 @@ export type JsonValue = string | number | boolean | null | JsonValue[] | { [key:
 
 export interface ToolRunContextLike {
   readonly signal: AbortSignal
+  readonly agent?: {
+    readonly session?: {
+      readonly header?: {
+        readonly cwd?: string
+      }
+    }
+  }
 }
 
 export interface ToolDefinitionLike {
@@ -34,6 +41,12 @@ export interface SettingsSchemaLike {
 
 export interface SettingsScopeLike {
   get(): Record<string, JsonValue>
+  getSnapshot?(): {
+    readonly value: Record<string, JsonValue>
+    readonly revision: number
+    readonly status: 'ready' | 'degraded'
+  }
   watch(callback: (next: Record<string, JsonValue>, previous: Record<string, JsonValue>) => void | Promise<void>): () => void
-  update(patch: Record<string, JsonValue>): Promise<void>
+  update(patch: Record<string, JsonValue>, expectedRevision?: number): Promise<void>
+  replace?(section: Record<string, JsonValue>, expectedRevision?: number): Promise<void>
 }

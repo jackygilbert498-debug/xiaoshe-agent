@@ -5,8 +5,8 @@
  * stays process-local here.
  */
 
-import type { SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   WELCOME_NOTICE_ACK_FIELD, WELCOME_NOTICE_VERSION,
 } from '../onboarding-copy.ts'
@@ -122,6 +122,13 @@ export class WelcomeNoticeStore {
           state.status = 'error'
           state.acknowledged = false
           state.error = 'welcome acknowledgement settings are unavailable'
+        })
+        return
+      case 'degraded':
+        this.store.update((state) => {
+          state.status = 'error'
+          state.acknowledged = false
+          state.error = scope.error ?? 'welcome acknowledgement settings are degraded'
         })
         return
       case 'ready': {

@@ -30,6 +30,12 @@ export interface ModelSelection {
   readonly reasoningEffort?: string
 }
 
+/** Host receipt for the default-setting side effect of a model switch. */
+export interface ModelSelectionPersistence {
+  readonly status: 'saved' | 'session-only'
+  readonly warning?: string
+}
+
 /** Current-session model directory. The Host remains the source of truth. */
 export interface ModelCatalogSnapshot {
   readonly sessionId?: string
@@ -46,5 +52,11 @@ export interface ModelCatalog {
   getSnapshot(): ModelCatalogSnapshot
   subscribe(listener: () => void): () => void
   refresh(sessionId?: string): Promise<RuntimeCommandResult<ModelCatalogSnapshot>>
-  select(input: ModelSelection & { readonly sessionId?: string }): Promise<RuntimeCommandResult<{ selected: ModelSelection }>>
+  select(input: ModelSelection & { readonly sessionId?: string }): Promise<RuntimeCommandResult<{
+    selected: ModelSelection
+    /** Host-confirmed boundary; absent on older Hosts. In-flight inference is unchanged. */
+    effective?: 'next-request' | 'immediate'
+    /** Optional only for compatibility with an older Host that did not report persistence. */
+    persistence?: ModelSelectionPersistence
+  }>>
 }

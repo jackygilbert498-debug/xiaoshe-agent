@@ -3,6 +3,7 @@ import { MemoryRevisionConflictError, type MemoryQuery, type MemoryService } fro
 
 const MEMORY_API_PATH = '/api/xiaoshe/memory'
 const JSON_LIMIT_BYTES = 16 * 1024
+const MEMORY_RUNTIME_ERROR_MESSAGE = 'memory service is temporarily unavailable'
 
 export interface MemoryHttpRequest extends AsyncIterable<Uint8Array | string> {
   readonly method?: string
@@ -44,10 +45,17 @@ export function registerMemoryHttpRoute(server: MemoryWebServer, service: Memory
         return
       }
       if (request.method === 'GET') {
+        let query: MemoryQuery
         try {
-          sendJson(response, 200, service.snapshot(parseMemoryQuery(request.url)))
+          query = parseMemoryQuery(request.url)
         } catch (error: unknown) {
           sendJson(response, 400, { error: safeMessage(error), kind: 'INVALID_MEMORY_QUERY' })
+          return
+        }
+        try {
+          sendJson(response, 200, service.snapshot(query))
+        } catch {
+          sendJson(response, 500, { error: MEMORY_RUNTIME_ERROR_MESSAGE, kind: 'MEMORY_RUNTIME_ERROR' })
         }
         return
       }
@@ -95,7 +103,7 @@ export function registerMemoryHttpRoute(server: MemoryWebServer, service: Memory
         }
         const invalid = error instanceof SyntaxError || error instanceof TypeError || error instanceof RangeError
         sendJson(response, invalid ? 400 : 500, {
-          error: safeMessage(error),
+          error: invalid ? safeMessage(error) : MEMORY_RUNTIME_ERROR_MESSAGE,
           kind: invalid ? 'INVALID_MEMORY_REQUEST' : 'MEMORY_RUNTIME_ERROR',
         })
       }

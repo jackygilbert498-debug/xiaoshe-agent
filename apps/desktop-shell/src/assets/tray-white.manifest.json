@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "source": "runtime/xiaoshe-legacy/ui/assets/snake.svg",
+  "sourceSha256": "3a919a69c3b6f425545957aacaccd0199364a233bb3a0f4db827f3b5d1efdd75",
+  "renderer": "sharp 0.35.4 / librsvg 2.62.91",
+  "outputs": {
+    "tray-white-32.png": "0d3f28bbe489d44c35a77469f62950b18fe1a6f27ff99c199011030bc7691a57",
+    "tray-white-64.png": "c6cfef02ed62af154904de2e6a5f7c76c1e3d1f41ce55a151f82bf1405831678"
+  }
+}

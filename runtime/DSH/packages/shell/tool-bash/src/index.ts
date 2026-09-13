@@ -15,7 +15,6 @@ import { defineTool, TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, TerminalCallView, ToolExecution, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-shell-env'
@@ -235,7 +234,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Cross-call guidance belongs in the prompt rather than one-call schema prose.
   ctx.systemPrompt.section({
     name: 'tool:bash',
-    order: 105,
+    order: ctx.systemPrompt.getSectionOrder('TOOL_BASH'),
     text: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on.',
   })
 
@@ -326,6 +325,18 @@ export function apply(ctx: Context, config: Config = {}): void {
           ? `started background job ${value.jobId}`
           : renderResult(value as { kind: 'foreground' } & ShellRunResult, escalationModes),
       }],
+      // ToolRuntime persists presentationMeta with the durable tool/result.
+      // Keeping only process status avoids storing stdout twice while letting
+      // cold-reload projections distinguish command failure from tool failure.
+      presentationMeta: (_args, value) => value.kind === 'background' ? {} : ({
+        shellProcess: {
+          kind: 'foreground',
+          exitCode: value.exitCode,
+          signal: value.signal,
+          timedOut: value.timedOut,
+          aborted: value.aborted,
+        },
+      }),
     },
     async execute(args: BashToolArgs, exec) {
       validateBashArgs(args)

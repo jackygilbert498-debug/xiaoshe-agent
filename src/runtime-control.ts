@@ -20,6 +20,7 @@ import type {
 import type { BridgeRequester } from './tools.js'
 
 const STATUS_PATH = '/xiaoshe/desktop/status'
+const VERSION_PATH = '/xiaoshe/desktop/version'
 const PROBE_PATH = '/xiaoshe/desktop/probe'
 const ACTIONS_PATH = '/xiaoshe/desktop/actions'
 const PREFERENCES_PATH = '/xiaoshe/preferences'
@@ -55,6 +56,10 @@ export interface RuntimeRouteDependencies {
   /** Absolute path to the sole Xiaoshe brand master; never a copied derivative. */
   readonly brandIconPath: string
   readonly version: string
+  /** Launcher-calculated content/Profile identity used only to prevent stale service reuse. */
+  readonly runtimeIdentity: string
+  /** On-demand only: content hashing must not run inside health polling. */
+  readonly runtimeVersion?: (loadedFrontendIdentity?: string) => Promise<unknown>
 }
 
 export type ResponseStyle = 'pragmatic' | 'friendly'
@@ -124,6 +129,25 @@ export function registerRuntimeRoutes(
 
   const disposers = [
     server.register({
+      name: 'xiaoshe-desktop-version', kind: 'exact', path: VERSION_PATH,
+      handler: async (request, response) => {
+        if (!guard(request, response, 'GET')) return
+        const query = new URL(request.url ?? VERSION_PATH, 'http://127.0.0.1').searchParams
+        const loaded = query.get('frontend_identity') ?? undefined
+        if ([...query.keys()].some(key => key !== 'frontend_identity') || query.getAll('frontend_identity').length > 1
+          || (loaded !== undefined && !/^[a-f0-9]{64}$/u.test(loaded))) {
+          sendJson(response, 400, { error: 'invalid version diagnostic query', kind: 'VERSION_QUERY_INVALID' }); return
+        }
+        try {
+          if (dependencies.runtimeVersion === undefined) throw new Error('version diagnostics unavailable')
+          sendJson(response, 200, await dependencies.runtimeVersion(loaded))
+        } catch {
+          // Never expose subprocess stderr: it can contain local paths/config.
+          sendJson(response, 503, { schema: 'xiaoshe-runtime-version/v1', status: 'unavailable', reasons: ['diagnostic-unavailable'] })
+        }
+      },
+    }),
+    server.register({
       name: 'xiaoshe-brand-favicon',
       kind: 'exact',
       path: BRAND_ICON_PATH,
@@ -171,6 +195,7 @@ export function registerRuntimeRoutes(
           api_version: 1,
           product: '小蛇',
           version: dependencies.version,
+          runtime_identity: dependencies.runtimeIdentity,
           response_style: responseStylePreference(dependencies.settings),
           bridge,
           actions: {

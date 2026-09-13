@@ -1,0 +1,143 @@
+appId: com.xiaoshe.desktop
+productName: 小蛇
+asar: true
+directories:
+  output: dist-desktop
+files:
+  - src/**
+  - package.json
+  # The shell imports only Electron/Node and relative modules. Otherwise the
+  # builder's dependency collector can fall back to unrelated workspace deps.
+  - '!node_modules/**'
+  - '!**/.DS_Store'
+  - '!**/__pycache__/**'
+  # Keep private local configuration out of app.asar as well as the embedded
+  # product tree. verify-artifact.mjs independently rejects the same names.
+  - '!**/.env'
+  - '!**/.env.*'
+  - '**/.env.example'
+  - '!**/*.{pem,key,p12,pfx,kdbx}'
+  - '!**/.credentials/**'
+  - '!**/.npmrc'
+  - '!**/.pnpmrc'
+  - '!**/.yarnrc*'
+  - '!**/.netrc'
+  - '!**/.pypirc'
+  - '!**/id_rsa'
+  - '!**/id_ed25519'
+  - '!**/[tT][oO][kK][eE][nN]'
+  - '!**/[sS][eE][cC][rR][eE][tT]'
+  - '!**/*[sS]ervice*[aA]ccount*.json'
+  - '!**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*.{json,yaml,yml,txt,ini,cfg,conf}'
+  - '!**/*[sS][eE][cC][rR][eE][tT]*.{json,yaml,yml,txt,ini,cfg,conf}'
+  - '!**/*[tT][oO][kK][eE][nN]*.{json,yaml,yml,txt,ini,cfg,conf}'
+extraResources:
+  # extraResources paths become exclusions from the main app fileset. Root-
+  # relative selection keeps this exact helper in app.asar as well as product;
+  # a direct src/file mapping would remove the main process's imported module.
+  - from: ../..
+    to: product
+    filter:
+      - apps/desktop-shell/src/acceptance-isolation.mjs
+  - from: ../../runtime
+    to: product/runtime
+    filter: &safe-product-files
+      - '**/*'
+      - '!**/.DS_Store'
+      - '!**/__pycache__/**'
+      - '!**/.git/**'
+      - '!**/node_modules/**'
+      - '!**/.venv/**'
+      - '!**/test/**'
+      - '!**/tests/**'
+      - '!**/__tests__/**'
+      - '!**/*.test.*'
+      - '!**/*.spec.*'
+      - '!**/*_test.py'
+      - '!**/test_*.py'
+      - '!**/.env'
+      - '!**/.env.*'
+      - '**/.env.example'
+      - '!**/*.{pem,key,p12,pfx,kdbx}'
+      - '!**/.credentials/**'
+      - '!**/.npmrc'
+      - '!**/.pnpmrc'
+      - '!**/.yarnrc*'
+      - '!**/.netrc'
+      - '!**/.pypirc'
+      - '!**/id_rsa'
+      - '!**/id_ed25519'
+      - '!**/[tT][oO][kK][eE][nN]'
+      - '!**/[sS][eE][cC][rR][eE][tT]'
+      - '!**/*[sS]ervice*[aA]ccount*.json'
+      - '!**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*.{json,yaml,yml,txt,ini,cfg,conf}'
+      - '!**/*[sS][eE][cC][rR][eE][tT]*.{json,yaml,yml,txt,ini,cfg,conf}'
+      - '!**/*[tT][oO][kK][eE][nN]*.{json,yaml,yml,txt,ini,cfg,conf}'
+  - from: ../../packages
+    to: product/packages
+    filter: *safe-product-files
+  - from: ../../scripts
+    to: product/scripts
+    filter: *safe-product-files
+  - from: ../../setup
+    to: product/setup
+    filter: *safe-product-files
+  - from: ../../python
+    to: product/python
+    filter: *safe-product-files
+  - from: ../../src
+    to: product/src
+    filter: *safe-product-files
+  - from: ../../package.json
+    to: product/package.json
+  - from: ../../pnpm-lock.yaml
+    to: product/pnpm-lock.yaml
+  - from: ../../pnpm-workspace.yaml
+    to: product/pnpm-workspace.yaml
+  - from: ../../tsconfig.json
+    to: product/tsconfig.json
+  - from: ../../tsconfig.build.json
+    to: product/tsconfig.build.json
+  - from: ../../README.md
+    to: product/README.md
+  - from: ../../cordis.patch.yml
+    to: product/cordis.patch.yml
+  - from: ../../启动小蛇.ps1
+    to: product/启动小蛇.ps1
+  - from: ../../停止小蛇.ps1
+    to: product/停止小蛇.ps1
+  - from: ../../诊断小蛇-Windows.ps1
+    to: product/诊断小蛇-Windows.ps1
+win:
+  appId: com.xiaoshe.desktop.icon-v4
+  target:
+    - target: nsis
+      # Windows x64 is the only architecture with a real install/lifecycle gate.
+      arch: [x64]
+  icon: src/assets/app-icon-win.ico
+  artifactName: Xiaoshe-${version}-${arch}-setup.${ext}
+nsis:
+  # Preserve the deterministic GUID of com.xiaoshe.desktop so changing the
+  # Windows taskbar cache identity does not break silent upgrades/uninstall.
+  guid: ba0f3e97-dae3-539b-9849-e666817b715c
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+mac:
+  target:
+    - target: dmg
+      # macOS arm64 is the only architecture with signed real-device acceptance.
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  icon: ../../runtime/xiaoshe-legacy/ui/assets/app-icon-512.png
+  hardenedRuntime: true
+  gatekeeperAssess: true
+  category: public.app-category.developer-tools
+  artifactName: Xiaoshe-${version}-${arch}.${ext}
+publish: null
+beforePack: ./scripts/before-pack.mjs
+afterAllArtifactBuild: ./scripts/verify-artifact.mjs

@@ -7,6 +7,26 @@ export interface TerminalOptions {
   readonly help: boolean
 }
 
+/** Accept a launcher's ephemeral credential only for the exact configured local Host. */
+export function authenticatedOptions(options: TerminalOptions, authUrl: string | undefined): TerminalOptions {
+  if (authUrl === undefined) return options
+  try {
+    const target = new URL(options.baseUrl)
+    const auth = new URL(authUrl)
+    const keys = [...auth.searchParams.keys()]
+    const token = auth.searchParams.get('token')
+    if (!['http:', 'https:'].includes(auth.protocol) || auth.origin !== target.origin
+      || !['127.0.0.1', '[::1]', 'localhost'].includes(auth.hostname)
+      || auth.username || auth.password || auth.hash || auth.pathname !== '/'
+      || keys.length !== 1 || keys[0] !== 'token' || token === null || !/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new Error()
+    // A launcher credential must cross boundaries in one canonical spelling,
+    // including log redactors that should never retain encoded query names.
+    auth.search = ''
+    auth.searchParams.set('token', token)
+    return { ...options, baseUrl: auth.href }
+  } catch { throw new Error('终端启动认证地址无效（必须同源、loopback、根路径及唯一 token）') }
+}
+
 export function parseOptions(argv: readonly string[], processCwd: string): TerminalOptions {
   let baseUrl = process.env.XIAOSHE_BASE_URL ?? `http://127.0.0.1:${process.env.XIAOSHE_DSH_PORT ?? '3080'}`
   let cwd: string | undefined = processCwd

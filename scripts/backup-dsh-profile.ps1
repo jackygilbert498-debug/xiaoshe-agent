@@ -28,8 +28,9 @@ New-Item -ItemType Directory -Path $ResolvedBackup -Force | Out-Null
 foreach ($Item in Get-ChildItem -LiteralPath $ResolvedSource -Force) {
   # pnpm 的 node_modules 包含指回 XS 工作区的 Junction。它是可由锁文件
   # 重建的安装产物，递归复制会越过 Profile 边界并可能形成循环。
-  if ($Item.Name -eq 'node_modules') { continue }
+  # app-boot 生成的 .dsh-module-fallback 同样只保存可重建的模块链接。
+  if ($Item.Name -in @('node_modules', '.dsh-module-fallback')) { continue }
   Copy-Item -LiteralPath $Item.FullName -Destination $ResolvedBackup -Recurse -Force
 }
 
-Write-Host "[完成] 已备份 DSH Profile 持久文件（不含可重建 node_modules）：$ResolvedBackup"
+Write-Host "[完成] 已备份 DSH Profile 持久文件（不含可重建 node_modules 和 .dsh-module-fallback）：$ResolvedBackup"

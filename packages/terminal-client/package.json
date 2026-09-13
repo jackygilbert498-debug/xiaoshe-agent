@@ -19,7 +19,10 @@
     "lib"
   ],
   "scripts": {
+    "test": "npm run build && node --test test/*.test.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
-  }
+  },
+  "dependencies": { "ws": "^8.18.3" },
+  "devDependencies": { "@types/ws": "^8.18.1" }
 }

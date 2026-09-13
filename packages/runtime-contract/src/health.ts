@@ -11,6 +11,7 @@ export interface ProductHeartbeatSnapshot {
   readonly schemaVersion: 2
   readonly status: ProductHeartbeatCheck['status']
   readonly running: boolean
+  readonly persistenceStatus: 'ready' | 'degraded'
   readonly checks: readonly ProductHeartbeatCheck[]
 }
 

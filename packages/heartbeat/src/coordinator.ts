@@ -39,6 +39,7 @@ interface ActiveRun {
   readonly leaseId: string
   readonly done: Promise<JobOutcome>
   readonly settled: Promise<void>
+  stopCheckpointing(): Promise<void>
 }
 
 const MAX_TIMER_DELAY_MS = 2_147_000_000
@@ -60,6 +61,8 @@ export function createHeartbeatCoordinator(
   const clearTimer = options.clearTimer ?? clearTimeout
   const definitions = new Map<string, HeartbeatCheckDefinition>()
   const active = new Map<string, ActiveRun>()
+  /** Launches not yet fully handed to `active` (or rolled back). */
+  const pendingLaunches = new Set<Promise<void>>()
   let registrationQueue: Promise<void> = Promise.resolve()
   let detachController: (() => void) | undefined
   let unsubscribe: (() => void) | undefined
@@ -68,6 +71,7 @@ export function createHeartbeatCoordinator(
   let started = false
   let starting: Promise<void> | undefined
   let disposed = false
+  let disposing: Promise<void> | undefined
 
   const coordinator: HeartbeatCoordinator = {
     register(definition) {
@@ -95,12 +99,14 @@ export function createHeartbeatCoordinator(
     async runNow(id) {
       await assertReady()
       await registrationQueue
+      if (disposed) throw new Error('heartbeat coordinator is disposed')
       const definition = definitions.get(id)
       if (definition === undefined) throw new Error(`unknown heartbeat check: ${id}`)
       const persisted = service.snapshot().checks.find(check => check.id === id)
       if (active.has(id) || persisted?.activeLease !== undefined) throw new Error(`heartbeat check is already running: ${id}`)
       if (persisted?.pauseReason !== undefined) throw new Error(`heartbeat check is paused: ${id}`)
-      return await launch(definition)
+      if (disposed) throw new Error('heartbeat coordinator is disposed')
+      return await trackLaunch(definition)
     },
     async pause(id, reason) {
       await assertReady()
@@ -134,25 +140,47 @@ export function createHeartbeatCoordinator(
       }
     },
     async dispose() {
-      if (disposed) return
+      if (disposing !== undefined) return await disposing
       disposed = true
       started = false
-      if (timer !== undefined) clearTimer(timer)
-      timer = undefined
-      unsubscribe?.()
-      unsubscribe = undefined
-      const owned = [...active.values()]
-      for (const run of owned) {
-        try { jobs.kill(run.jobId, undefined, 'heartbeat coordinator disposed') } catch { /* Settlement still owns the durable result. */ }
-      }
-      await Promise.allSettled(owned.map(run => run.settled))
-      detachController?.()
-      detachController = undefined
-      definitions.clear()
+      // Assign the shared quiescence promise before invoking any external
+      // cleanup hook; a re-entrant dispose must join this exact cleanup.
+      disposing = Promise.resolve().then(disposeCoordinator)
+      return await disposing
     },
   }
 
   return coordinator
+
+  async function disposeCoordinator(): Promise<void> {
+    if (timer !== undefined) clearTimer(timer)
+    timer = undefined
+    unsubscribe?.()
+    unsubscribe = undefined
+    // A launch owns an acquired lease until it either publishes an active
+    // run or rolls the lease back. Wait for that hand-off before taking the
+    // final active snapshot, so disposal cannot miss either side.
+    await Promise.allSettled([...pendingLaunches])
+    const owned = [...active.values()]
+    await Promise.allSettled(owned.map(run => run.stopCheckpointing()))
+    for (const run of owned) {
+      try { jobs.kill(run.jobId, undefined, 'heartbeat coordinator disposed') } catch { /* Settlement still owns the durable result. */ }
+    }
+    await Promise.allSettled(owned.map(run => run.settled))
+    detachController?.()
+    detachController = undefined
+    definitions.clear()
+  }
+
+  function trackLaunch(definition: HeartbeatCheckDefinition): Promise<{ readonly jobId: string }> {
+    const launched = launch(definition)
+    const tracked = launched.then(
+      () => { pendingLaunches.delete(tracked) },
+      () => { pendingLaunches.delete(tracked) },
+    )
+    pendingLaunches.add(tracked)
+    return launched
+  }
 
   async function startCoordinator(): Promise<void> {
     detachController = jobs.attachController('xiaoshe-heartbeat')
@@ -172,8 +200,18 @@ export function createHeartbeatCoordinator(
   }
 
   async function launch(definition: HeartbeatCheckDefinition): Promise<{ readonly jobId: string }> {
+    if (disposed) throw new Error('heartbeat coordinator is disposed')
     const leaseId = `heartbeat-${definition.id}-${now()}-${++leaseCounter}`
-    await service.acquire(definition.id, leaseId)
+    try {
+      await service.acquire(definition.id, leaseId)
+    } catch (error: unknown) {
+      if (disposed) throw new Error('heartbeat coordinator is disposed')
+      throw error
+    }
+    if (disposed) {
+      await failUnstartedLease(definition.id, leaseId, 'heartbeat coordinator disposed before job start')
+      throw new Error('heartbeat coordinator is disposed')
+    }
     let done: Promise<JobOutcome> | undefined
     let evidence: string | undefined
     let failureReason = 'heartbeat job failed'
@@ -211,19 +249,49 @@ export function createHeartbeatCoordinator(
         },
       })
     } catch (error: unknown) {
-      await service.fail(definition.id, leaseId, `job start failed: ${safeError(error)}`)
-      schedule()
+      await failUnstartedLease(definition.id, leaseId, `job start failed: ${safeError(error)}`)
+      if (disposed) throw new Error('heartbeat coordinator is disposed')
       throw error
     }
     if (done === undefined) {
-      await service.fail(definition.id, leaseId, 'job registry did not invoke the heartbeat starter')
-      schedule()
+      try { jobs.kill(jobId, undefined, 'heartbeat job starter was not invoked') } catch { /* Lease rollback remains mandatory. */ }
+      await failUnstartedLease(definition.id, leaseId, 'job registry did not invoke the heartbeat starter')
+      if (disposed) throw new Error('heartbeat coordinator is disposed')
       throw new Error('DSH JobRegistry did not invoke heartbeat run()')
     }
     const outcomePromise = done
+    const checkpointDelay = Math.max(50, Math.floor(definition.intervalMs / 2))
+    let checkpointTimer: ReturnType<typeof setTimeout> | undefined
+    let checkpointInFlight: Promise<void> | undefined
+    let checkpointStopped = false
+    const scheduleCheckpoint = (): void => {
+      if (checkpointStopped || disposed) return
+      checkpointTimer = setTimer(() => {
+        checkpointTimer = undefined
+        checkpointInFlight = service.checkpoint(definition.id, leaseId)
+          // Persistence health is already recorded by the service. Continue
+          // renewing so a transient write failure cannot strand a live job.
+          .catch(() => undefined)
+          .finally(() => {
+            checkpointInFlight = undefined
+            scheduleCheckpoint()
+          })
+      }, checkpointDelay)
+      checkpointTimer.unref?.()
+    }
+    const stopCheckpointing = async (): Promise<void> => {
+      if (!checkpointStopped) {
+        checkpointStopped = true
+        if (checkpointTimer !== undefined) clearTimer(checkpointTimer)
+        checkpointTimer = undefined
+      }
+      await checkpointInFlight?.catch(() => undefined)
+    }
+    scheduleCheckpoint()
     let settled!: Promise<void>
     settled = outcomePromise.then(async (outcome) => {
       try {
+        await stopCheckpointing()
         if (outcome.status === 'completed') await service.succeed(definition.id, leaseId, evidence)
         else await service.fail(definition.id, leaseId, outcome.status === 'killed' ? 'job cancelled' : failureReason)
       } finally {
@@ -231,9 +299,25 @@ export function createHeartbeatCoordinator(
         schedule()
       }
     })
-    active.set(definition.id, { jobId, leaseId, done: outcomePromise, settled })
+    // The active map is lifecycle tracking, not a promise consumer. Observe
+    // durable settlement immediately so a persistence failure cannot become
+    // an unhandled rejection after the entry deletes itself in `finally`.
+    void settled.catch(() => undefined)
+    active.set(definition.id, { jobId, leaseId, done: outcomePromise, settled, stopCheckpointing })
+    if (disposed) {
+      try { jobs.kill(jobId, undefined, 'heartbeat coordinator disposed') } catch { /* Awaiting settlement still prevents a leaked rejection. */ }
+      await settled.catch(() => undefined)
+      throw new Error('heartbeat coordinator is disposed')
+    }
     schedule()
     return { jobId }
+  }
+
+  async function failUnstartedLease(checkId: string, leaseId: string, reason: string): Promise<void> {
+    // Await the attempt but preserve the launch/disposal error as the caller's
+    // result. HeartbeatService records its own persistence degradation.
+    await Promise.allSettled([service.fail(checkId, leaseId, reason)])
+    schedule()
   }
 
   async function assertReady(): Promise<void> {

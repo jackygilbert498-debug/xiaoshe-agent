@@ -19,7 +19,11 @@ interface JobRegistryLike {
 
 interface HeartbeatHostContext {
   readonly settings: {
-    register(namespace: string, schema: unknown, options: { readonly base: Record<string, unknown>; readonly applies: 'live' }): HeartbeatStore
+    register(namespace: string, schema: unknown, options: {
+      readonly base: Record<string, unknown>
+      readonly applies: 'live'
+      readonly recoverInvalidStored?: boolean
+    }): HeartbeatStore
   }
   readonly webServer: HeartbeatWebServer
   readonly jobs: JobRegistryLike
@@ -38,6 +42,7 @@ export function apply(ctx: HeartbeatHostContext): void {
   const store = ctx.settings.register('xiaoshe-heartbeat', heartbeatSettingsSchema, {
     base: { schemaVersion: 2, checks: [] },
     applies: 'live',
+    recoverInvalidStored: true,
   })
   const service = createHeartbeatService(store)
   const coordinator = createHeartbeatCoordinator(service, ctx.jobs)

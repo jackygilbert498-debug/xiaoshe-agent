@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { HELP, parseOptions } from './options.js'
+import { HELP, parseOptions, authenticatedOptions } from './options.js'
 import { nodeStreams, TerminalApp } from './app.js'
 
 async function main(): Promise<void> {
@@ -9,7 +9,7 @@ async function main(): Promise<void> {
     process.stdout.write(HELP)
     return
   }
-  const app = new TerminalApp(options, nodeStreams())
+  const app = new TerminalApp(authenticatedOptions(options, process.env.XIAOSHE_AUTH_URL), nodeStreams())
   await app.run()
 }
 

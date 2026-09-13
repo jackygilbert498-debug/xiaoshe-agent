@@ -7,6 +7,9 @@ import type {
   RuntimeImageInputLimits,
   RuntimeSessionProjection,
   RuntimeSessionSnapshot,
+  RunCenter,
+  RunCenterQueueAction,
+  RunCenterSnapshot,
   SendTurnInput,
   SessionCommand,
   SessionCommandInput,
@@ -19,6 +22,7 @@ import type {
   ModelCatalogSnapshot,
   ModelSelection,
   TaskTimeline,
+  TaskTimelineImage,
   TaskTimelineItem,
   TaskTimelineSnapshot,
   UserQuestionAnswer,
@@ -31,8 +35,12 @@ import type {
   WorkspaceCatalogSnapshot,
   WorkSurfaceRegistry,
 } from '@xiaoshe/runtime-contract'
-import { deriveCompactionCheckpoints, deriveContextBudget } from '@xiaoshe/runtime-contract'
-import { DshWorkSurfaceRegistry } from './surfaces.js'
+import { deriveCompactionCheckpoints, deriveContextBudget, parseRunCenterSnapshot, parseTaskTimelineImage } from '@xiaoshe/runtime-contract'
+import { DshWorkSurfaceRegistry, registerWorkSurfaceView } from './surfaces.js'
+import type { SurfaceViewRegistrationPort } from './surface-view.js'
+import { DshRuntimeFiles } from './files.js'
+import type { FileUploadPort, WorkspaceFilesPort } from './files.js'
+export { DshRuntimeFiles } from './files.js'
 
 export { DshWorkSurfaceRegistry, isLoopbackHost, projectDshWorkSurfaces, safeSurfaceUrl } from './surfaces.js'
 
@@ -43,16 +51,36 @@ interface ObservableSnapshotPort<T = unknown> {
   subscribe?(listener: () => void): () => void
 }
 type DshPromptContentPart =
+  | { readonly type: 'file'; readonly receiptId: string }
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'image'; readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; readonly data: string; readonly name?: string }
 interface SessionFacePort {
+  readAttachment?(attachmentId: string): Promise<RpcResult<{ readonly attachment: unknown; readonly data: Uint8Array }>>
   prompt(content: readonly DshPromptContentPart[], mode: 'queue' | 'steer'): Promise<RpcResult<{ accepted: true }>>
   cancel(): Promise<RpcResult<{ accepted: true }>>
   rename(title: string): Promise<RpcResult<{ readonly title: string; readonly seq: number }>>
   command?(line: string): Promise<{ readonly ok: true; readonly value: { readonly matched: boolean } } | { readonly ok: false; readonly error: RpcErrorLike }>
   readonly projections?: { faceOf(key: string): ObservableSnapshotPort }
-  getSnapshot?(): { readonly nodes?: readonly unknown[]; readonly partial?: { readonly text?: string } | null; readonly pending?: readonly PendingWaitPort[] }
+  getSnapshot?(): {
+    readonly projectionReady?: boolean
+    readonly nodes?: readonly unknown[]
+    readonly partial?: { readonly text?: string } | null
+    readonly pending?: readonly PendingWaitPort[]
+    readonly queue?: readonly QueueItemPort[]
+  }
   subscribe?(listener: () => void): () => void
+  updateQueue?(itemId: string, action: QueueActionPort): Promise<RpcResult<{ accepted: true }>>
+}
+type QueueActionPort =
+  | { readonly kind: 'edit'; readonly content: readonly { readonly type: 'text'; readonly text: string }[] }
+  | { readonly kind: 'remove' }
+  | { readonly kind: 'steer' }
+interface QueueItemPort {
+  readonly id: string
+  readonly messageId: string
+  readonly placement: 'queued' | 'steering' | 'context'
+  readonly preview: string
+  readonly text: string | null
 }
 interface PendingWaitPort {
   readonly kind: string
@@ -87,17 +115,54 @@ interface SessionSummaryPort {
 }
 interface SessionsPort {
   readonly list: {
-    getSnapshot(): { readonly current?: string; readonly ids: readonly string[]; readonly byId: Readonly<Record<string, SessionSummaryPort>> }
+    getSnapshot(): {
+      readonly current?: string
+      readonly ids: readonly string[]
+      readonly byId: Readonly<Record<string, SessionSummaryPort>>
+      readonly jobsBySession?: Readonly<Record<string, readonly JobViewPort[]>>
+      readonly subagentsByParent?: Readonly<Record<string, SubagentCatalogPort>>
+    }
     subscribe(listener: () => void): () => void
   }
   binding(id: string): { readonly session: SessionFacePort } | undefined
-  fork(input: { readonly sessionId: string; readonly atSeq?: number; readonly increaseTitle: boolean }): Promise<string>
-  create(input: { readonly loose: true }): Promise<string>
+  fork(input: { readonly sessionId: string; readonly atSeq?: number; readonly increaseTitle: boolean; readonly workspaceId?: string }): Promise<string>
+  create(input?: { readonly loose?: true; readonly workspaceId?: string }): Promise<string>
   open(id: string): void
+  refreshSubagents?(parentSessionId: string): Promise<void>
+  selectSubagent?(address: SubagentAddressPort): void
   search(query: string, signal: AbortSignal): Promise<RpcResult<{
     readonly items: readonly { readonly sessionId: string; readonly snippet: string }[]
     readonly hasMore: boolean
   }>>
+}
+interface JobViewPort {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+  readonly detail?: string
+  readonly startedAt: number
+  readonly finishedAt?: number
+}
+type SubagentAddressPort = {
+  readonly parentSessionId: string
+  readonly childSessionId: string
+} & ({ readonly mode: 'one-shot' } | { readonly mode: 'continuable' })
+type SubagentEntryPort =
+  | {
+    readonly kind: 'child'
+    readonly id: string
+    readonly activity: 'running' | 'inactive'
+    readonly hasChildren: boolean
+    readonly mode: 'one-shot' | 'continuable'
+    readonly label?: string
+  }
+  | { readonly kind: 'diagnostic'; readonly id: string; readonly reason: 'corrupt' | 'unsupported' | 'unavailable' }
+interface SubagentCatalogPort {
+  readonly entries: readonly SubagentEntryPort[]
+  readonly parentAvailable: boolean
+  readonly state?: 'loading' | 'ready' | 'error'
+  readonly error?: RpcErrorLike | null
 }
 interface WorkspacesPort {
   readonly list: {
@@ -131,6 +196,10 @@ interface ModelSelectionPort {
   readonly model: string
   readonly reasoningEffort?: string
 }
+interface ModelSelectionPersistencePort {
+  readonly status: 'saved' | 'session-only'
+  readonly warning?: string
+}
 interface SessionModelsPort {
   readonly current: ModelSelectionPort
   readonly routable: boolean
@@ -149,26 +218,200 @@ interface SessionModelsPort {
   }[]
   readonly failures: readonly { readonly id: string; readonly name: string; readonly message: string }[]
 }
-interface ConnectionPort {
+export interface ConnectionPort {
   readonly api: {
     readonly sessions: {
       models(input: { readonly sessionId: string }): Promise<{ readonly result: RpcResult<SessionModelsPort> }>
-      selectModel(input: ModelSelectionPort & { readonly sessionId: string }): Promise<{ readonly result: RpcResult<{ readonly selected: ModelSelectionPort }> }>
+      selectModel(input: ModelSelectionPort & { readonly sessionId: string }): Promise<{ readonly result: RpcResult<{ readonly selected: ModelSelectionPort; readonly persistence?: ModelSelectionPersistencePort; readonly effective?: 'next-request' | 'immediate' }> }>
+    }
+    readonly skills?: {
+      list(input: { readonly sessionId: string }, signal?: AbortSignal): Promise<{ readonly result: RpcResult<{ readonly skills: readonly SkillEntryPort[] }> }>
+    }
+    readonly subagents?: {
+      interrupt(input: Extract<SubagentAddressPort, { readonly mode: 'continuable' }>): Promise<{ readonly result: RpcResult<{ readonly accepted: true }> }>
     }
   }
+}
+interface SkillEntryPort {
+  readonly name: string
+  readonly description: string
+  readonly whenToUse?: string
+  readonly modelInvocable: boolean
 }
 interface ClientContextLike {
   inject(names: readonly string[], mount: (scope: ClientScopeLike) => void): unknown
 }
 interface ClientScopeLike {
+  readonly fileUpload?: FileUploadPort
   readonly connection: ConnectionPort
   readonly sessions: SessionsPort
   readonly workspaces: WorkspacesPort
+  readonly remote: NewRemotePort
+  readonly uiWorkspace: Pick<WorkspacesPort, 'connectWorkspace' | 'pickDirectory'>
+  readonly uiConversation: ConversationAssemblyPort
+  readonly uiSession: { pendingInteractions: PendingInteractionsPort }
   provide(name: string, value: unknown): unknown
   effect(execute: () => () => void, label?: string): unknown
 }
 
-export const inject = ['sessions', 'workspaces', 'connection']
+interface NewRemotePort {
+  readonly workspaceFiles?: WorkspaceFilesPort
+  readonly session: {
+    modelCatalog(): Promise<RpcResult<{ default: ModelSelectionPort; routableProviders: readonly string[]; groups: SessionModelsPort['groups']; failures: SessionModelsPort['failures'] }>>
+    selectModel(input: ModelSelectionPort & { sessionId: string }): Promise<RpcResult<{ selected: ModelSelectionPort; persistence?: ModelSelectionPersistencePort }>>
+  }
+  readonly skills?: { list(input: { sessionId: string }, signal?: AbortSignal): Promise<RpcResult<{ skills: readonly SkillEntryPort[] }>> }
+  readonly subagents?: { interruptByParent(child: string, parent: string, mode: 'continuable'): Promise<RpcResult<{ accepted: true }>> }
+}
+
+/** Translate generated Remote results, retaining the Host persistence receipt verbatim. */
+export function createRemoteConnection(remote: NewRemotePort, sessions: Pick<SessionsPort, 'binding'>): ConnectionPort {
+  return { api: {
+    sessions: {
+      async models({ sessionId }) {
+        const result = await remote.session.modelCatalog()
+        if (!result.ok) return { result }
+        const projection = sessions.binding(sessionId)?.session.projections?.faceOf('modelSelection').getSnapshot()
+        if (!isRecord(projection)) throw new Error(`modelSelection projection unavailable for session ${sessionId}`)
+        const current = (projection.next ?? result.value.default) as ModelSelectionPort
+        return { result: { ok: true, value: { current, routable: result.value.routableProviders.includes(current.provider), groups: result.value.groups, failures: result.value.failures } } }
+      },
+      async selectModel(input) { return { result: await remote.session.selectModel(input) } },
+    },
+    skills: { async list(input, signal) {
+      if (remote.skills === undefined) throw new Error('Remote skills service unavailable')
+      return { result: await remote.skills.list(input, signal) }
+    } },
+    subagents: { async interrupt(input) {
+      if (remote.subagents === undefined) throw new Error('Remote subagents service unavailable')
+      return { result: await remote.subagents.interruptByParent(input.childSessionId, input.parentSessionId, input.mode) }
+    } },
+  } }
+}
+
+/** Workspace navigation moved to uiWorkspace; the Controller remains the data owner. */
+export function createWorkspaceCompatibility(
+  source: Omit<WorkspacesPort, 'connectWorkspace' | 'moveSessionToWorkspace' | 'pickDirectory' | 'list'> & {
+    list: { getSnapshot(): Omit<ReturnType<WorkspacesPort['list']['getSnapshot']>, 'baselinesReady'> & { phase: string }; subscribe(listener: () => void): () => void }
+  },
+  navigation: Pick<WorkspacesPort, 'connectWorkspace' | 'pickDirectory'>,
+  sessions?: Pick<SessionsPort, 'list' | 'create' | 'fork' | 'open'>,
+): WorkspacesPort {
+  return {
+    list: { getSnapshot: () => { const value = source.list.getSnapshot(); return { ...value, baselinesReady: value.phase === 'ready' } }, subscribe: listener => source.list.subscribe(listener) },
+    connectWorkspace: id => navigation.connectWorkspace(id),
+    pickDirectory: () => navigation.pickDirectory(),
+    create: input => source.create(input), rename: (id, title) => source.rename(id, title),
+    delete: id => source.delete(id), archiveSession: id => source.archiveSession(id),
+    async moveSessionToWorkspace(sessionId, workspaceId) {
+      if (sessions === undefined) throw new Error('Session migration service unavailable')
+      if (!source.list.getSnapshot().items.some(item => item.workspaceId === workspaceId)) throw new Error(`unknown workspace "${workspaceId}"`)
+      const original = sessions.list.getSnapshot().byId[sessionId]
+      if (original === undefined) throw new Error(`unknown session "${sessionId}"`)
+      // A move creates a new scoped identity; never rewrite the original cwd.
+      // If creation/fork fails, the original remains visible and untouched.
+      const targetId = original.blank
+        ? await sessions.create({ workspaceId })
+        : await sessions.fork({ sessionId, workspaceId, increaseTitle: false })
+      await source.archiveSession(sessionId)
+      sessions.open(targetId)
+      return targetId
+    },
+  }
+}
+
+export const inject = ['sessions', 'workspaces', 'remote', 'remote.session', 'remote.skills', 'remote.subagents', 'uiWorkspace', 'uiConversation', 'uiSession', 'fileUpload']
+
+interface PendingInteractionPort {
+  readonly key: string; readonly sessionId: string; readonly kind: string
+  readonly toolName?: string; readonly callId?: string; readonly reason?: string; readonly questions?: unknown
+  answer(value: unknown): Promise<void>
+  cancel?(): Promise<void>
+}
+interface PendingInteractionsPort { getSnapshot(): ReadonlyMap<string, PendingInteractionPort>; subscribe(listener: () => void): () => void }
+interface ConversationAssemblyPort {
+  readonly events: SurfaceViewRegistrationPort['conversationEvents']
+  readonly views: SurfaceViewRegistrationPort['conversationViews']
+  binding(id: string): {
+    activate(target: string): void
+    snapshot: { getSnapshot(): { views: { get(target: string): unknown } }; subscribe(listener: () => void): () => void }
+  }
+}
+
+/** A view over DSH-owned bindings and pending carriers, with no second Session store. */
+export function createSessionCompatibility(
+  source: SessionsPort,
+  conversation: ConversationAssemblyPort,
+  interactions: PendingInteractionsPort,
+): SessionsPort {
+  const subscribeBoth = (listener: () => void): (() => void) => {
+    const releases = [source.list.subscribe(listener), interactions.subscribe(listener)]
+    return () => { for (const release of releases) release() }
+  }
+  return {
+    list: { getSnapshot: () => {
+      const list = source.list.getSnapshot()
+      const pending = interactions.getSnapshot()
+      return { ...list, byId: Object.fromEntries(Object.entries(list.byId).map(([id, value]) => [id, { ...value, ...(pending.has(id) ? { pendingInteraction: pending.get(id) } : {}) }])) }
+    }, subscribe: subscribeBoth },
+    binding(id) {
+      const binding = source.binding(id)
+      if (binding === undefined) return undefined
+      const original = binding.session
+      const assembled = conversation.binding(id)
+      assembled.activate('chat')
+      assembled.activate('xiaoshe.work-materials')
+      const pending = (): PendingWaitPort[] => {
+        const item = interactions.getSnapshot().get(id)
+        if (item === undefined) return []
+        return [{ key: item.key, sessionId: id, kind: item.kind === 'plan-review' ? 'question' : item.kind,
+          payload: item.kind === 'approval' ? { approvalId: item.key, toolName: item.toolName, callId: item.callId, reason: item.reason } : { questions: item.questions },
+          async respond(result) {
+            if (interactions.getSnapshot().get(id) !== item) throw new Error('Pending interaction is no longer active')
+            if (!isRecord(result)) throw new Error('Invalid interaction response')
+            if (result.ok === false) {
+              if (item.cancel === undefined) throw new Error('Interaction cancellation unavailable')
+              await item.cancel()
+            } else {
+              if (!isRecord(result.value)) throw new Error('Invalid interaction answer')
+              await item.answer(item.kind === 'approval' ? result.value.outcome : result.value.answer)
+            }
+            return { accepted: true }
+          },
+        }]
+      }
+      const face = new Proxy(original, {
+        get(target, key) {
+          if (key === 'getSnapshot') return () => {
+            const views = assembled.snapshot.getSnapshot().views
+            const chat = views.get('chat')
+            // UI packages mount concurrently. The canonical target can arrive later;
+            // keep subscribing to its owner and expose loading, never a fake history.
+            const legacy = isRecord(chat) && isRecord(chat.legacy) ? chat.legacy : undefined
+            return { ...target.getSnapshot?.(), ...(legacy ?? { nodes: [], partial: null }), projectionReady: legacy !== undefined, views, pending: pending() }
+          }
+          if (key === 'subscribe') return (listener: () => void) => {
+            if (target.subscribe === undefined) throw new Error(`Session subscription unavailable for ${id}`)
+            const releases = [target.subscribe(listener), assembled.snapshot.subscribe(listener), interactions.subscribe(listener)]
+            return () => { for (const release of releases) release() }
+          }
+          const value: unknown = Reflect.get(target, key, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      return { ...binding, session: face }
+    },
+    // The new Controller's default creation replaces the removed loose flag.
+    create: input => source.create(input?.workspaceId === undefined ? undefined : { workspaceId: input.workspaceId }),
+    fork: input => source.fork(input), open: id => source.open(id), search: (query, signal) => source.search(query, signal),
+    refreshSubagents: async id => { if (source.refreshSubagents === undefined) throw new Error('Subagent catalog unavailable'); await source.refreshSubagents(id) },
+    selectSubagent: address => {
+      const controller = source as unknown as { openSubagent?: (address: SubagentAddressPort) => void }
+      if (controller.openSubagent === undefined) throw new Error('Subagent navigation unavailable')
+      controller.openSubagent(address)
+    },
+  }
+}
 
 /** Map only the public DSH Client service faces into the Xiaoshe product contract. */
 export class DshAgentRuntimeSession implements AgentRuntimeSession {
@@ -177,7 +420,7 @@ export class DshAgentRuntimeSession implements AgentRuntimeSession {
   private snapshot: RuntimeSessionSnapshot
   private disposed = false
 
-  constructor(private readonly sessions: SessionsPort, private readonly workspaces: WorkspacesPort) {
+  constructor(private readonly sessions: SessionsPort, private readonly workspaces: WorkspacesPort, private readonly files?: DshRuntimeFiles) {
     this.snapshot = this.projectSnapshot()
     this.unsubscribeList = sessions.list.subscribe(() => {
       this.snapshot = this.projectSnapshot()
@@ -234,7 +477,11 @@ export class DshAgentRuntimeSession implements AgentRuntimeSession {
 
   async sendTurn(input: SendTurnInput): Promise<RuntimeCommandResult<{ accepted: true }>> {
     const images = input.images ?? []
-    if (input.content.trim() === '' && images.length === 0) return invalid('content or images must not be blank')
+    const files = input.files ?? []
+    if (input.content.trim() === '' && images.length === 0 && files.length === 0) return invalid('content, images or files must not be blank')
+    const validatedFiles = files.length > 0 ? this.files?.validateReceipts(input.sessionId, files) : undefined
+    if (files.length > 0 && validatedFiles === undefined) return unsupported('File uploads are unavailable')
+    if (validatedFiles?.ok === false) return validatedFiles
     const session = this.sessions.binding(input.sessionId)?.session
     if (session === undefined) return missing(input.sessionId)
     try {
@@ -243,7 +490,10 @@ export class DshAgentRuntimeSession implements AgentRuntimeSession {
         ...(image.name === undefined ? {} : { name: image.name }),
       }))
       if (input.content.trim() !== '') content.push({ type: 'text', text: input.content })
-      return fold(await session.prompt(content, input.mode))
+      if (validatedFiles?.ok) content.push(...validatedFiles.value)
+      const result = fold(await session.prompt(content, input.mode))
+      if (result.ok) this.files?.consumeReceipts(files)
+      return result
     } catch (error: unknown) {
       return ambiguous('sendTurn', error)
     }
@@ -451,10 +701,13 @@ export class DshContextGovernance implements ContextGovernance {
 }
 
 const TIMELINE_INITIAL_WINDOW = 160
-const TIMELINE_PAGE_SIZE = 160
+// Backscroll prefetches a larger page; initial opening remains cheap. These
+// are event records (including collapsed tools), not individual chat turns.
+const TIMELINE_PAGE_SIZE = 320
 
 /** Minimal product timeline projected from DSH's public Session snapshot. */
 export class DshTaskTimeline implements TaskTimeline {
+  private full: TaskTimelineSnapshot = { items: [], total: 0, hasEarlier: false }
   private readonly listeners = new Set<() => void>()
   private unsubscribeSession: (() => void) | undefined
   private readonly unsubscribeList: () => void
@@ -462,12 +715,25 @@ export class DshTaskTimeline implements TaskTimeline {
   private readonly visibleLimits = new Map<string, number>()
   private readonly lastTotals = new Map<string, number>()
   private disposed = false
+  private imageGeneration = 0
+  private boundSessionId: string | undefined
 
   constructor(private readonly sessions: SessionsPort) {
     this.rebind()
     this.unsubscribeList = sessions.list.subscribe(() => { this.rebind(); this.publish() })
   }
   getSnapshot(): TaskTimelineSnapshot { return this.snapshot }
+  getOutline(): readonly { readonly key: string; readonly seq: number; readonly text: string }[] {
+    return Object.freeze(this.full.items.filter(item => item.kind === 'user').map(({ key, seq, text }) => Object.freeze({ key, seq, text })))
+  }
+  reveal(seq: number): void {
+    const sessionId = this.sessions.list.getSnapshot().current
+    if (this.disposed || !Number.isSafeInteger(seq) || seq < 0 || sessionId === undefined || this.full.sessionId !== sessionId) return
+    const index = this.full.items.findIndex(item => item.seq === seq)
+    if (index < 0) return
+    this.visibleLimits.set(sessionId, Math.max(this.snapshot.items.length, this.full.total - index))
+    this.publish()
+  }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   loadEarlier(): void {
     const sessionId = this.sessions.list.getSnapshot().current
@@ -475,10 +741,33 @@ export class DshTaskTimeline implements TaskTimeline {
     this.visibleLimits.set(sessionId, Math.min(this.snapshot.total, this.snapshot.items.length + TIMELINE_PAGE_SIZE))
     this.publish()
   }
-  dispose(): void { if (this.disposed) return; this.disposed = true; this.unsubscribeSession?.(); this.unsubscribeList(); this.listeners.clear() }
+  async readImage(input: { readonly sessionId: string; readonly attachmentId: string }): Promise<{ readonly attachment: TaskTimelineImage; readonly data: Uint8Array }> {
+    const current = this.sessions.list.getSnapshot().current
+    const expected = this.snapshot.items.flatMap(item => item.images ?? []).find(image => image.attachmentId === input.attachmentId)
+    const face = current === undefined ? undefined : this.sessions.binding(current)?.session
+    if (this.disposed || current !== input.sessionId || this.snapshot.sessionId !== current || expected === undefined || face?.readAttachment === undefined) throw new Error('历史图片不可用或不属于当前会话')
+    const generation = this.imageGeneration
+    // The actual DSH endpoint checks this fixed session's log reference before
+    // reading the attachment store. No generic URL/path reader is exposed.
+    const result = await face.readAttachment(input.attachmentId)
+    if (!result.ok) throw new Error('历史图片读取失败，请重试')
+    const attachment = parseTaskTimelineImage(result.value.attachment)
+    // DSH authorizes the first matching content hash in the session log. The
+    // same bytes may have been uploaded later with a different display name.
+    if (attachment === undefined || attachment.attachmentId !== expected.attachmentId || attachment.mediaType !== expected.mediaType
+      || attachment.bytes !== expected.bytes || attachment.width !== expected.width || attachment.height !== expected.height
+      || !(result.value.data instanceof Uint8Array) || result.value.data.byteLength !== attachment.bytes) throw new Error('历史图片完整性校验失败')
+    const data = Uint8Array.from(result.value.data)
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('')
+    if (`sha256:${hash}` !== attachment.attachmentId) throw new Error('历史图片完整性校验失败')
+    if (this.disposed || generation !== this.imageGeneration || this.sessions.list.getSnapshot().current !== input.sessionId) throw new Error('会话已切换，图片读取已取消')
+    return { attachment: expected, data }
+  }
+  dispose(): void { if (this.disposed) return; this.disposed = true; this.imageGeneration++; this.unsubscribeSession?.(); this.unsubscribeList(); this.listeners.clear() }
   private rebind(): void {
     this.unsubscribeSession?.(); this.unsubscribeSession = undefined
     const current = this.sessions.list.getSnapshot().current
+    if (current !== this.boundSessionId) { this.boundSessionId = current; this.imageGeneration++ }
     const face = current === undefined ? undefined : this.sessions.binding(current)?.session
     if (face?.subscribe !== undefined) this.unsubscribeSession = face.subscribe(() => this.publish())
     const projected = current === undefined ? undefined : this.sessions.list.getSnapshot().byId[current]?.projectionValues?.taskTimeline
@@ -491,7 +780,10 @@ export class DshTaskTimeline implements TaskTimeline {
     for (const listener of this.listeners) listener()
   }
   private window(sessionId: string | undefined, full: TaskTimelineSnapshot): TaskTimelineSnapshot {
+    this.full = full
     if (sessionId === undefined) return { items: [], total: 0, hasEarlier: false }
+    // An unavailable projection is not a zero-length history checkpoint.
+    if (full.loading === true) return full
     const previousTotal = this.lastTotals.get(sessionId)
     let limit = this.visibleLimits.get(sessionId) ?? TIMELINE_INITIAL_WINDOW
     // If new messages arrive while older history is open, grow the window by
@@ -760,6 +1052,8 @@ export class DshPermissionPresets {
   private readonly unsubscribeList: () => void
   private snapshot: PermissionPresetSnapshot = { status: 'unavailable', options: [] }
   private disposed = false
+  private generation = 0
+  private boundSessionId: string | undefined
 
   constructor(private readonly sessions: SessionsPort) {
     this.rebind()
@@ -774,6 +1068,7 @@ export class DshPermissionPresets {
   }
 
   async select(value: string): Promise<RuntimeCommandResult<{ selected: string }>> {
+    if (this.disposed) return conflict('permission provider is disposed')
     const sessionId = this.sessions.list.getSnapshot().current
     if (sessionId === undefined) return invalid('permission selection requires a current session')
     const face = this.sessions.binding(sessionId)?.session
@@ -783,9 +1078,11 @@ export class DshPermissionPresets {
     }
     if (!this.snapshot.options.some(option => option.value === value)) return invalid(`unknown permission preset: ${value}`)
 
+    const generation = ++this.generation
     this.publish({ ...this.snapshot, status: 'switching' })
     try {
       const result = await face.command(`/permission ${value}`)
+      if (this.disposed || generation !== this.generation) return conflict('permission selection was superseded')
       if (!result.ok) {
         const failure = rpcFailure(result.error)
         this.publish({ ...this.snapshot, status: 'error', error: result.error.message })
@@ -801,6 +1098,7 @@ export class DshPermissionPresets {
       this.publish({ ...this.snapshot, status: 'ready', currentValue: value })
       return { ok: true, value: { selected: value } }
     } catch (error: unknown) {
+      if (this.disposed || generation !== this.generation) return conflict('permission selection was superseded')
       const message = errorMessage(error)
       this.publish({ ...this.snapshot, status: 'error', error: message })
       return providerFailure('selectPermissionPreset', error)
@@ -821,6 +1119,8 @@ export class DshPermissionPresets {
   }
 
   private rebind(): void {
+    const nextId = this.sessions.list.getSnapshot().current
+    if (nextId !== this.boundSessionId) { this.boundSessionId = nextId; this.generation++ }
     this.unsubscribeProjection?.()
     this.unsubscribeProjection = undefined
     const projection = this.projection(this.sessions.list.getSnapshot().current)
@@ -852,6 +1152,9 @@ export class DshPermissionPresets {
 export class DshModelCatalog implements ModelCatalog {
   private readonly listeners = new Set<() => void>()
   private readonly unsubscribeList: () => void
+  private unsubscribeProjection: (() => void) | undefined
+  private projection: ObservableSnapshotPort | undefined
+  private projectionChangedDuringSelection = false
   private snapshot: ModelCatalogSnapshot = { status: 'idle', groups: [], failures: [] }
   private generation = 0
   private disposed = false
@@ -869,6 +1172,7 @@ export class DshModelCatalog implements ModelCatalog {
   }
 
   async refresh(sessionId = this.sessions.list.getSnapshot().current): Promise<RuntimeCommandResult<ModelCatalogSnapshot>> {
+    if (this.disposed) return conflict('model catalog is disposed')
     if (sessionId === undefined) return invalid('model refresh requires a current session')
     if (this.sessions.binding(sessionId) === undefined) return missing(sessionId)
     const generation = ++this.generation
@@ -877,6 +1181,10 @@ export class DshModelCatalog implements ModelCatalog {
       sessionId,
       status: 'loading',
     })
+    // A cold Controller binding precedes its first projection frame. Do not turn
+    // this normal loading state into a permanent error or display another default.
+    const projection = this.sessions.binding(sessionId)?.session?.projections?.faceOf('modelSelection')
+    if (projection !== undefined && !isRecord(projection.getSnapshot())) return conflict('model projection is still loading')
     try {
       const response = await this.connection.api.sessions.models({ sessionId })
       if (this.disposed || generation !== this.generation) return conflict('model refresh was superseded')
@@ -895,7 +1203,7 @@ export class DshModelCatalog implements ModelCatalog {
     }
   }
 
-  async select(input: ModelSelection & { readonly sessionId?: string }): Promise<RuntimeCommandResult<{ selected: ModelSelection }>> {
+  async select(input: ModelSelection & { readonly sessionId?: string }): Promise<RuntimeCommandResult<{ selected: ModelSelection; persistence?: ModelSelectionPersistencePort; effective?: 'next-request' | 'immediate' }>> {
     const sessionId = input.sessionId ?? this.sessions.list.getSnapshot().current
     if (sessionId === undefined) return invalid('model selection requires a current session')
     if (this.sessions.binding(sessionId) === undefined) return missing(sessionId)
@@ -920,12 +1228,22 @@ export class DshModelCatalog implements ModelCatalog {
       }
       const selected = projectSelection(response.result.value.selected)
       this.publish({ ...clearModelError(this.snapshot), sessionId, current: selected, routable: true, status: 'ready' })
-      return { ok: true, value: { selected } }
+      const persistence = response.result.value.persistence
+      const effective = response.result.value.effective
+      return { ok: true, value: { selected, ...(persistence === undefined ? {} : { persistence: { ...persistence } }),
+        ...(effective === 'next-request' || effective === 'immediate' ? { effective } : {}) } }
     } catch (error: unknown) {
       if (!this.disposed && generation === this.generation) {
         this.publish({ ...this.snapshot, status: 'error', error: errorMessage(error) })
       }
       return providerFailure('selectModel', error)
+    } finally {
+      // A failed/lost receipt can coexist with a committed authoritative push.
+      // Reconcile state on every settlement without changing the command result.
+      if (!this.disposed && generation === this.generation && this.projectionChangedDuringSelection) {
+        this.projectionChangedDuringSelection = false
+        void this.refresh(sessionId)
+      }
     }
   }
 
@@ -934,13 +1252,28 @@ export class DshModelCatalog implements ModelCatalog {
     this.disposed = true
     ++this.generation
     this.unsubscribeList()
+    this.unsubscribeProjection?.()
     this.listeners.clear()
   }
 
   private reconcileSession(): void {
+    if (this.disposed) return
     const sessionId = this.sessions.list.getSnapshot().current
-    if (sessionId === this.snapshot.sessionId) return
+    const projection = sessionId === undefined ? undefined : this.sessions.binding(sessionId)?.session?.projections?.faceOf('modelSelection')
+    const changed = sessionId !== this.snapshot.sessionId
+    const rebound = projection !== this.projection
+    if (changed || rebound) {
+      this.unsubscribeProjection?.()
+      this.projection = projection
+      this.unsubscribeProjection = projection?.subscribe?.(() => {
+        if (this.disposed || this.snapshot.sessionId !== sessionId) return
+        if (this.snapshot.status === 'selecting') { this.projectionChangedDuringSelection = true; return }
+        void this.refresh(sessionId)
+      })
+    }
+    if (!changed && !rebound) return
     ++this.generation
+    this.projectionChangedDuringSelection = false
     this.publish({ ...(sessionId === undefined ? {} : { sessionId }), status: 'idle', groups: [], failures: [] })
     if (sessionId !== undefined) void this.refresh(sessionId)
   }
@@ -1044,9 +1377,283 @@ export class DshWorkspaceCatalog implements WorkspaceCatalog {
   }
 }
 
+/**
+ * Product projection over the public DSH run surfaces. The provider never
+ * owns job, queue, goal, skill, or subagent state; it only narrows those
+ * authoritative faces into the stable Xiaoshe contract.
+ */
+export class DshRunCenter implements RunCenter {
+  private readonly listeners = new Set<() => void>()
+  private readonly unsubscribeList: () => void
+  private readonly unsubscribeSurfaces: () => void
+  private unsubscribeSession: (() => void) | undefined
+  private boundSessionId: string | undefined
+  private skills: readonly SkillEntryPort[] = Object.freeze([])
+  private lifecycle: RunCenterSnapshot['status'] = 'idle'
+  private failure: string | undefined
+  private snapshot: RunCenterSnapshot
+  private generation = 0
+  private disposed = false
+
+  constructor(
+    private readonly sessions: SessionsPort,
+    private readonly connection: ConnectionPort,
+    private readonly surfaces: Pick<WorkSurfaceRegistry, 'getSnapshot' | 'subscribe'>,
+  ) {
+    this.boundSessionId = sessions.list.getSnapshot().current
+    this.snapshot = this.projectSnapshot()
+    this.unsubscribeList = sessions.list.subscribe(() => {
+      const nextSessionId = sessions.list.getSnapshot().current
+      if (nextSessionId !== this.boundSessionId) {
+        this.generation += 1
+        this.skills = Object.freeze([])
+        this.failure = undefined
+        this.lifecycle = nextSessionId === undefined ? 'idle' : 'ready'
+        this.bindSession(nextSessionId)
+      }
+      this.publishProjection()
+    })
+    this.unsubscribeSurfaces = surfaces.subscribe(() => { this.publishProjection() })
+    this.bindSession(this.boundSessionId)
+  }
+
+  getSnapshot(): RunCenterSnapshot { return this.snapshot }
+
+  subscribe(listener: () => void): () => void {
+    if (this.disposed) return () => {}
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  async refresh(): Promise<RuntimeCommandResult<RunCenterSnapshot>> {
+    if (this.disposed) return conflict('run center is disposed')
+    const sessionId = this.sessions.list.getSnapshot().current
+    if (sessionId === undefined) {
+      this.skills = Object.freeze([])
+      this.lifecycle = 'idle'
+      this.failure = undefined
+      this.publishProjection()
+      return { ok: true, value: this.snapshot }
+    }
+    const generation = ++this.generation
+    this.lifecycle = 'loading'
+    this.failure = undefined
+    this.publishProjection()
+    const controller = new AbortController()
+    try {
+      await this.sessions.refreshSubagents?.(sessionId)
+      const response = this.connection.api.skills === undefined
+        ? { result: { ok: true as const, value: { skills: Object.freeze([]) } } }
+        : await this.connection.api.skills.list({ sessionId }, controller.signal)
+      if (!response.result.ok) return this.failRefresh(generation, sessionId, response.result.error)
+      if (this.disposed || generation !== this.generation || this.sessions.list.getSnapshot().current !== sessionId) {
+        return conflict('run center refresh became stale')
+      }
+      this.skills = Object.freeze(response.result.value.skills.map(skill => Object.freeze({ ...skill })))
+      this.lifecycle = 'ready'
+      this.failure = undefined
+      this.publishProjection()
+      return { ok: true, value: this.snapshot }
+    } catch (error: unknown) {
+      return this.failRefresh(generation, sessionId, { code: 'run-center-refresh', message: errorMessage(error) })
+    } finally {
+      controller.abort()
+    }
+  }
+
+  async setGoalPhase(input: { readonly sessionId: string; readonly action: 'pause' | 'resume' }): Promise<RuntimeCommandResult<{ accepted: true }>> {
+    if (input.sessionId.trim() === '' || !['pause', 'resume'].includes(input.action)) return invalid('invalid Goal command')
+    if (this.disposed || this.sessions.list.getSnapshot().current !== input.sessionId || this.snapshot.sessionId !== input.sessionId) return conflict('Goal session is no longer selected')
+    this.publishProjection()
+    const goal = this.snapshot.goal
+    if (goal === undefined || goal.phase === 'complete') return conflict('no controllable Goal is present')
+    const session = this.sessions.binding(input.sessionId)?.session
+    if (session?.command === undefined) return unsupported('Goal command is unavailable')
+    const generation = this.generation
+    try {
+      const result = await session.command(`/goal ${input.action}`)
+      if (this.disposed || generation !== this.generation || this.sessions.list.getSnapshot().current !== input.sessionId) return conflict('Goal response became stale')
+      if (!result.ok) return rpcFailure(result.error)
+      if (!result.value.matched) return unsupported('Goal command was not matched')
+      // SessionFace.command reports admission only, including domain errors.
+      // Read the authoritative phase before presenting an applied control.
+      this.publishProjection()
+      if (this.snapshot.goal?.id !== goal.id || this.snapshot.goal.phase !== (input.action === 'pause' ? 'paused' : 'active')) return ambiguous('setGoalPhase', new Error('Goal command received; phase change is not yet confirmed'))
+      return { ok: true, value: { accepted: true } }
+    } catch (error: unknown) { return ambiguous('setGoalPhase', error) }
+  }
+
+  async updateQueue(input: {
+    readonly sessionId: string
+    readonly itemId: string
+    readonly action: RunCenterQueueAction
+  }): Promise<RuntimeCommandResult<{ accepted: true }>> {
+    if (input.sessionId.trim() === '' || input.itemId.trim() === '') return invalid('sessionId and itemId must not be blank')
+    const item = this.snapshot.sessionId === input.sessionId
+      ? this.snapshot.queue.find(candidate => candidate.id === input.itemId)
+      : undefined
+    if (item === undefined) return conflict('queue item is no longer present')
+    if (item.placement !== 'queued') return conflict('only queued messages can be changed')
+    const session = this.sessions.binding(input.sessionId)?.session
+    if (session?.updateQueue === undefined) return unsupported('queue mutation is unavailable')
+    let action: QueueActionPort
+    if (input.action.kind === 'edit') {
+      const text = input.action.text.trim()
+      if (text === '' || Array.from(text).length > 32_000) return invalid('queue edit text is invalid')
+      action = { kind: 'edit', content: [{ type: 'text', text }] }
+    } else {
+      action = input.action
+    }
+    try {
+      return fold(await session.updateQueue(input.itemId, action))
+    } catch (error: unknown) {
+      return ambiguous('updateQueue', error)
+    }
+  }
+
+  openSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): RuntimeCommandResult<{ opened: true }> {
+    const child = this.snapshot.sessionId === input.parentSessionId
+      ? this.snapshot.subagents.find(candidate => candidate.kind === 'child' && candidate.id === input.childSessionId)
+      : undefined
+    if (child === undefined || child.kind !== 'child') return conflict('subagent is no longer available')
+    if (this.sessions.selectSubagent === undefined) return unsupported('subagent navigation is unavailable')
+    this.sessions.selectSubagent({ parentSessionId: input.parentSessionId, childSessionId: input.childSessionId, mode: child.mode })
+    return { ok: true, value: { opened: true } }
+  }
+
+  async interruptSubagent(input: { readonly parentSessionId: string; readonly childSessionId: string }): Promise<RuntimeCommandResult<{ accepted: true }>> {
+    const child = this.snapshot.sessionId === input.parentSessionId
+      ? this.snapshot.subagents.find(candidate => candidate.kind === 'child' && candidate.id === input.childSessionId)
+      : undefined
+    if (child === undefined || child.kind !== 'child' || child.mode !== 'continuable' || !child.canInterrupt) {
+      return conflict('subagent cannot be interrupted in its current state')
+    }
+    if (this.connection.api.subagents === undefined) return unsupported('subagent interruption is unavailable')
+    try {
+      const { result } = await this.connection.api.subagents.interrupt({
+        parentSessionId: input.parentSessionId,
+        childSessionId: input.childSessionId,
+        mode: 'continuable',
+      })
+      return fold(result)
+    } catch (error: unknown) {
+      return ambiguous('interruptSubagent', error)
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.generation += 1
+    this.unsubscribeList()
+    this.unsubscribeSurfaces()
+    this.unsubscribeSession?.()
+    this.unsubscribeSession = undefined
+    this.listeners.clear()
+  }
+
+  private bindSession(sessionId: string | undefined): void {
+    this.unsubscribeSession?.()
+    this.unsubscribeSession = undefined
+    this.boundSessionId = sessionId
+    if (sessionId === undefined) return
+    const session = this.sessions.binding(sessionId)?.session
+    if (session?.subscribe !== undefined) this.unsubscribeSession = session.subscribe(() => { this.publishProjection() })
+  }
+
+  private failRefresh(generation: number, sessionId: string, error: RpcErrorLike): RuntimeCommandResult<never> {
+    if (!this.disposed && generation === this.generation && this.sessions.list.getSnapshot().current === sessionId) {
+      this.lifecycle = 'error'
+      this.failure = error.message.slice(0, 1_000)
+      this.publishProjection()
+    }
+    return rpcFailure(error)
+  }
+
+  private publishProjection(): void {
+    if (this.disposed) return
+    this.snapshot = this.projectSnapshot()
+    for (const listener of this.listeners) listener()
+  }
+
+  private projectSnapshot(): RunCenterSnapshot {
+    const list = this.sessions.list.getSnapshot()
+    const sessionId = list.current
+    if (sessionId === undefined) {
+      return parseRunCenterSnapshot({
+        status: 'idle', jobs: [], subagents: [], queue: [], todos: [], skills: [], deliverables: [],
+      })
+    }
+    const summary = list.byId[sessionId]
+    const projections = summary?.projectionValues ?? {}
+    const sessionSnapshot = this.sessions.binding(sessionId)?.session.getSnapshot?.()
+    const catalog = list.subagentsByParent?.[sessionId]
+    const surfaceSnapshot = this.surfaces.getSnapshot()
+    const goal = projectRunCenterGoal(projections.goal)
+    const plan = isRecord(projections.plan) ? projections.plan : undefined
+    return parseRunCenterSnapshot({
+      sessionId,
+      status: this.lifecycle === 'idle' ? 'ready' : this.lifecycle,
+      jobs: list.jobsBySession?.[sessionId] ?? [],
+      subagents: (catalog?.entries ?? []).map(entry => entry.kind === 'child'
+        ? { ...entry, parentAvailable: catalog?.parentAvailable === true }
+        : entry),
+      queue: sessionSnapshot?.queue ?? [],
+      ...(goal === undefined ? {} : { goal }),
+      ...(plan === undefined ? {} : { plan }),
+      todos: projectRunCenterTodos(projections.todos),
+      skills: this.skills,
+      deliverables: surfaceSnapshot.sessionId === sessionId
+        ? surfaceSnapshot.items.map(surface => ({
+          id: surface.id,
+          title: surface.title,
+          kind: surface.type,
+          status: surface.status,
+          ...(surface.source === undefined ? {} : { source: surface.source }),
+        }))
+        : [],
+      ...(this.failure === undefined ? {} : { error: this.failure }),
+    })
+  }
+}
+
+function projectRunCenterGoal(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.goal)) return undefined
+  const goal = value.goal
+  const blockedReason = isRecord(goal.blockedReason) && typeof goal.blockedReason.message === 'string'
+    ? goal.blockedReason.message
+    : undefined
+  return {
+    id: goal.id,
+    revision: goal.revision,
+    objective: goal.objective,
+    phase: goal.phase,
+    roundsStarted: value.roundsStarted,
+    maxGoalRounds: goal.maxGoalRounds,
+    ...(blockedReason === undefined ? {} : { blockedReason }),
+  }
+}
+
+function projectRunCenterTodos(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value)) return []
+  return value.map((todo, index) => isRecord(todo)
+    ? { id: `todo-${String(index + 1)}`, text: todo.content, status: todo.status }
+    : todo)
+}
+
 export function apply(ctx: ClientContextLike): void {
-  ctx.inject(inject, (scope) => {
-    const runtime = new DshAgentRuntimeSession(scope.sessions, scope.workspaces)
+  ctx.inject(inject, (nativeScope) => {
+    const scope = {
+      sessions: createSessionCompatibility(nativeScope.sessions, nativeScope.uiConversation, nativeScope.uiSession.pendingInteractions),
+      workspaces: createWorkspaceCompatibility(nativeScope.workspaces as unknown as Parameters<typeof createWorkspaceCompatibility>[0], nativeScope.uiWorkspace, nativeScope.sessions),
+      connection: createRemoteConnection(nativeScope.remote, nativeScope.sessions),
+      provide: (name: string, value: unknown) => nativeScope.provide(name, value),
+      effect: (execute: () => () => void, label?: string) => nativeScope.effect(execute, label),
+    }
+    registerWorkSurfaceView({ conversationEvents: nativeScope.uiConversation.events, conversationViews: nativeScope.uiConversation.views })
+    const surfaces: WorkSurfaceRegistry & { dispose(): void } = new DshWorkSurfaceRegistry(scope.sessions)
+    const files = new DshRuntimeFiles(scope.sessions, nativeScope.fileUpload, nativeScope.remote.workspaceFiles, surfaces)
+    const runtime = new DshAgentRuntimeSession(scope.sessions, scope.workspaces, files)
     const catalog = new DshSessionCatalog(scope.sessions, scope.workspaces)
     const context = new DshContextGovernance(scope.sessions)
     const timeline = new DshTaskTimeline(scope.sessions)
@@ -1056,7 +1663,7 @@ export function apply(ctx: ClientContextLike): void {
     const commands = new DshSessionCommand(scope.sessions)
     const models = new DshModelCatalog(scope.sessions, scope.connection)
     const workspaces = new DshWorkspaceCatalog(scope.sessions, scope.workspaces)
-    const surfaces: WorkSurfaceRegistry & { dispose(): void } = new DshWorkSurfaceRegistry(scope.sessions)
+    const runCenter = new DshRunCenter(scope.sessions, scope.connection, surfaces)
     scope.provide('agentRuntimeSession', runtime)
     scope.provide('sessionCatalog', catalog)
     scope.provide('contextGovernance', context)
@@ -1068,7 +1675,12 @@ export function apply(ctx: ClientContextLike): void {
     scope.provide('modelCatalog', models)
     scope.provide('workspaceCatalog', workspaces)
     scope.provide('workSurfaceRegistry', surfaces)
-    scope.effect(() => () => { runtime.dispose(); catalog.dispose(); context.dispose(); timeline.dispose(); approvals.dispose(); questions.dispose(); permissions.dispose(); models.dispose(); workspaces.dispose(); surfaces.dispose() }, 'xiaoshe-runtime-dsh-provider: public session projections')
+    scope.provide('runCenter', runCenter)
+    scope.provide('runtimeFiles', files)
+    scope.effect(() => {
+      void runCenter.refresh()
+      return () => { runtime.dispose(); catalog.dispose(); context.dispose(); timeline.dispose(); approvals.dispose(); questions.dispose(); permissions.dispose(); models.dispose(); workspaces.dispose(); runCenter.dispose(); surfaces.dispose(); files.dispose() }
+    }, 'xiaoshe-runtime-dsh-provider: public session projections')
   })
 }
 
@@ -1144,17 +1756,19 @@ function projectWorkspace(source: WorkspaceViewPort): WorkspaceCatalogEntry {
   }
 }
 
-function projectTimeline(sessionId: string | undefined, projected: unknown, snapshot: { readonly nodes?: readonly unknown[]; readonly partial?: { readonly text?: string } | null } | undefined): TaskTimelineSnapshot {
+function projectTimeline(sessionId: string | undefined, projected: unknown, snapshot: { readonly nodes?: readonly unknown[]; readonly partial?: { readonly text?: string } | null; readonly projectionReady?: boolean } | undefined): TaskTimelineSnapshot {
   const canonical = isRecord(projected) && Array.isArray(projected.items) ? projected.items : undefined
   if (canonical !== undefined) {
     const items = canonical.flatMap((value, index): TaskTimelineItem[] => {
       if (!isRecord(value) || typeof value.kind !== 'string' || typeof value.text !== 'string') return []
       const kind = value.kind === 'user' || value.kind === 'assistant' || value.kind === 'tool' || value.kind === 'error' || value.kind === 'compaction' ? value.kind : 'status'
+      const images = kind === 'user' ? timelineImages(value.images) : []
       return [{
         key: typeof value.key === 'string' ? value.key : `${kind}:${index}`,
         seq: typeof value.seq === 'number' ? value.seq : index,
         ...(typeof value.time === 'number' ? { time: value.time } : {}),
         kind, text: value.text,
+        ...(images.length === 0 ? {} : { images }),
         ...(typeof value.reasoning === 'string' && value.reasoning !== '' ? { reasoning: value.reasoning } : {}),
         ...(typeof value.errorCode === 'string' && value.errorCode !== '' ? { errorCode: value.errorCode } : {}),
         ...(value.isError === true ? { isError: true } : {}),
@@ -1162,6 +1776,7 @@ function projectTimeline(sessionId: string | undefined, projected: unknown, snap
     })
     return { ...(sessionId === undefined ? {} : { sessionId }), items, total: items.length, hasEarlier: false }
   }
+  if (snapshot?.projectionReady === false) return { ...(sessionId === undefined ? {} : { sessionId }), items: [], total: 0, hasEarlier: false, loading: true }
   const items: TaskTimelineItem[] = []
   for (const [index, value] of (snapshot?.nodes ?? []).entries()) {
     if (!isRecord(value)) continue
@@ -1169,16 +1784,22 @@ function projectTimeline(sessionId: string | undefined, projected: unknown, snap
     const kind = typeof value.kind === 'string' ? value.kind : 'status'
     const assistant = kind === 'assistant' ? legacyAssistantContent(value) : undefined
     const text = assistant?.text ?? timelineText(value)
+    const images = kind === 'user' ? timelineImages((Array.isArray(value.blocks) ? value.blocks : Array.isArray(value.content) ? value.content : []).flatMap(block => isRecord(block) && (block.kind ?? block.type) === 'image' ? [block.attachment] : [])) : []
     items.push({
       key: `${kind}:${seq}:${index}`, seq,
       kind: kind === 'user' ? 'user' : kind === 'assistant' ? 'assistant' : kind.includes('tool') ? 'tool' : kind.includes('error') ? 'error' : kind === 'compaction' ? 'compaction' : 'status',
       text,
+      ...(images.length === 0 ? {} : { images }),
       ...(assistant?.reasoning === undefined || assistant.reasoning === '' ? {} : { reasoning: assistant.reasoning }),
       ...(value.isError === true ? { isError: true } : {}),
     })
   }
   if (snapshot?.partial?.text !== undefined && snapshot.partial.text !== '') items.push({ key: 'partial', seq: Number.MAX_SAFE_INTEGER, kind: 'assistant', text: snapshot.partial.text })
   return { ...(sessionId === undefined ? {} : { sessionId }), items, total: items.length, hasEarlier: false }
+}
+
+function timelineImages(value: unknown): readonly TaskTimelineImage[] {
+  return Array.isArray(value) ? value.flatMap(row => { const image = parseTaskTimelineImage(row); return image === undefined ? [] : [image] }) : []
 }
 
 /**
