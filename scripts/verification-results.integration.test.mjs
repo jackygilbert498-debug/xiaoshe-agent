@@ -1401,7 +1401,7 @@ async function browserRecoveryHostFixture(t) {
   // and verification methods run. Renderer bytes and the initial click actuator
   // are explicit offline fixtures; Cordis, private transport and canonical
   // evidence production are real product code.
-  const electron = 'data:text/javascript,' + encodeURIComponent('export class WebContentsView {}; export const session = {}')
+  const electron = 'data:text/javascript,' + encodeURIComponent('export class BaseWindow {}; export class WebContentsView {}; export const session = {}')
   const hooks = registerHooks({ resolve(specifier, context, next) {
     return specifier === 'electron' ? { url: electron, shortCircuit: true } : next(specifier, context)
   } })

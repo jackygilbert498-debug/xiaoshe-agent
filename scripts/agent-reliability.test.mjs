@@ -3176,7 +3176,7 @@ test('research source lists converge to an honest partial only after body routes
   assert.match(context, /https:\/\/weather\.example\.com\/shanghai/)
   assert.match(context, /https:\/\/forecast\.example\.org\/today/)
   assert.doesNotMatch(context, /localhost|utm_source|#hourly/)
-  assert.match(c.denial(execution(a, 'web_search', { query: '再搜一次' })), /部分完成|直接输出|不再搜索/)
+  assert.equal(c.denial(execution(a, 'web_search', { query: '再搜一次' })), undefined, 'a stalled route does not revoke discovery')
 })
 
 function partialResearchFixture({ exhausted = true } = {}) {
@@ -3298,9 +3298,9 @@ test('browser search result pages discover public sources without pretending the
   assert.ok(research.body_failure_count >= 2)
   assert.match(c.researchContext(a), /weather\.com\.cn\/weather\/101020100\.shtml/)
   assert.doesNotMatch(c.researchContext(a), /bing\.com/)
-  assert.match(c.denial(execution(a, 'browser_open', {
+  assert.equal(c.denial(execution(a, 'browser_open', {
     url: 'https://www.bing.com/search?q=%E4%B8%8A%E6%B5%B7+%E5%A4%A9%E6%B0%94',
-  })), /部分完成|直接输出|不再搜索/)
+  })), undefined)
 })
 
 test('the final browser result URL overrides the requested URL when a page redirects to search', () => {
@@ -3334,11 +3334,11 @@ test('lookalike Google subdomains are not trusted as search result pages', () =>
 
   const research = c.summary(a).research
   assert.equal(research.phase, 'body_ready')
-  assert.equal(research.source_count, 0)
+  assert.equal(research.source_count, 1, 'the read page is a source candidate, not a trusted Google search page')
   assert.equal(research.body_count, 1)
 })
 
-test('ordinary browser pages remain body evidence while unsafe or unrelated search links cannot become sources', () => {
+test('ordinary browser pages remain body evidence while candidate discovery does not certify relevance or admit unsafe links', () => {
   const c = new RecoveryController(); const a = agent()
   const goal = '研究上海天气预报并比较公开来源'
   c.goalChanged(a, assessTask(goal), { goal })
@@ -3351,7 +3351,7 @@ test('ordinary browser pages remain body evidence while unsafe or unrelated sear
     ] },
   })
   let research = c.summary(a).research
-  assert.equal(research.source_count, 0)
+  assert.equal(research.source_count, 1, 'an actually returned public link is a candidate, not a verified relevant fact')
   assert.equal(research.body_count, 0)
 
   c.result(execution(a, 'browser_open', { url: 'https://weather.example.com/shanghai' }), evidenceSuccess(
@@ -3576,7 +3576,7 @@ test('source-free search stalls converge to an honest terminal result', () => {
   assert.ok(research.no_body_progress >= 2)
   assert.match(successful.researchContext(successfulAgent), /未(?:能)?获得.*可核验.*来源/)
   assert.doesNotMatch(successful.researchContext(successfulAgent), /已经获得.*公开来源/)
-  assert.match(successful.denial(execution(successfulAgent, 'web_search', { query: '再试一次' })), /未获得|不再搜索/)
+  assert.equal(successful.denial(execution(successfulAgent, 'web_search', { query: '再试一次' })), undefined)
 
   const failed = new RecoveryController(); const failedAgent = agent()
   failed.goalChanged(failedAgent, assessTask(goal), { goal })
@@ -3590,7 +3590,7 @@ test('source-free search stalls converge to an honest terminal result', () => {
   assert.ok(research.body_failure_count >= 2)
 })
 
-test('research convergence removes only network routes while local work and verification remain usable', async () => {
+test('research recovery advice preserves network routes alongside local work and verification', async () => {
   const events = new Map()
   const schemas = [
     schema('read_file', 'Read a local project file.'),
@@ -3621,14 +3621,14 @@ test('research convergence removes only network routes while local work and veri
 
   const assembly = { sections: [], contexts: [], variables: {}, tools: schemas }
   const transformed = await events.get('system-prompt/assemble')(assembly, { agent: a, scope: a }, async () => assembly)
-  assert.deepEqual(transformed.tools.map(tool => tool.name), ['read_file', 'write_file', 'pwsh'])
+  assert.deepEqual(transformed.tools.map(tool => tool.name), ['read_file', 'write_file', 'pwsh', 'web_search', 'web_fetch', 'browser_open'])
   const allow = async () => ({ kind: 'allow' })
   assert.deepEqual(await events.get('tools/pre-execute')(
     execution(a, 'read_file', { path: 'report.md' }), allow,
   ), { kind: 'allow' })
   assert.equal((await events.get('tools/pre-execute')(
     execution(a, 'web_search', { query: '再搜一次' }), allow,
-  )).kind, 'deny')
+  )).kind, 'allow')
 })
 
 test('explicit conditional reads keep the primary attempt ahead of the fallback route', () => {

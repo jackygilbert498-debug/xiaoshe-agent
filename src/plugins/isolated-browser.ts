@@ -156,6 +156,12 @@ export function apply(ctx: Host): void {
           while (facts.size > 128) facts.delete(facts.keys().next().value!)
           rejectedVerifications.set(owner, facts)
         }
+        // DSH intentionally drops plain Error.code. Keep this one diagnostic
+        // tag in durable text so a user/host interruption cannot become a
+        // network failure on replay. It is not an admission/verification fact.
+        if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'BROWSER_CANCELLED') {
+          throw new Error('[BROWSER_CANCELLED] 浏览器操作已停止；这不表示网络故障，也不保证已发出的动作没有发生。')
+        }
         throw error
       }
     },

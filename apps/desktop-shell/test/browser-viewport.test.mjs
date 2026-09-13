@@ -5,7 +5,7 @@ import test from 'node:test'
 
 // Import the real workspace method without starting Electron. The production
 // constructor is not invoked; only the renderer reply boundary is simulated.
-const electron = 'data:text/javascript,' + encodeURIComponent('export class WebContentsView {}; export const session = {}')
+const electron = 'data:text/javascript,' + encodeURIComponent('export class BaseWindow {}; export class WebContentsView {}; export const session = {}')
 const hooks = registerHooks({ resolve(specifier, context, next) {
   return specifier === 'electron' ? { url: electron, shortCircuit: true } : next(specifier, context)
 } })

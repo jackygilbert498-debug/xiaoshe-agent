@@ -119,19 +119,22 @@ export class HttpFetchProvider implements WebFetchProvider {
       'user-agent': this.limits.userAgent,
       'accept': 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8',
     }
+    let stage = 'proxy routing'
     try {
       // Xiaoshe's public-web tool must keep the same destination boundary when
       // using a proxy. Pin the approved IP in the proxy request/CONNECT authority;
       // Host and TLS SNI still identify the original site.
       const route = proxyRouteFor(url)
+      stage = 'DNS resolution (including trusted DoH recovery for synthetic addresses)'
       const addresses = await this.resolveAddresses(url.hostname, signal)
+      stage = route.proxied ? 'proxy transport' : 'direct transport'
       if (route.proxied) {
         return await publicHttpNetwork.requestViaPinned(route.proxy, url, addresses, headers, signal)
       }
       return await publicHttpNetwork.request(url, addresses, headers, signal)
     } catch (error: unknown) {
       if (error instanceof WebError) throw error
-      throw translateAbortOrNetwork(error, signal)
+      throw translateAbortOrNetwork(error, signal, stage)
     }
   }
 
@@ -255,9 +258,33 @@ function resolveRedirect(location: string, base: URL): URL {
  * nesting — is `WEB_ABORTED`; a throw with the signal NOT aborted is a
  * transport/network failure (`WEB_PROVIDER_ERROR`).
  */
-function translateAbortOrNetwork(error: unknown, signal: AbortSignal): WebError {
+function translateAbortOrNetwork(error: unknown, signal: AbortSignal, stage = 'response body transport'): WebError {
   const timeout = timeoutOf(signal, 'WEB_FETCH_TIMEOUT')
   if (timeout !== undefined) return new WebError('web fetch timed out', 'WEB_FETCH_TIMEOUT', { cause: timeout })
   if (signal.aborted) return new WebError('web fetch aborted', 'WEB_ABORTED', { cause: error })
-  return new WebError(`web fetch failed: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+  return new WebError(`web fetch failed during ${stage}${networkCodes(error)}. Check the existing network/proxy route; this failure does not establish that the URL is invalid. Public-address and TLS checks remain required.`, 'WEB_PROVIDER_ERROR', { cause: error })
+}
+
+/** Preserve known low-level codes without leaking error text, URLs or unbounded aggregate graphs. */
+function networkCodes(error: unknown): string {
+  const allowed = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'ERR_TLS_CERT_ALTNAME_INVALID', 'UND_ERR_PRX_TLS', 'UND_ERR_PROXY', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET'])
+  const queue: unknown[] = [error]
+  const seen = new Set<unknown>()
+  const codes = new Set<string>()
+  for (let index = 0; index < queue.length && index < 16; index++) {
+    const item = queue[index]
+    if (!(item instanceof Error) || seen.has(item)) continue
+    seen.add(item)
+    const code = (item as Error & { code?: unknown }).code
+    if (typeof code === 'string' && allowed.has(code)) codes.add(code)
+    if (queue.length < 16) queue.push(item.cause)
+    if (item instanceof AggregateError) {
+      const errors: readonly unknown[] = item.errors
+      queue.push(...errors.slice(0, 16 - queue.length))
+    }
+  }
+  return codes.size === 0 ? ' (no diagnostic code available)' : ` [${[...codes].join(', ')}]`
 }

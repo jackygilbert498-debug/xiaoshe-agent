@@ -35,6 +35,9 @@ import { DeepSeekSearchProvider } from '../src/provider.ts'
 describe('deepseek search egress', () => {
   it('goes through the proxy', async () => {
     const p = new DeepSeekSearchProvider(() => ({ apiKey: 'probe', baseURL: 'http://dsk-probe.invalid', model: 'm', apiVersion: '2023-06-01', maxTokens: 16, maxUses: 1 }))
-    expect(await observe(() => p.search({ query: 'probe' }))).toEqual(['REQ http://dsk-probe.invalid/messages'])
+    // Undici versions can tunnel HTTP or use absolute-form; either must contact only the proxy.
+    const requests = await observe(() => p.search({ query: 'probe' }))
+    expect(requests).toHaveLength(1)
+    expect(['REQ http://dsk-probe.invalid/messages', 'CONNECT dsk-probe.invalid:80']).toContain(requests[0])
   })
 })

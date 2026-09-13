@@ -1,4 +1,4 @@
-import { WebContentsView, session } from 'electron'
+import { BaseWindow, WebContentsView, session } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -140,6 +140,7 @@ export class BrowserWorkspace {
     this.shield.setVisible(!!active && !!this.bounds && owner?.mode !== 'user')
   }
   createTab(ownerId, rawUrl, suppliedOptions) {
+    if (this.disposed || this.window.isDestroyed()) throw fault('BROWSER_DISCONNECTED', '专用浏览器工作区已关闭。')
     if (this.tabs.size >= LIMIT || [...this.tabs.values()].filter(tab => tab.ownerId === ownerId).length >= 6) throw fault('BROWSER_LIMIT', '标签数量达到上限，请关闭不再使用的标签。')
     const url = browserUrl(rawUrl, this.productUrl)
     // Electron creates popup WebContents before this callback. Adopt that exact
@@ -153,15 +154,6 @@ export class BrowserWorkspace {
       localOrigin: url.startsWith('http:') ? new URL(url).origin : undefined }
     this.tabs.set(tab.id, tab); this.owner(ownerId).activeTab = tab.id
     view.setBounds({ x: 0, y: 0, width: 1100, height: 760 }); view.setVisible(false)
-    // Chromium focuses a newly opened popup before returning from createWindow.
-    // Attach it on the next event-loop turn so that request cannot activate the
-    // host window on Windows. Keep the supplied contents and its opener intact.
-    if (tab.attachmentPending) setImmediate(() => {
-      if (this.disposed || this.window.isDestroyed() || wc.isDestroyed()) return
-      tab.attachmentPending = false
-      this.window.contentView.addChildView(view); this.changed()
-    })
-    else this.window.contentView.addChildView(view)
     const safeNavigation = (event, target) => {
       try {
         const next = browserUrl(target, this.productUrl)
@@ -185,7 +177,49 @@ export class BrowserWorkspace {
       } catch { return { action: 'deny' } }
     })
     wc.on('destroyed', () => { tab.operation?.abort(); this.tabs.delete(tab.id); if (this.owner(ownerId).activeTab === tab.id) this.owner(ownerId).activeTab = [...this.tabs.values()].filter(row => row.ownerId === ownerId).at(-1)?.id; this.changed() })
+    // Chromium focuses a newly opened popup before createWindow returns. Keep
+    // BOTH native initialization and product attachment deferred on Windows.
+    // The supplied contents (and window.opener/SSO state) stay unchanged.
+    if (tab.attachmentPending) setImmediate(() => {
+      if (this.disposed || this.window.isDestroyed() || wc.isDestroyed()) { this.close(tab); return }
+      try { this.attachTab(tab); tab.attachmentPending = false }
+      catch (error) { this.notice = error.message }
+      this.changed()
+    })
+    else this.attachTab(tab)
     this.changed(); return tab
+  }
+  /** Establish real Chromium geometry without presenting a page over product UI.
+   * setBounds alone leaves a cold hidden WebContentsView at 0x0 on Windows.
+   * A synchronous native attachment/visibility cycle initializes its renderer;
+   * the helper never shows, focuses, hosts a renderer of its own, or gains a
+   * placeholder lease. No asynchronous gap can expose the page in the host. */
+  attachTab(tab) {
+    const view = tab.view
+    let initializer
+    try {
+      if (this.disposed || this.window.isDestroyed()) throw new Error('Workspace closed')
+      initializer = this.initializer
+      if (!initializer || initializer.isDestroyed()) {
+        initializer = this.initializer = new BaseWindow({ show: false, focusable: false, skipTaskbar: true, width: 1100, height: 760 })
+      }
+      initializer.contentView.addChildView(view)
+      try { view.setVisible(true) }
+      finally {
+        view.setVisible(false)
+        if (!initializer.isDestroyed()) initializer.contentView.removeChildView(view)
+      }
+      if (initializer.isDestroyed() || this.window.isDestroyed()) throw new Error('Native host closed during initialization')
+      this.window.contentView.addChildView(view)
+    } catch {
+      // A partial native initialization is not a usable tab. Destroy its own
+      // resources; a later explicit open can lazily create a fresh helper.
+      try { view.setVisible(false) } catch { /* Native teardown may already have invalidated this view; destroy its owners below. */ }
+      if (initializer && !initializer.isDestroyed()) initializer.destroy()
+      this.initializer = undefined
+      this.close(tab)
+      throw fault('BROWSER_INITIALIZATION', '专用浏览器页面初始化失败，请重新打开标签。')
+    }
   }
   async debug(tab, method, args = {}, signal) {
     const wc = tab.view.webContents
@@ -208,11 +242,9 @@ export class BrowserWorkspace {
     await this.settled(tab, signal)
     const epoch = tab.epoch; const id = randomUUID()
     const deadline = performance.now() + 2_000
-    // A never-presented WebContentsView can report 0x0 even after setBounds.
-    // Give the existing renderer-driven mount one bounded layout window. Read
-    // real DOM geometry only: do not show the app, fabricate a viewport, or
-    // override the visible-placeholder lease. A formerly mounted hidden view
-    // may already have valid dimensions and needs no visibility restriction.
+    // Native cold initialization runs before attachment. Still bound renderer
+    // readiness and read real DOM geometry: never substitute native bounds or
+    // override the visible-placeholder lease when Chromium is not ready.
     tab.lastSnapshot = undefined
     const notVisible = () => fault('BROWSER_NOT_VISIBLE', '专用浏览器尚未建立可操作的页面尺寸；请打开专用浏览器面板，等待页面显示后重新观察。')
     for (;;) {
@@ -361,7 +393,7 @@ export class BrowserWorkspace {
   }
   close(tab) {
     tab.operation?.abort()
-    this.window.contentView.removeChildView(tab.view)
+    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view)
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close({ waitForBeforeUnload: false })
   }
   async ui(ownerId, action, args = {}) {
@@ -382,8 +414,11 @@ export class BrowserWorkspace {
     throw fault('BROWSER_COMMAND', '不支持的用户操作。')
   }
   async dispose() {
+    if (this.disposed) return
     this.disposed = true; this.window.removeListener('resize', this.resizeHandler)
     for (const tab of [...this.tabs.values()]) this.close(tab)
+    if (this.initializer && !this.initializer.isDestroyed()) this.initializer.destroy()
+    this.initializer = undefined
     this.shield.webContents.close({ waitForBeforeUnload: false })
     this.session.webRequest.onBeforeRequest(null); this.session.removeListener('will-download', this.downloadHandler)
     await this.session.cookies.flushStore()

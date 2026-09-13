@@ -2970,7 +2970,7 @@ test('historical verification debt survives a task switch without blocking the n
   assert.deepEqual(info.value.execution.verification_pending, [])
 })
 
-test('research with sources but unavailable bodies closes only network routes and survives cold replay until a new task', async t => {
+test('research with sources but unavailable bodies retains candidate evidence and reachable routes after cold replay', async t => {
   const sourceList = 'Sources:\n- [上海天气](https://weather.example.com/shanghai)\n- [今日预报](https://forecast.example.org/today)'
   const events = [
     loggedUser(1, '搜索今天上海天气的最新资料，给出带来源的摘要'),
@@ -2999,9 +2999,9 @@ test('research with sources but unavailable bodies closes only network routes an
   ctx.emit(scopeTarget(agent, agent), 'agent/session-start', { agent, source: 'resume' })
   let assembled = await ctx.systemPrompt.assemble({ scope: agent, agent })
   const resumedNames = assembled.tools.map(tool => tool.name)
-  assert.ok(!resumedNames.includes('web_search'))
-  assert.ok(!resumedNames.includes('browser_open'))
-  assert.ok(!resumedNames.includes('browser_snapshot'))
+  assert.ok(resumedNames.includes('web_search'))
+  assert.ok(resumedNames.includes('browser_open'))
+  assert.ok(resumedNames.includes('browser_snapshot'))
   assert.ok(resumedNames.includes('read_file'))
   assert.ok(resumedNames.includes('write_file'))
   assert.ok(resumedNames.includes('verify_file'))

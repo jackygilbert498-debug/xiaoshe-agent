@@ -305,7 +305,7 @@ describe('DeepSeekSearchProvider error handling', () => {
     }).search({ query: 'q' }, controller.signal))
       .rejects.toThrow(expect.objectContaining({
         code: 'WEB_PROVIDER_ERROR',
-        message: 'DeepSeek search credential resolution failed: Error: credential backend failed',
+        message: 'DeepSeek search credential resolution failed; check availability of the configured credential service',
       }))
   })
 
@@ -330,25 +330,17 @@ describe('DeepSeekSearchProvider error handling', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('maps an HTTP error to WEB_PROVIDER_ERROR with the provider message', async () => {
+  it('maps an HTTP error to WEB_PROVIDER_ERROR with a safe status classification', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: { message: 'rate limited' } }, { status: 429 })))
-    await expect(searchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({
-        code: 'WEB_PROVIDER_ERROR',
-        message: 'DeepSeek API error (HTTP 429): rate limited\n\n'
-          + 'The web search request used endpoint "https://api.deepseek.test/anthropic/v1/messages". '
-          + 'Search endpoint configuration is separate from chat. If that endpoint is not intended, '
-          + 'guide the user to Settings > Plugins > Plugin configuration > Web search, where they can '
-          + 'change and save Endpoint. If that settings page is unavailable, the user can set '
-          + 'DEEPSEEK_SEARCH_BASE_URL or configure web-search-deepseek.baseURL to a trusted '
-          + 'Anthropic-compatible Messages API base. Only the user should choose or change the endpoint.',
-      }))
+    const error = await rejectedWebError(searchProvider(options).search({ query: 'q' }))
+    expect(error.code).toBe('WEB_PROVIDER_ERROR')
+    expect(error.message).toContain('HTTP 429): rate limit')
   })
 
   it('handles a string-form error body', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'bad request' }, { status: 400 })))
     const error = await rejectedWebError(searchProvider(options).search({ query: 'q' }))
-    expect(error.message).toContain('DeepSeek API error (HTTP 400): bad request')
+    expect(error.message).toContain('DeepSeek API error (HTTP 400)')
   })
 
   it('keeps a status-line message when the error body is not JSON', async () => {
@@ -399,8 +391,8 @@ describe('DeepSeekSearchProvider error handling', () => {
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
   })
 
-  it('surfaces an abort during error-body parse as WEB_ABORTED', async () => {
-    const body = { json: () => Promise.reject(new DOMException('aborted', 'AbortError')), ok: false, status: 500 }
+  it('surfaces an abort during error-body cleanup as WEB_ABORTED', async () => {
+    const body = { body: { cancel: () => Promise.reject(new DOMException('aborted', 'AbortError')) }, ok: false, status: 500 }
     vi.stubGlobal('fetch', vi.fn(async () => body as unknown as Response))
     await expect(searchProvider(options).search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
@@ -410,14 +402,14 @@ describe('DeepSeekSearchProvider error handling', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('connection refused'))))
     const error = await rejectedWebError(searchProvider(options).search({ query: 'q' }))
     expect(error.code).toBe('WEB_PROVIDER_ERROR')
-    expect(error.message).toContain('The web search request used endpoint "https://api.deepseek.test/anthropic/v1/messages".')
+    expect(error.message).toContain('Search endpoint origin: "https://api.deepseek.test".')
   })
 
   it('strict mode flows through search(): a prose-only response throws WEB_PROVIDER_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ content: [{ type: 'text', text: 'no search happened' }] })))
     const error = await rejectedWebError(searchProvider(options).search({ query: 'q' }))
     expect(error.code).toBe('WEB_PROVIDER_ERROR')
-    expect(error.message).toContain('Search endpoint configuration is separate from chat.')
+    expect(error.message).toContain('native web search result blocks are missing')
   })
 })
 

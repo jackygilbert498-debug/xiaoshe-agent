@@ -9,6 +9,8 @@
 
 import { request as httpsRequest } from 'node:https'
 import { isIP } from 'node:net'
+import type { Dispatcher } from 'undici'
+import { proxyRouteFor } from '@deepseek-ai/dsh-http-proxy'
 import type { PublicAddress as ResolvedFetchAddress } from './network.ts'
 
 const TRUSTED_DOH_HOSTNAME = 'cloudflare-dns.com'
@@ -62,7 +64,7 @@ export function parseTrustedDohResponse(
 
   const questions = payload.Question
   if (!Array.isArray(questions) || questions.length !== 1) throw new Error('trusted DoH returned an invalid question')
-  const question = questions[0]
+  const question: unknown = questions[0]
   if (
     !isRecord(question)
     || normalizeDnsName(question.name) !== normalizeDnsName(hostname)
@@ -75,7 +77,7 @@ export function parseTrustedDohResponse(
   if (!Array.isArray(rawAnswers) || rawAnswers.length > MAX_DOH_ANSWERS) {
     throw new Error('trusted DoH returned an invalid answer set')
   }
-  const reachableNames = new Set<string>([normalizeDnsName(hostname)!])
+  const reachableNames = new Set<string>([hostname.toLowerCase().replace(/\.+$/u, '')])
   const aliases = new Map<string, string[]>()
   for (const rawAnswer of rawAnswers) {
     if (!isRecord(rawAnswer) || rawAnswer.type !== 5) continue
@@ -127,6 +129,7 @@ async function queryTrustedDoh(
 
   const errors: unknown[] = []
   for (const address of TRUSTED_DOH_ADDRESSES) {
+    signal.throwIfAborted()
     try {
       const text = await requestPinnedDoh(url, address, signal)
       return parseTrustedDohResponse(hostname, type, text)
@@ -139,6 +142,10 @@ async function queryTrustedDoh(
 }
 
 function requestPinnedDoh(url: URL, address: string, signal: AbortSignal): Promise<string> {
+  // DNS recovery must honor the same installed proxy policy as the page fetch.
+  // The proxy CONNECT destination remains a fixed trusted IP, never OS DNS.
+  const route = proxyRouteFor(url)
+  if (route.proxied) return requestProxiedDoh(url, address, route.proxy, signal)
   return new Promise<string>((resolve, reject) => {
     const request = httpsRequest({
       hostname: address,
@@ -156,7 +163,7 @@ function requestPinnedDoh(url: URL, address: string, signal: AbortSignal): Promi
         'accept-encoding': 'identity',
       },
       signal,
-    }, incoming => {
+    }, (incoming) => {
       if (incoming.statusCode !== 200) {
         incoming.destroy()
         reject(new Error(`trusted DoH returned HTTP ${String(incoming.statusCode)}`))
@@ -172,12 +179,61 @@ function requestPinnedDoh(url: URL, address: string, signal: AbortSignal): Promi
         }
         chunks.push(chunk)
       })
-      incoming.once('end', () => resolve(Buffer.concat(chunks, total).toString('utf8')))
+      incoming.once('end', () => { resolve(Buffer.concat(chunks, total).toString('utf8')) })
       incoming.once('error', reject)
     })
     request.once('error', reject)
     request.end()
   })
+}
+
+/** Fixed-IP DoH through the configured proxy; retain TLS identity and bound the response. */
+async function requestProxiedDoh(url: URL, address: string, proxy: string, signal: AbortSignal): Promise<string> {
+  const { ProxyAgent, fetch } = await import('undici')
+  signal.throwIfAborted()
+  const pinned = new URL(url)
+  pinned.hostname = address
+  // proxy-exempt: one fixed trusted resolver IP through the installed policy proxy.
+  const dispatcher = new class extends ProxyAgent {
+    override dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
+      const headers = { accept: 'application/dns-json', 'accept-encoding': 'identity', host: TRUSTED_DOH_HOSTNAME }
+      return super.dispatch({ ...options, headers }, handler)
+    }
+  }({
+    uri: proxy,
+    maxHeaderSize: 16 * 1024,
+    requestTls: { servername: TRUSTED_DOH_HOSTNAME, rejectUnauthorized: true, signal },
+    proxyTls: { rejectUnauthorized: true, signal },
+  })
+  const abort = () => { void dispatcher.destroy().catch(() => undefined) }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    // proxy-exempt: fixed IP and per-request dispatcher above; redirects are never followed.
+    const response = await fetch(pinned, {
+      method: 'GET', redirect: 'manual', signal, dispatcher,
+      headers: { accept: 'application/dns-json', 'accept-encoding': 'identity' },
+    })
+    try {
+      if (response.status !== 200) throw new Error(`trusted DoH returned HTTP ${response.status}`)
+      const chunks: Uint8Array[] = []
+      let total = 0
+      if (response.body !== null) {
+        for await (const rawChunk of response.body) {
+          const chunk: unknown = rawChunk
+          if (!(chunk instanceof Uint8Array)) throw new Error('trusted DoH returned a non-byte response')
+          total += chunk.byteLength
+          if (total > MAX_DOH_BODY_BYTES) throw new Error('trusted DoH response exceeded the body limit')
+          chunks.push(chunk)
+        }
+      }
+      return Buffer.concat(chunks, total).toString('utf8')
+    } finally {
+      await response.body?.cancel().catch(() => undefined)
+    }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    await dispatcher.destroy()
+  }
 }
 
 function normalizeDnsName(value: unknown): string | undefined {
