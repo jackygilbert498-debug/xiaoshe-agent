@@ -82,6 +82,51 @@ export interface RunCenterDeliverable {
   readonly source?: string
 }
 
+/** Public limits of the v1 taskGraph wire projection. Keep aligned with the runtime domain. */
+export const GRAPH_LIMITS = Object.freeze({ nodes: 64, acceptance: 8, evidence: 16, feedback: 8, text: 2_000, history: 10_000, snapshot: 400_000 })
+export type NodeStatus = 'pending' | 'running' | 'verifying' | 'completed' | 'blocked' | 'interrupted'
+export interface Acceptance { readonly id: string; readonly text: string }
+export interface Feedback { readonly text: string; readonly outcome: 'failed' | 'needs-work' | 'passed' | 'interrupted' }
+export interface Evidence {
+  readonly callId: string
+  readonly resultSeq: number
+  readonly toolName: string
+  readonly attempt: number
+  readonly kind: 'execution' | 'reviewer-assessment'
+  readonly acceptanceId?: string
+  readonly assertion?: string
+  readonly sourceExcerpt?: string
+}
+export interface GraphNode {
+  readonly id: string
+  readonly title: string
+  readonly dependencies: readonly string[]
+  readonly acceptance: readonly Acceptance[]
+  readonly status: NodeStatus
+  readonly attempt: number
+  readonly startSeq: number | null
+  readonly evidence: readonly Evidence[]
+  readonly feedback: readonly Feedback[]
+}
+export interface GraphSnapshot {
+  readonly version: 1
+  readonly id: string
+  readonly revision: number
+  readonly sessionId: string
+  readonly taskGeneration: number
+  readonly goalId: string | null
+  readonly objective: string
+  readonly runtimeInstance: string
+  readonly durability: 'pending' | 'durable'
+  readonly nodes: readonly GraphNode[]
+  readonly feedback: readonly Feedback[]
+}
+export interface TaskGraphView extends GraphSnapshot {
+  readonly status: 'ready' | 'active' | 'waiting' | 'completed'
+  readonly stale: boolean
+  readonly recoveryRequired: boolean
+}
+
 export interface RunCenterSnapshot {
   readonly sessionId?: string
   readonly status: 'idle' | 'loading' | 'ready' | 'error'
@@ -93,6 +138,7 @@ export interface RunCenterSnapshot {
   readonly todos: readonly RunCenterTodo[]
   readonly skills: readonly RunCenterSkill[]
   readonly deliverables: readonly RunCenterDeliverable[]
+  readonly taskGraph?: TaskGraphView
   readonly error?: string
 }
 
@@ -106,6 +152,10 @@ export interface RunCenter {
   getSnapshot(): RunCenterSnapshot
   subscribe(listener: () => void): () => void
   refresh(): Promise<RuntimeCommandResult<RunCenterSnapshot>>
+  setGoalPhase(input: {
+    readonly sessionId: string
+    readonly action: 'pause' | 'resume'
+  }): Promise<RuntimeCommandResult<{ accepted: true }>>
   updateQueue(input: {
     readonly sessionId: string
     readonly itemId: string
@@ -126,6 +176,9 @@ const PLACEMENTS = new Set<RunCenterQueueItem['placement']>(['queued', 'steering
 const DELIVERABLE_STATUSES = new Set<RunCenterDeliverable['status']>(['running', 'ready', 'error', 'blocked'])
 const SNAPSHOT_STATUSES = new Set<RunCenterSnapshot['status']>(['idle', 'loading', 'ready', 'error'])
 const MAX_ROWS = 1_000
+const NODE_STATUSES = new Set<NodeStatus>(['pending', 'running', 'verifying', 'completed', 'blocked', 'interrupted'])
+const FEEDBACK_OUTCOMES = new Set<Feedback['outcome']>(['failed', 'needs-work', 'passed', 'interrupted'])
+const GRAPH_STATUSES = new Set<TaskGraphView['status']>(['ready', 'active', 'waiting', 'completed'])
 
 /**
  * Validate an untyped run-center projection at a product boundary.
@@ -145,6 +198,7 @@ export function parseRunCenterSnapshot(value: unknown): RunCenterSnapshot {
   const deliverables = uniqueRows(value.deliverables, parseDeliverable, row => row.id)
   const goal = parseGoal(value.goal)
   const plan = parsePlan(value.plan)
+  const taskGraph = value.taskGraph === undefined ? undefined : parseTaskGraphView(value.taskGraph, sessionId)
   const error = boundedText(value.error, 1_000)
   return Object.freeze({
     ...(sessionId === undefined ? {} : { sessionId }),
@@ -157,8 +211,169 @@ export function parseRunCenterSnapshot(value: unknown): RunCenterSnapshot {
     todos,
     skills,
     deliverables,
+    ...(taskGraph === undefined ? {} : { taskGraph }),
     ...(error === undefined ? {} : { error }),
   })
+}
+
+/**
+ * Parse the authoritative v1 taskGraph view for UI/terminal consumption.
+ * The output is a detached whitelist projection: unknown runtime-private fields
+ * are stripped, malformed DAGs fail closed, and the display status/order are
+ * recomputed from node facts rather than trusted from the wire.
+ */
+export function parseTaskGraphView(value: unknown, expectedSessionId?: string): TaskGraphView | undefined {
+  try {
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined || serialized.length > GRAPH_LIMITS.snapshot) return undefined
+    const row = graphRecord(value)
+    if (row.version !== 1 || !GRAPH_STATUSES.has(row.status as TaskGraphView['status'])
+      || typeof row.stale !== 'boolean' || typeof row.recoveryRequired !== 'boolean'
+      || (row.durability !== 'pending' && row.durability !== 'durable')) return undefined
+    const revision = graphInteger(row.revision)
+    if (revision < 1) return undefined
+    const sessionId = graphText(row.sessionId, 256)
+    if (expectedSessionId !== undefined && sessionId !== expectedSessionId) return undefined
+    const nodes = parseGraphNodes(row.nodes)
+    const stale = row.stale
+    const recoveryRequired = row.recoveryRequired
+    const durability = row.durability
+    const status = graphStatus(nodes, durability, stale, recoveryRequired, row.status as TaskGraphView['status'])
+    return deepFreeze({
+      version: 1,
+      id: graphId(row.id),
+      revision,
+      sessionId,
+      taskGeneration: graphInteger(row.taskGeneration),
+      goalId: row.goalId === null ? null : graphText(row.goalId, 256),
+      objective: graphText(row.objective),
+      runtimeInstance: graphId(row.runtimeInstance),
+      durability,
+      nodes,
+      feedback: graphArray(row.feedback, GRAPH_LIMITS.feedback).map(parseGraphFeedback),
+      status,
+      stale,
+      recoveryRequired,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+function parseGraphNodes(value: unknown): readonly GraphNode[] {
+  const nodes = graphArray(value, GRAPH_LIMITS.nodes).map(item => {
+    const row = graphRecord(item)
+    if (!NODE_STATUSES.has(row.status as NodeStatus)) throw new TypeError('invalid task graph node status')
+    const acceptance = graphArray(row.acceptance, GRAPH_LIMITS.acceptance).map(item => {
+      const criterion = graphRecord(item)
+      return { id: graphId(criterion.id), text: graphText(criterion.text) }
+    })
+    if (acceptance.length === 0 || new Set(acceptance.map(item => item.id)).size !== acceptance.length) throw new TypeError('invalid task graph acceptance')
+    const dependencies = graphArray(row.dependencies, GRAPH_LIMITS.nodes).map(graphId)
+    if (new Set(dependencies).size !== dependencies.length) throw new TypeError('duplicate task graph dependency')
+    const status = row.status as NodeStatus
+    const attempt = graphInteger(row.attempt)
+    const startSeq = row.startSeq === null ? null : graphInteger(row.startSeq)
+    const evidence = graphArray(row.evidence, GRAPH_LIMITS.evidence).map(parseGraphEvidence)
+    const feedback = graphArray(row.feedback, GRAPH_LIMITS.feedback).map(parseGraphFeedback)
+    return { id: graphId(row.id), title: graphText(row.title, 300), dependencies, acceptance, status, attempt, startSeq, evidence, feedback }
+  })
+  if (nodes.length === 0 || new Set(nodes.map(node => node.id)).size !== nodes.length) throw new TypeError('invalid task graph nodes')
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const ordered: GraphNode[] = []
+  const visit = (node: GraphNode): void => {
+    if (visiting.has(node.id)) throw new TypeError('task graph dependency cycle')
+    if (visited.has(node.id)) return
+    visiting.add(node.id)
+    for (const dependencyId of node.dependencies) {
+      const dependency = byId.get(dependencyId)
+      if (dependency === undefined) throw new TypeError('missing task graph dependency')
+      visit(dependency)
+    }
+    visiting.delete(node.id)
+    visited.add(node.id)
+    ordered.push(node)
+  }
+  for (const node of nodes) visit(node)
+  if (nodes.filter(node => node.status === 'running' || node.status === 'verifying').length > 1) throw new TypeError('multiple active task graph nodes')
+  for (const node of nodes) {
+    if (node.status !== 'pending' && (node.attempt < 1 || node.startSeq === null)) throw new TypeError('missing task graph attempt identity')
+    if (node.evidence.some(item => item.attempt !== node.attempt)) throw new TypeError('stale task graph evidence')
+    if (node.status === 'completed' && !node.acceptance.every(criterion => node.evidence.some(item => item.kind === 'reviewer-assessment' && item.acceptanceId === criterion.id))) {
+      throw new TypeError('incomplete task graph acceptance')
+    }
+    if ((node.status === 'running' || node.status === 'verifying' || node.status === 'completed')
+      && !node.dependencies.every(dependencyId => byId.get(dependencyId)?.status === 'completed')) throw new TypeError('unfinished task graph prerequisite')
+  }
+  return ordered
+}
+
+function parseGraphFeedback(value: unknown): Feedback {
+  const row = graphRecord(value)
+  if (!FEEDBACK_OUTCOMES.has(row.outcome as Feedback['outcome'])) throw new TypeError('invalid task graph feedback')
+  return { text: graphText(row.text), outcome: row.outcome as Feedback['outcome'] }
+}
+
+function parseGraphEvidence(value: unknown): Evidence {
+  const row = graphRecord(value)
+  if (row.kind !== 'execution' && row.kind !== 'reviewer-assessment') throw new TypeError('invalid task graph evidence kind')
+  const base: Evidence = {
+    callId: graphText(row.callId, 256), resultSeq: graphInteger(row.resultSeq), toolName: graphText(row.toolName, 256),
+    attempt: graphInteger(row.attempt), kind: row.kind,
+  }
+  if (row.kind === 'execution') {
+    if (row.acceptanceId !== undefined || row.assertion !== undefined || row.sourceExcerpt !== undefined) throw new TypeError('execution cannot claim acceptance')
+    return base
+  }
+  return { ...base, acceptanceId: graphId(row.acceptanceId), assertion: graphText(row.assertion), sourceExcerpt: graphText(row.sourceExcerpt, 1_000) }
+}
+
+function graphStatus(nodes: readonly GraphNode[], durability: GraphSnapshot['durability'], stale: boolean, recoveryRequired: boolean,
+  authoritative: TaskGraphView['status']): TaskGraphView['status'] {
+  // `waiting` may encode a private replay failure that the public wire does
+  // not otherwise expose. Never upgrade that conservative producer verdict.
+  if (authoritative === 'waiting') return 'waiting'
+  if (durability === 'pending' || stale || recoveryRequired) return 'waiting'
+  if (nodes.every(node => node.status === 'completed')) return 'completed'
+  if (nodes.some(node => node.status === 'running' || node.status === 'verifying')) return 'active'
+  const completed = new Set(nodes.filter(node => node.status === 'completed').map(node => node.id))
+  return nodes.some(node => node.status === 'pending' && node.dependencies.every(id => completed.has(id))) ? 'ready' : 'waiting'
+}
+
+function graphRecord(value: unknown): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) throw new TypeError('expected task graph object')
+  return value
+}
+
+function graphArray(value: unknown, maximum: number): readonly unknown[] {
+  if (!Array.isArray(value) || value.length > maximum) throw new TypeError('invalid task graph list')
+  return value
+}
+
+function graphText(value: unknown, maximum: number = GRAPH_LIMITS.text): string {
+  if (typeof value !== 'string' || value.length > maximum || value.trim() === '') throw new TypeError('invalid task graph text')
+  return value.trim()
+}
+
+function graphId(value: unknown): string {
+  const result = graphText(value, 128)
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/u.test(result)) throw new TypeError('invalid task graph id')
+  return result
+}
+
+function graphInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new TypeError('invalid task graph counter')
+  return Number(value)
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child)
+    Object.freeze(value)
+  }
+  return value
 }
 
 function emptyErrorSnapshot(): RunCenterSnapshot {

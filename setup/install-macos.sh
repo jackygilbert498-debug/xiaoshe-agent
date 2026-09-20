@@ -6,8 +6,14 @@ TOOL_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 XS_ROOT="$(cd "$TOOL_DIR/.." && pwd -P)"
 DSH_ROOT="$XS_ROOT/runtime/DSH"
 CHECK_ONLY=0
-[ "${1:-}" = "--check-only" ] && CHECK_ONLY=1
-[ "$#" -le 1 ] || { printf '[错误] 用法：%s [--check-only]\n' "$0" >&2; exit 2; }
+RUN_DEVELOPER_VALIDATION=0
+for argument in "$@"; do
+  case "$argument" in
+    --check-only) CHECK_ONLY=1 ;;
+    --run-developer-validation) RUN_DEVELOPER_VALIDATION=1 ;;
+    *) printf '[错误] 用法：%s [--check-only] [--run-developer-validation]\n' "$0" >&2; exit 2 ;;
+  esac
+done
 INSTALL_MODE="${XIAOSHE_INSTALL_MODE:-developer-source}"
 case "$INSTALL_MODE" in
   developer-source|embedded-runtime) ;;
@@ -23,7 +29,20 @@ find_compatible_node() {
   for candidate in "${XIAOSHE_NODE:-}" "$(command -v node 2>/dev/null || true)" \
     /opt/homebrew/opt/node@24/bin/node /usr/local/opt/node@24/bin/node; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
-    "$candidate" -e 'const [major]=process.versions.node.split(".").map(Number); process.exit(major >= 24 ? 0 : 1)' \
+    "$candidate" -e 'const [major,minor]=process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 23) || (major === 24 && minor >= 17) ? 0 : 1)' \
+      >/dev/null 2>&1 && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+find_compatible_python() {
+  local candidate
+  for candidate in "${XIAOSHE_PYTHON:-}" "$(command -v python3 2>/dev/null || true)" \
+    /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+    /opt/miniconda3/bin/python3 /opt/anaconda3/bin/python3 \
+    "${HOME}/miniconda3/bin/python3" "${HOME}/anaconda3/bin/python3" /usr/bin/python3; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
       >/dev/null 2>&1 && { printf '%s\n' "$candidate"; return 0; }
   done
   return 1
@@ -35,8 +54,11 @@ if [ -z "$NODE" ] && [ "$CHECK_ONLY" = 0 ] && command -v brew >/dev/null 2>&1; t
   brew install node@24
   NODE="$(find_compatible_node || true)"
 fi
-[ -n "$NODE" ] || fail '需要 Node.js 24。请先安装 Node 24（推荐 brew install node@24）后重试。'
+[ -n "$NODE" ] || fail '需要 Node.js 22.23+ 或 24.17+。请先安装 Node 24 LTS（推荐 brew install node@24）后重试。'
 export PATH="$(dirname "$NODE"):$PATH"
+PYTHON="$(find_compatible_python || true)"
+[ -n "$PYTHON" ] || fail '需要真实的 Python 3.10+ 解释器。'
+export XIAOSHE_PYTHON="$PYTHON"
 
 find_pnpm() {
   local candidate version
@@ -58,19 +80,24 @@ fi
 
 say '校验' '检查开发者发行源码和本机工具链…'
 command -v git >/dev/null 2>&1 || fail '未找到 Git。'
-command -v python3 >/dev/null 2>&1 || fail '未找到 Python 3。'
 require_file "$XS_ROOT/package.json"
 require_file "$DSH_ROOT/package.json"
 require_file "$XS_ROOT/runtime/xiaoshe-legacy/run.py"
 require_file "$XS_ROOT/packages/product-bundle/package.json"
 require_file "$XS_ROOT/packages/provider-readiness/package.json"
 require_file "$XS_ROOT/packages/migration-recovery/package.json"
+require_file "$XS_ROOT/packages/agent-experience/package.json"
 require_file "$XS_ROOT/packages/coding-workbench/package.json"
 require_file "$TOOL_DIR/profile/cordis.patch.yml"
 if [ "$INSTALL_MODE" = 'developer-source' ]; then
   require_file "$XS_ROOT/启动小蛇.command"
   require_file "$XS_ROOT/启动小蛇终端.command"
   require_file "$XS_ROOT/停止小蛇.command"
+fi
+if [ "$RUN_DEVELOPER_VALIDATION" = 1 ]; then
+  # --check-only must validate every input selected by its flags before the
+  # early success exit; otherwise a partial handoff reports a false green.
+  require_file "$XS_ROOT/apps/desktop-shell/package.json"
 fi
 printf '  Node %s\n' "$("$NODE" --version)"
 if [ -n "$PNPM" ]; then printf '  pnpm %s\n' "$($PNPM --version)"; else printf '  pnpm 将由安装器配置为 11.7.0\n'; fi
@@ -102,9 +129,14 @@ export PATH="$PNPM_SHIM_DIR:$(dirname "$NODE"):$PATH"
 
 PROFILE_ROOT="${DSH_HOME:-${HOME}/.dsh}/profiles/web"
 if [ -d "$PROFILE_ROOT" ]; then
-  BACKUP_ROOT="${DSH_HOME:-${HOME}/.dsh}/backups/web-before-xiaoshe-$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$(dirname "$BACKUP_ROOT")"
-  cp -pR "$PROFILE_ROOT" "$BACKUP_ROOT"
+  BACKUP_PARENT="${DSH_HOME:-${HOME}/.dsh}/backups"
+  mkdir -p "$BACKUP_PARENT"
+  BACKUP_ROOT="$(mktemp -d "$BACKUP_PARENT/web-before-xiaoshe-$(date +%Y%m%d-%H%M%S)-XXXXXX")"
+  # macOS ditto has no --exclude option. The system rsync supports a bounded
+  # archive copy and preserves symlinks/metadata without duplicating the
+  # disposable dependency tree.
+  [ -x /usr/bin/rsync ] || fail '缺少系统 rsync，无法安全备份现有 web Profile。'
+  /usr/bin/rsync -a --exclude 'node_modules/' --exclude '.dsh-module-fallback/' "$PROFILE_ROOT/" "$BACKUP_ROOT/"
   say '备份' "已备份原 web Profile：$BACKUP_ROOT"
 fi
 
@@ -137,7 +169,10 @@ say '构建' '安装 XS 锁定依赖并构建产品插件…'
   "$PNPM" -r --filter './packages/**' run typecheck
   "$PNPM" run typecheck
   "$PNPM" run build
-  if [ -f "$XS_ROOT/apps/desktop-shell/package.json" ]; then
+  # Packaged acceptance already runs this suite before launch. Keep the suite
+  # out of the installation Profile/port/temp environment unless a developer
+  # explicitly asks for source validation.
+  if [ "$RUN_DEVELOPER_VALIDATION" = 1 ]; then
     "$PNPM" --filter '@xiaoshe/desktop-shell' test
   fi
 )
@@ -155,12 +190,15 @@ say '配置' '将 ModLens、XS 桌面能力和完整 Product Bundle 接入 DSH w
     "$XS_ROOT/packages/runtime-contract" \
     "$XS_ROOT/packages/heartbeat" \
     "$XS_ROOT/packages/memory" \
+    "$XS_ROOT/packages/project-knowledge" \
     "$XS_ROOT/packages/plugin-governance" \
     "$XS_ROOT/packages/provider-readiness" \
     "$XS_ROOT/packages/migration-recovery" \
+    "$XS_ROOT/packages/agent-experience" \
     "$XS_ROOT/packages/coding-workbench" \
     "$XS_ROOT/packages/task-timeline" \
     "$DSH_ROOT/packages/session-query/tool-session-query" \
+    "$DSH_ROOT/packages/web/web-fetch-http" \
     "$XS_ROOT/packages/product-bundle"
 )
 mkdir -p "$PROFILE_ROOT"
@@ -168,6 +206,8 @@ PROFILE_PATCH="$PROFILE_ROOT/cordis.patch.yml"
 "$NODE" "$XS_ROOT/scripts/ensure-profile-patch.mjs" \
   --target "$PROFILE_PATCH" \
   --template "$TOOL_DIR/profile/cordis.patch.yml"
+"$NODE" "$XS_ROOT/scripts/patch-modlens-runtime.mjs" \
+  --profile-root "$PROFILE_ROOT"
 
 chmod +x "$XS_ROOT/scripts/"*.sh "$TOOL_DIR/install-macos.sh"
 if [ "$INSTALL_MODE" = 'developer-source' ]; then
@@ -195,6 +235,9 @@ fi
 
 say '终验' '解析最终 DSH web Profile…'
 "$PNPM" --dir "$DSH_ROOT" dsh web --dump-config >/dev/null
+say '冒烟' '在隔离端口启动已安装 Profile 并验证产品健康…'
+"$NODE" "$XS_ROOT/scripts/smoke-installed-profile.mjs" \
+  --dsh-root "$DSH_ROOT" --profile-root "$PROFILE_ROOT"
 
 if [ "$INSTALL_MODE" = 'developer-source' ]; then
   say '完成' '开发者发行版、依赖、Profile、独立桌面壳与 s / ss 双入口已安装。'

@@ -45,7 +45,12 @@ Thumbs.db
 
 # Local archives and build products are not source inputs.
 /artifacts/
+/output/acceptance/
+/output/maturity/
+/output/stabilization/
+/apps/desktop-shell/output/acceptance/
 /docs/superpowers/
+/.superpowers/
 *.tgz
 *.tar.gz
 *.zip

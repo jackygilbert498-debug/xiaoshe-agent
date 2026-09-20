@@ -8,13 +8,14 @@ import {
   type ProviderReadinessSnapshot,
   type RuntimeCommandResult,
 } from '@xiaoshe/runtime-contract'
+import { providerRouteRevision } from '../route-revision.js'
 
 type RpcResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: { readonly code?: string; readonly message: string } }
 interface DirectoryEntry {
   readonly provider: string; readonly displayName: string; readonly settingsNs: string
   readonly settingsPath: readonly string[]; readonly active: boolean; readonly declared: boolean
 }
-interface NamespaceView { readonly ns: string; readonly value: unknown }
+interface NamespaceView { readonly ns: string; readonly value: unknown; readonly revision?: number }
 interface CredentialView { readonly configured: boolean }
 interface SettingsSnapshot {
   readonly status: string
@@ -42,6 +43,7 @@ export interface ProjectProviderReadinessInput {
   readonly probes: readonly ProviderProbeRecord[]
   readonly now: number
   readonly verificationTtlMs: number
+  readonly routeRevisions?: Readonly<Record<string, string>>
 }
 
 /** Join directory, shared settings, credentials, session routes and exact probes. */
@@ -64,6 +66,8 @@ export function projectProviderReadiness(input: ProjectProviderReadinessInput): 
       const derived = deriveProviderReadinessFacts({
         provider: providerId,
         model: model.id,
+        // Missing/legacy bindings cannot prove the currently configured route.
+        routeRevision: input.routeRevisions?.[`${providerId}\u0000${model.id}`] ?? '',
         catalogued: entry !== undefined,
         supported: true,
         settingsConfigured,
@@ -109,6 +113,7 @@ export class ProviderReadinessClient implements ProviderReadiness {
   #snapshot: ProviderReadinessSnapshot
   #lastReadySettingsView: SettingsSnapshot['view']
   #lastReadyModelSnapshot: ModelCatalogSnapshot | undefined
+  #settingsInvalidated = false
   #autoRefreshScheduled = false
   #generation = 0
   #disposed = false
@@ -132,7 +137,21 @@ export class ProviderReadinessClient implements ProviderReadiness {
     const schedule = (): void => {
       const settings = this.#settings.getSnapshot()
       const models = this.#modelCatalog.getSnapshot()
-      let changed = false
+      const unavailable = settingsError(settings)
+      if (unavailable !== undefined) {
+        this.#settingsInvalidated = true
+        // DSH deliberately keeps ready + the same held view after a failed
+        // reload. Its error field is a freshness failure, not a usable fact.
+        if (settings.error || settings.status === 'unavailable') {
+          ++this.#generation
+          this.#publish({ ...this.#snapshot, status: 'error', error: unavailable })
+        } else {
+          this.#publish({ ...withoutError(this.#snapshot), status: 'loading' })
+        }
+        return
+      }
+      let changed = this.#settingsInvalidated
+      this.#settingsInvalidated = false
 
       // `refresh()` may itself make settings/model stores publish transient
       // loading or idle snapshots. Retrying those publications immediately
@@ -164,34 +183,66 @@ export class ProviderReadinessClient implements ProviderReadiness {
   async refresh(sessionId = this.#modelCatalog.getSnapshot().sessionId): Promise<RuntimeCommandResult<ProviderReadinessSnapshot>> {
     if (this.#disposed) return failure('conflict', 'provider readiness service is disposed')
     const generation = ++this.#generation
-    this.#publish({ ...withoutError(this.#snapshot), ...(sessionId === undefined ? {} : { sessionId }), status: 'loading' })
+    const superseded = (): boolean => this.#disposed || generation !== this.#generation
+    const retained = this.#snapshot.sessionId === sessionId
+      ? withoutError(this.#snapshot)
+      : { providers: [], verificationTtlMs: this.#verificationTtlMs }
+    this.#publish({ ...retained, ...(sessionId === undefined ? {} : { sessionId }), status: 'loading' })
     const controller = new AbortController()
     this.#controllers.add(controller)
     try {
       await this.#settings.ensure()
+      if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
+      const initialSettingsError = settingsError(this.#settings.getSnapshot())
+      if (initialSettingsError !== undefined) return this.#fail('provider', initialSettingsError)
       let modelSnapshot = this.#modelCatalog.getSnapshot()
-      if (sessionId !== undefined && modelSnapshot.status !== 'ready') {
+      if (sessionId !== undefined && (modelSnapshot.status !== 'ready' || modelSnapshot.sessionId !== sessionId)) {
         await this.#modelCatalog.refresh(sessionId)
+        if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
         modelSnapshot = this.#modelCatalog.getSnapshot()
       }
       const [providerResponse, probeResponse] = await Promise.all([
         this.#connection.api.llm.providers({}),
         this.#fetcher('/api/xiaoshe/providers/readiness', { method: 'GET', cache: 'no-store', signal: controller.signal }),
       ])
-      if (this.#disposed || generation !== this.#generation) return failure('conflict', 'provider readiness refresh was superseded')
+      if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
       if (!providerResponse.result.ok) return this.#fail('provider', providerResponse.result.error.message)
+      const providerDirectory = providerResponse.result.value.providers
       const settingsSnapshot = this.#settings.getSnapshot()
       const settings = settingsSnapshot.view?.namespaces
-      if (settings === undefined) return this.#fail('provider', settingsSnapshot.error ?? 'settings are unavailable')
+      const currentSettingsError = settingsError(settingsSnapshot)
+      if (currentSettingsError !== undefined || settings === undefined) return this.#fail('provider', currentSettingsError ?? 'settings are unavailable')
+      const settingsRevisions = new Map(settings.map(row => [row.ns, row.revision]))
       const hostValue: unknown = await probeResponse.json()
+      if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
       if (!probeResponse.ok) return this.#fail('transport', httpError(hostValue, probeResponse.status))
       const probes = parseProbeList(hostValue)
+      const configurationEpoch = isRecord(hostValue) && typeof hostValue.configurationEpoch === 'string'
+        && /^[a-f0-9-]{36}$/u.test(hostValue.configurationEpoch) ? hostValue.configurationEpoch : undefined
       const refs = credentialRefs(providerResponse.result.value.providers, settings)
       let credentials: Readonly<Record<string, CredentialView>> = {}
       if (refs.length > 0) {
         const response = await this.#connection.api.credentials.describe({ refs })
+        if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
         if (!response.result.ok) return this.#fail('provider', response.result.error.message)
         credentials = response.result.value.credentials
+      }
+      const routeRevisions: Record<string, string> = Object.create(null) as Record<string, string>
+      await Promise.all(modelSnapshot.groups.flatMap(group => group.models.map(async model => {
+        // Legacy or malformed hosts have no current launch binding. Retain
+        // their history but fail closed instead of certifying an unknown route.
+        if (configurationEpoch === undefined) return
+        const revision = await providerRouteRevision(group.id, model.id, providerDirectory, settings, configurationEpoch)
+        if (revision !== undefined) routeRevisions[`${group.id}\u0000${model.id}`] = revision
+      })))
+      if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
+      const latestSettings = this.#settings.getSnapshot()
+      const latestSettingsError = settingsError(latestSettings)
+      if (latestSettingsError !== undefined) return this.#fail('provider', latestSettingsError)
+      const latestNamespaces = latestSettings.view?.namespaces ?? []
+      if (latestNamespaces.length !== settingsRevisions.size || latestNamespaces.some(row =>
+        !settingsRevisions.has(row.ns) || settingsRevisions.get(row.ns) !== row.revision)) {
+        return this.#fail('conflict', 'settings changed during provider readiness refresh')
       }
       const projected = projectProviderReadiness({
         directory: providerResponse.result.value.providers,
@@ -199,6 +250,7 @@ export class ProviderReadinessClient implements ProviderReadiness {
         credentials,
         modelSnapshot,
         probes,
+        routeRevisions,
         now: this.#now(),
         verificationTtlMs: this.#verificationTtlMs,
       })
@@ -206,7 +258,7 @@ export class ProviderReadinessClient implements ProviderReadiness {
       this.#publish(next)
       return { ok: true, value: next }
     } catch (error: unknown) {
-      if (this.#disposed || generation !== this.#generation) return failure('conflict', 'provider readiness refresh was superseded')
+      if (superseded()) return failure('conflict', 'provider readiness refresh was superseded')
       return this.#fail(controller.signal.aborted ? 'conflict' : 'transport', safeMessage(error))
     } finally { this.#controllers.delete(controller) }
   }
@@ -267,23 +319,60 @@ export class ProviderReadinessClient implements ProviderReadiness {
   }
   #publish(next: ProviderReadinessSnapshot): void {
     if (this.#disposed) return
-    this.#snapshot = freezeSnapshot(next)
+    // Historical probe records remain useful diagnostics, but a loading/error
+    // projection has not re-established that they authenticate the current route.
+    this.#snapshot = freezeSnapshot(next.status === 'ready' ? next : {
+      ...next,
+      providers: next.providers.map(provider => ({
+        ...provider,
+        routes: provider.routes.map(route => ({ ...route, facts: { ...route.facts, verified: false } })),
+      })),
+    })
     for (const listener of this.#listeners) listener()
   }
 }
 
 interface ClientScope {
   readonly connection: ConnectionPort
+  readonly remote: ReadinessRemotePort
   readonly modelCatalog: ModelCatalog
   readonly settingsScope: { describe(): SettingsFace }
   provide(name: string, value: unknown): unknown
   effect(execute: () => (() => void), label?: string): unknown
 }
 interface ClientContext { inject(names: readonly string[], mount: (scope: ClientScope) => void): unknown }
-export const inject = ['connection', 'modelCatalog', 'settingsScope']
+interface ReadinessRemotePort {
+  llm: {
+    listProviders(): Promise<RpcResult<readonly { id: string; name: string }[]>>
+    listConfigurableProviders(): Promise<RpcResult<readonly Omit<DirectoryEntry, 'active'>[]>>
+  }
+  credentials: { describe(refs: readonly string[]): Promise<RpcResult<Readonly<Record<string, CredentialView>>>> }
+}
+
+/** Join the public provider roster and preserve generated Remote error branches. */
+export function createReadinessRemoteConnection(remote: ReadinessRemotePort): ConnectionPort {
+  return { api: {
+    llm: { async providers() {
+      const [registered, declared] = await Promise.all([remote.llm.listProviders(), remote.llm.listConfigurableProviders()])
+      if (!registered.ok) return { result: registered }
+      if (!declared.ok) return { result: declared }
+      const active = new Set(registered.value.map(row => row.id))
+      const known = new Set(declared.value.map(row => row.provider))
+      const providers: DirectoryEntry[] = declared.value.map(row => ({ ...row, active: active.has(row.provider), declared: row.declared === true }))
+      for (const row of registered.value) if (!known.has(row.id)) providers.push({ provider: row.id, displayName: row.name, settingsNs: '', settingsPath: [], active: true, declared: false })
+      return { result: { ok: true, value: { providers } } }
+    } },
+    credentials: { async describe({ refs }) {
+      const result = await remote.credentials.describe(refs)
+      return { result: result.ok ? { ok: true, value: { credentials: result.value } } : result }
+    } },
+  } }
+}
+
+export const inject = ['remote', 'remote.llm', 'remote.credentials', 'modelCatalog', 'settingsScope']
 export function apply(ctx: ClientContext): void {
   ctx.inject(inject, scope => {
-    const provider = new ProviderReadinessClient({ connection: scope.connection, settings: scope.settingsScope.describe(), modelCatalog: scope.modelCatalog })
+    const provider = new ProviderReadinessClient({ connection: createReadinessRemoteConnection(scope.remote), settings: scope.settingsScope.describe(), modelCatalog: scope.modelCatalog })
     scope.provide('providerReadiness', provider)
     scope.effect(() => { void provider.refresh(); return () => provider.dispose() }, 'xiaoshe-provider-readiness: browser projection')
   })
@@ -309,6 +398,10 @@ function stringField(value: unknown, field: string): string | undefined {
   if (!isRecord(value) || typeof value[field] !== 'string') return undefined
   const normalized = String(value[field]).trim()
   return normalized === '' ? undefined : normalized
+}
+function settingsError(snapshot: SettingsSnapshot): string | undefined {
+  if (snapshot.error) return snapshot.error
+  return snapshot.status === 'ready' && snapshot.view !== undefined ? undefined : 'settings are unavailable'
 }
 function parseProbeList(value: unknown): readonly ProviderProbeRecord[] {
   if (!isRecord(value) || !Array.isArray(value.probes)) throw new TypeError('provider probe response is invalid')

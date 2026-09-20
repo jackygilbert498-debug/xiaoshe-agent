@@ -32,8 +32,15 @@ export interface MemoryHostContext {
     register(
       namespace: string,
       schema: SettingsSchemaLike,
-      options?: { readonly base?: Record<string, JsonValue>; readonly applies?: 'live' | 'restart' },
+      options?: {
+        readonly base?: Record<string, JsonValue>
+        readonly applies?: 'live' | 'restart'
+        readonly recoverInvalidStored?: boolean
+      },
     ): SettingsScopeLike
+  }
+  readonly logger?: {
+    warn(message: string): void
   }
   readonly systemPrompt: {
     context(row: {
@@ -44,7 +51,7 @@ export interface MemoryHostContext {
   }
   readonly webServer: MemoryWebServer
   on(
-    event: 'system-prompt/assemble',
+    event: 'system-prompt/finalized',
     listener: (
       assembly: MemoryPromptAssembly,
       context: MemoryAssemblyContext,
@@ -60,8 +67,13 @@ export function apply(ctx: MemoryHostContext): void {
   const settings = ctx.settings.register(SETTINGS_NAMESPACE, memorySettingsSchema, {
     base: { revision: 0, entries: [], audit: [], usage: [] },
     applies: 'live',
+    recoverInvalidStored: true,
   })
-  const service = createMemoryService(settings)
+  const service = createMemoryService(settings, {
+    onUsageAuditFailure() {
+      ctx.logger?.warn('xiaoshe memory usage audit persistence is degraded')
+    },
+  })
   for (const definition of createMemoryToolDefinitions(service)) {
     ctx.effect(() => ctx.tools.register(definition), `xiaoshe-memory: ${definition.name}`)
   }
@@ -77,7 +89,9 @@ export function apply(ctx: MemoryHostContext): void {
       return injection.text
     },
   }), 'xiaoshe-memory: prompt context')
-  ctx.effect(() => ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+  // The finalized hook runs after complete-prompt/runtime-context suppression.
+  // Audit only the exact bounded contribution that survives that Host gate.
+  ctx.effect(() => ctx.on('system-prompt/finalized', async (_assembly, context, next) => {
     const result = await next()
     const injection = selected.get(context)
     selected.delete(context)
@@ -85,11 +99,14 @@ export function apply(ctx: MemoryHostContext): void {
     if (agent === undefined || injection === undefined || injection.items.length === 0) return result
     const emitted = result.contexts.some(row => row.name === MEMORY_CONTEXT_NAME && row.text === injection.text)
     if (!emitted) return result
-    await service.recordInjection({
+    // Start the bounded-CAS, service-serialized audit without delaying the
+    // already assembled prompt. The terminal catch prevents an unhandled
+    // rejection; the service owns sanitized diagnostics and fixed logging.
+    void service.recordInjection({
       sessionId: agent.id,
       ...(injection.project === undefined ? {} : { project: injection.project }),
       itemIds: injection.items.map(item => item.id),
-    })
+    }).catch(() => undefined)
     return result
   }), 'xiaoshe-memory: injection audit')
   ctx.effect(() => registerMemoryHttpRoute(ctx.webServer, service), 'xiaoshe-memory: Host API')

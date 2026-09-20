@@ -86,7 +86,7 @@ export class PluginLifecycleService {
     this.#defaultHealthPath = options.defaultHealthPath
     this.#now = options.now ?? Date.now
     this.#tokenFactory = options.tokenFactory ?? (() => randomBytes(32).toString('base64url'))
-    this.#runtimeVersions = Object.freeze(options.runtimeVersions ?? { xiaoshe: '0.2.0', dsh: '0.1.0-rc.8' })
+    this.#runtimeVersions = Object.freeze(options.runtimeVersions ?? { xiaoshe: '0.2.0', dsh: '0.1.5-rc.2' })
     this.#ready = this.#recoverInterruptedTransactions()
   }
 

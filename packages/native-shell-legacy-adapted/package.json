@@ -17,12 +17,14 @@
     "lib/index.js",
     "lib/types/index.d.ts",
     "lib/client.js",
+    "lib/client.version.json",
     "ui/assets/snake.svg",
     "ui/assets/icon-256.png"
   ],
   "scripts": {
     "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
     "build:client": "node ./scripts/build-client.mjs",
+    "test": "tsc -p tsconfig.build.json && node --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dsh": {

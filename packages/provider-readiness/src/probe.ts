@@ -49,11 +49,13 @@ export async function runProviderProbe(
   if (typeof timer === 'object' && timer !== null && 'unref' in timer && typeof timer.unref === 'function') timer.unref()
   let contextWindow: number | undefined
   let usage: ProviderProbeUsage = Object.freeze({})
+  let iterator: AsyncIterator<unknown> | undefined
+  let streamDone = false
   try {
-    const info = await llm.resolveModelInfo(provider, model, controller.signal)
+    const info = await abortable(() => llm.resolveModelInfo(provider, model, controller.signal), controller.signal)
     contextWindow = resolvedContextWindow(info)
     let finish: unknown
-    for await (const chunk of llm.stream({
+    iterator = llm.stream({
       provider,
       model,
       messages: [Object.freeze({
@@ -65,12 +67,17 @@ export async function runProviderProbe(
       maxTokens: 8,
       temperature: 0,
       signal: controller.signal,
-    })) {
+    })[Symbol.asyncIterator]()
+    while (true) {
+      const step = await abortable(() => iterator!.next(), controller.signal)
+      if (step.done === true) { streamDone = true; break }
+      const chunk = step.value
       controller.signal.throwIfAborted()
       if (!isRecord(chunk) || typeof chunk.type !== 'string') continue
       if (chunk.type === 'usage') usage = projectUsage(chunk.usage)
       if (chunk.type === 'finish') finish = chunk.reason
     }
+    controller.signal.throwIfAborted()
     const completedAt = now()
     const latencyMs = Math.max(0, completedAt - start)
     if (!isRecord(finish) || typeof finish.kind !== 'string') {
@@ -108,7 +115,25 @@ export async function runProviderProbe(
   } finally {
     clear(timer)
     runtime.signal?.removeEventListener('abort', cancelFromCaller)
+    // An adapter may also ignore cancellation in return(). Cleanup must never
+    // keep the user-visible probe or its service slot pending. Observe rejection
+    // without allowing a late iterator result to publish another outcome.
+    const cleanupIterator = iterator
+    if (cleanupIterator !== undefined && !streamDone) void Promise.resolve().then(() => cleanupIterator.return?.()).catch(() => {})
   }
+}
+
+/** Bound one provider wait independently from the adapter's AbortSignal support. */
+function abortable<T>(operation: () => T | PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolveResult, reject) => {
+    if (signal.aborted) { reject(signal.reason); return }
+    const aborted = (): void => { signal.removeEventListener('abort', aborted); reject(signal.reason) }
+    signal.addEventListener('abort', aborted, { once: true })
+    Promise.resolve().then(() => { signal.throwIfAborted(); return operation() }).then(
+      value => { signal.removeEventListener('abort', aborted); resolveResult(value) },
+      error => { signal.removeEventListener('abort', aborted); reject(error) },
+    )
+  })
 }
 
 function failed(

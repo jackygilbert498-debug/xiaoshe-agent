@@ -3,17 +3,19 @@ import { resolve } from 'node:path'
 import { registerProviderReadinessHttpRoutes, type ProviderReadinessWebServer } from './http.js'
 import { ProviderProbeService } from './service.js'
 import { ProviderProbeStore } from './store.js'
+import { providerRouteRevision, type ProviderRouteAddress, type PublicSettingsNamespace } from './route-revision.js'
 
 interface HostContext {
   readonly webServer: ProviderReadinessWebServer
-  readonly llm: ConstructorParameters<typeof ProviderProbeService>[0]['llm']
+  readonly llm: ConstructorParameters<typeof ProviderProbeService>[0]['llm'] & { listConfigurableProviders(): readonly ProviderRouteAddress[] }
+  readonly settings: { describe(options: { readonly redactSecrets: true }): readonly PublicSettingsNamespace[] }
   provide(name: string, value: unknown): unknown
   effect(execute: () => (() => void | Promise<void>), label?: string): unknown
 }
 export interface ProviderReadinessConfig { readonly dshHome?: string; readonly activeProfile?: string }
 
 export const name = 'xiaoshe-provider-readiness'
-export const inject = ['webServer', 'llm']
+export const inject = ['webServer', 'llm', 'settings']
 
 /** Compose profile-owned probe persistence, the LLM seam, and loopback controls. */
 export function apply(ctx: HostContext, config: ProviderReadinessConfig = {}): void {
@@ -23,6 +25,8 @@ export function apply(ctx: HostContext, config: ProviderReadinessConfig = {}): v
   const service = new ProviderProbeService({
     store: new ProviderProbeStore(resolve(dshHome, 'profiles', profile, '.xiaoshe', 'provider-probes.json')),
     llm: ctx.llm,
+    routeRevision: (provider, model, configurationEpoch) => providerRouteRevision(provider, model,
+      ctx.llm.listConfigurableProviders(), ctx.settings.describe({ redactSecrets: true }), configurationEpoch),
   })
   ctx.provide('xiaosheProviderReadiness', service)
   ctx.effect(() => {

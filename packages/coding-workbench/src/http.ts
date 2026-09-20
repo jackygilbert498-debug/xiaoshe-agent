@@ -1,5 +1,7 @@
 import { Buffer } from 'node:buffer'
 import type { CodingWorkbenchService } from './service.js'
+import { WorkbenchRecoveryError } from './patch.js'
+import { WorkbenchStorageError } from './transactions.js'
 
 export const WORKBENCH_BASE_PATH = '/api/xiaoshe/workbench'
 const LIMIT = 2 * 1024 * 1024
@@ -19,6 +21,7 @@ export function registerCodingWorkbenchHttpRoutes(server: WorkbenchWebServer, se
     post('/write/prepare', body => service.prepareWrite({ workspaceId: text(body.workspaceId, 'workspaceId', 512), path: text(body.path, 'path', 4096), newText: text(body.newText, 'newText', 1024 * 1024, true) })),
     post('/write/confirm', body => service.confirmWrite(text(body.id, 'id', 200), text(body.token, 'token', 512))),
     post('/write/revert', body => service.revert(text(body.id, 'id', 200))),
+    post('/write/recover', body => service.recoverWrite(text(body.id, 'id', 200))),
     post('/scripts', body => service.scripts(text(body.workspaceId, 'workspaceId', 512))),
     post('/run', body => service.runScript(text(body.workspaceId, 'workspaceId', 512), text(body.script, 'script', 80))),
     post('/cancel', body => ({ cancelled: service.cancel(text(body.id, 'id', 200)) })),
@@ -30,7 +33,12 @@ function route(server: WorkbenchWebServer, suffix: string, method: 'GET' | 'POST
     if (!trusted(request)) { send(response, 403, { error: '该接口只接受同源回环请求。', kind: 'UNTRUSTED_REQUEST' }); return }
     if (request.method !== method) { response.writeHead(405, { allow: method }).end(); return }
     try { await action(method === 'POST' ? await json(request) : {}, response) }
-    catch (error) { const invalid = error instanceof TypeError || error instanceof RangeError || error instanceof SyntaxError; send(response, invalid ? 400 : 409, { error: safe(error), kind: invalid ? 'INVALID_WORKBENCH_REQUEST' : 'WORKBENCH_OPERATION_FAILED' }) }
+    catch (error) {
+      if (error instanceof WorkbenchRecoveryError) { send(response, 409, { error: error.message, kind: error.code, transactionId: error.transactionId, recoveryRequired: true }); return }
+      if (error instanceof WorkbenchStorageError) { send(response, 503, { error: error.message, kind: error.code }); return }
+      const invalid = error instanceof TypeError || error instanceof RangeError || error instanceof SyntaxError
+      send(response, invalid ? 400 : 409, { error: safe(error), kind: invalid ? 'INVALID_WORKBENCH_REQUEST' : 'WORKBENCH_OPERATION_FAILED' })
+    }
   } })
 }
 async function json(request: WorkbenchRequest): Promise<Record<string, unknown>> {

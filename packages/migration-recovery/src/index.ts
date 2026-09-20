@@ -17,7 +17,7 @@ interface AttachmentPort {
 }
 interface SettingsPort {
   describe(options?: { readonly redactSecrets: boolean }): readonly Readonly<Record<string, unknown>>[]
-  replace(ns: string, section: object, expectedRevision?: number): Promise<void>
+  mutate(ns: string, ops: readonly { readonly op: 'set'; readonly path: readonly string[]; readonly value: unknown }[], expectedRevision?: number): Promise<void>
 }
 interface WorkspacePort {
   list(): readonly (Readonly<Record<string, unknown>> & { readonly path?: string; attachSession?(id: string): Promise<void> })[]

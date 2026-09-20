@@ -114,6 +114,15 @@ export class BridgeClient {
     this.stdoutBuffer = ''
     this.stderrTail = ''
 
+    // A failed pipe write invokes its callback AND emits an error on stdin's
+    // Socket. ChildProcess's own error handler does not consume that event.
+    // Keep the handler on old streams too, but never stop a newer owned child.
+    child.stdin.on('error', error => {
+      if (this.child !== child) return
+      const writeError = new Error(`Xiaoshe desktop bridge stdin failed: ${error.message}`)
+      this.failAll(writeError)
+      void this.stop(writeError)
+    })
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onStdout(child, chunk))
     child.stderr.setEncoding('utf8')

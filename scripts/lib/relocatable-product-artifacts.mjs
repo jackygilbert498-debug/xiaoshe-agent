@@ -12,6 +12,7 @@ const packageDefinitions = [
   { relativeDirectory: 'packages/runtime-contract' },
   { relativeDirectory: 'packages/heartbeat' },
   { relativeDirectory: 'packages/memory' },
+  { relativeDirectory: 'packages/project-knowledge' },
   { relativeDirectory: 'packages/plugin-governance' },
   { relativeDirectory: 'packages/task-timeline' },
   {

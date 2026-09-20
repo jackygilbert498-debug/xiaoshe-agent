@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { ProviderProbeRecord } from '@xiaoshe/runtime-contract'
 import { runProviderProbe, type ProviderProbeInput } from './probe.js'
 import { ProviderProbeStore } from './store.js'
@@ -8,6 +9,8 @@ interface LlmPort {
 }
 
 export interface ProviderProbeServiceSnapshot {
+  /** Non-secret owner epoch; previous launches cannot authenticate this one. */
+  readonly configurationEpoch: string
   readonly probes: readonly ProviderProbeRecord[]
   readonly running?: { readonly provider: string; readonly model: string; readonly startedAt: number }
 }
@@ -20,13 +23,16 @@ export class ProviderProbeService {
   readonly #llm: LlmPort
   readonly #now: () => number
   readonly #ready: Promise<void>
+  readonly #configurationEpoch = randomUUID()
+  readonly #routeRevision: ((provider: string, model: string, configurationEpoch: string) => Promise<string | undefined>) | undefined
   #inFlight: { readonly controller: AbortController; readonly provider: string; readonly model: string; readonly startedAt: number } | undefined
   #disposed = false
 
-  constructor(input: { readonly store: ProviderProbeStore; readonly llm: LlmPort; readonly now?: () => number }) {
+  constructor(input: { readonly store: ProviderProbeStore; readonly llm: LlmPort; readonly now?: () => number; readonly routeRevision?: (provider: string, model: string, configurationEpoch: string) => Promise<string | undefined> }) {
     this.#store = input.store
     this.#llm = input.llm
     this.#now = input.now ?? Date.now
+    this.#routeRevision = input.routeRevision
     this.#ready = this.#recoverInterrupted()
   }
 
@@ -35,6 +41,7 @@ export class ProviderProbeService {
   snapshot(): ProviderProbeServiceSnapshot {
     const running = this.#inFlight
     return Object.freeze({
+      configurationEpoch: this.#configurationEpoch,
       probes: this.#store.list(),
       ...(running === undefined ? {} : { running: Object.freeze({ provider: running.provider, model: running.model, startedAt: running.startedAt }) }),
     })
@@ -52,13 +59,17 @@ export class ProviderProbeService {
     const controller = new AbortController()
     const startedAt = this.#now()
     this.#inFlight = { controller, provider, model, startedAt }
-    await this.#store.save({ status: 'running', provider, model, startedAt, cost: { status: 'unavailable' } })
     try {
+      // Persisting the crash-visible intent is part of the owned operation. If
+      // it fails, the same finally block must release the in-memory busy slot.
+      const routeRevision = await this.#routeRevision?.(provider, model, this.#configurationEpoch)
+      const binding = routeRevision === undefined ? {} : { routeRevision }
+      await this.#store.save({ status: 'running', provider, model, startedAt, ...binding, cost: { status: 'unavailable' } })
       const record = await runProviderProbe(this.#llm, { provider, model, timeoutMs: input.timeoutMs }, {
         now: this.#now,
         signal: controller.signal,
       })
-      return await this.#store.save(record)
+      return await this.#store.save({ ...record, ...binding })
     } finally {
       if (this.#inFlight?.controller === controller) this.#inFlight = undefined
     }
@@ -85,6 +96,7 @@ export class ProviderProbeService {
         provider: record.provider,
         model: record.model,
         startedAt: record.startedAt,
+        ...(record.routeRevision === undefined ? {} : { routeRevision: record.routeRevision }),
         completedAt,
         latencyMs: Math.max(0, completedAt - record.startedAt),
         ...(record.contextWindow === undefined ? {} : { contextWindow: record.contextWindow }),

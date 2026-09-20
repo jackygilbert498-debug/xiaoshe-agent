@@ -37,16 +37,19 @@ xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" --output-format js
   || { printf '[外部阻塞] 公证钥匙串 Profile 不可用：%s\n' "$NOTARY_PROFILE" >&2; exit 4; }
 
 NODE_DIR=""
-for candidate in /opt/homebrew/opt/node@24/bin /usr/local/opt/node@24/bin; do
-  if [ -x "$candidate/node" ]; then NODE_DIR="$candidate"; break; fi
+for candidate in /opt/homebrew/opt/node@24/bin /usr/local/opt/node@24/bin /opt/homebrew/opt/node@22/bin /usr/local/opt/node@22/bin; do
+  if [ -x "$candidate/node" ] && "$candidate/node" -e 'const [major,minor]=process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 23) || (major === 24 && minor >= 17) ? 0 : 1)' >/dev/null 2>&1; then
+    NODE_DIR="$candidate"
+    break
+  fi
 done
 if [ -z "$NODE_DIR" ]; then
   candidate_node="$(command -v node 2>/dev/null || true)"
-  if [ -n "$candidate_node" ] && "$candidate_node" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'; then
+  if [ -n "$candidate_node" ] && "$candidate_node" -e 'const [major,minor]=process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 23) || (major === 24 && minor >= 17) ? 0 : 1)' >/dev/null 2>&1; then
     NODE_DIR="$(dirname "$candidate_node")"
   fi
 fi
-[ -n "$NODE_DIR" ] || { printf '[错误] 需要 Node 24。\n' >&2; exit 5; }
+[ -n "$NODE_DIR" ] || { printf '[错误] 需要 Node.js 22.23+ 或 24.17+。\n' >&2; exit 5; }
 export PATH="$NODE_DIR:$PATH"
 if [ -z "$DMG" ]; then
   DESKTOP_VERSION="$(node -e 'const fs=require("node:fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version)' "$XS_ROOT/apps/desktop-shell/package.json")"
@@ -58,6 +61,9 @@ MOUNT_POINT="$WORK_DIR/mount"
 APP_ZIP="$WORK_DIR/Xiaoshe-app.zip"
 APP_RESULT="$WORK_DIR/app-notary.json"
 DMG_RESULT="$WORK_DIR/dmg-notary.json"
+SOURCE_CAPTURE="$WORK_DIR/macos-source-capture.json"
+SOURCE_REPORT="${XIAOSHE_MAC_SOURCE_REPORT:-$XS_ROOT/apps/desktop-shell/dist-desktop/macos-source-identity.json}"
+SOURCE_IDENTITY="$XS_ROOT/scripts/release/macos-source-identity.mjs"
 MOUNTED=0
 cleanup() {
   if [ "$MOUNTED" -eq 1 ]; then hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true; fi
@@ -65,6 +71,8 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$MOUNT_POINT"
+
+node "$SOURCE_IDENTITY" capture "--root=$XS_ROOT" "--output=$SOURCE_CAPTURE"
 
 printf '[1/6] 构建并以 Developer ID 签名应用…\n'
 (cd "$XS_ROOT" && CSC_NAME="$IDENTITY" pnpm --filter '@xiaoshe/desktop-shell' exec electron-builder --dir --mac --arm64 --config electron-builder.yml --publish never)
@@ -103,5 +111,7 @@ xcrun stapler validate "${embedded_apps[0]}"
 spctl --assess --type execute --verbose=4 "${embedded_apps[0]}"
 hdiutil detach "$MOUNT_POINT" >/dev/null
 MOUNTED=0
+
+node "$SOURCE_IDENTITY" verify "--root=$XS_ROOT" "--expected=$SOURCE_CAPTURE" "--app=$APP" "--dmg=$DMG" "--output=$SOURCE_REPORT"
 
 printf '[6/6] 完成：应用与 DMG 均已签名、公证、装订并通过 Gatekeeper。\n'

@@ -47,7 +47,7 @@ export function apply(ctx: PluginGovernanceHostContext, config: PluginGovernance
     healthChecker: new ProfileHealthChecker({ manager, cliPath, cwd, environment }),
     activeProfile,
     defaultHealthPath: config.defaultHealthPath ?? PLUGIN_TRANSACTIONS_PATH,
-    runtimeVersions: { xiaoshe: config.xiaosheVersion ?? '0.2.0', dsh: config.dshVersion ?? '0.1.0-rc.8' },
+    runtimeVersions: { xiaoshe: config.xiaosheVersion ?? '0.2.0', dsh: config.dshVersion ?? '0.1.5-rc.2' },
   })
   ctx.provide('xiaoshePluginGovernance', service)
   ctx.effect(() => {

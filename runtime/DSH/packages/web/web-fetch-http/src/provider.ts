@@ -1,22 +1,22 @@
 /**
- * Safe HTTP(S) retrieval for `ctx.web`: validates URLs, follows only same-origin redirects,
- * enforces time and size limits, classifies and decodes text, and leaves presentation to
- * `@deepseek-ai/dsh-tool-web`. Requests carry no browser cookies or ambient credentials.
- *
- * Private-network and SSRF protection is not implemented; do not enable this provider where
- * it can reach sensitive internal targets.
+ * Safe HTTP(S) retrieval for `ctx.web`: validates and pins public IP destinations, follows
+ * only same-origin redirects, enforces time and size limits, classifies and decodes text,
+ * and leaves presentation to `@deepseek-ai/dsh-tool-web`. Requests carry no browser cookies
+ * or ambient credentials.
  * @module @deepseek-ai/dsh-web-fetch-http/provider
  */
 
 import { WebError } from '@deepseek-ai/dsh-web'
 import type { WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult } from '@deepseek-ai/dsh-web'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
+import type { Response } from 'undici'
+import { proxyRouteFor } from '@deepseek-ai/dsh-http-proxy'
+import { publicHttpNetwork } from './network.ts'
+import type { PublicAddress } from './network.ts'
 import { classifyContentType, decoderForCharset, isSameOrigin, parseCharset, validateFetchUrl } from './policy.ts'
 
 /** Resolved provider limits (the plugin's schemastery Config supplies defaults). */
 export interface HttpFetchLimits {
-  /** Maximum accepted request URL length. */
-  maxUrlLength: number
   /** Maximum response body size in bytes (read is aborted past this). */
   maxResponseBytes: number
   /** Maximum decoded body length in characters (truncated past this). */
@@ -29,6 +29,9 @@ export interface HttpFetchLimits {
   userAgent: string
 }
 
+/** Resolve one hostname to an already policy-validated address set. */
+export type HttpFetchResolver = (hostname: string, signal: AbortSignal) => Promise<PublicAddress[]>
+
 /** Stable id this provider registers under. */
 export const LOCAL_FETCH_PROVIDER_ID = 'http'
 
@@ -36,7 +39,14 @@ export const LOCAL_FETCH_PROVIDER_ID = 'http'
 export class HttpFetchProvider implements WebFetchProvider {
   readonly id = LOCAL_FETCH_PROVIDER_ID
 
-  constructor(private readonly limits: HttpFetchLimits) {}
+  /**
+   * @param limits - resolved transport and response limits.
+   * @param resolveAddresses - resolver that rejects non-public destinations before returning.
+   */
+  constructor(
+    private readonly limits: HttpFetchLimits,
+    private readonly resolveAddresses: HttpFetchResolver = publicHttpNetwork.resolve,
+  ) {}
 
   /** No credentials to check — an anonymous public fetcher is always usable. */
   available(): boolean {
@@ -54,62 +64,77 @@ export class HttpFetchProvider implements WebFetchProvider {
 
   /** Follow same-origin redirects up to the hop cap, then read the final response. */
   private async followAndRead(initialUrl: string, signal: AbortSignal): Promise<WebFetchResult> {
-    let currentUrl = validateFetchUrl(initialUrl, this.limits.maxUrlLength)
+    let currentUrl = validateFetchUrl(initialUrl)
     let redirectsFollowed = 0
 
     for (;;) {
-      const response = await this.requestOnce(currentUrl, signal)
-
-      if (isRedirectStatus(response.status)) {
-        // Enforce the redirect budget before resolving or validating the next hop.
-        if (redirectsFollowed >= this.limits.maxRedirects) {
-          await response.body?.cancel()
-          throw new WebError(`exceeded the maximum of ${this.limits.maxRedirects} redirects`, 'WEB_REDIRECT_BLOCKED')
-        }
-        const location = response.headers.get('location')
-        if (location === null) {
-          // A redirect status with no Location is not a usable resource. Cancel
-          // the (possibly streaming) body before throwing so no socket leaks.
-          await response.body?.cancel()
-          throw new WebError(`redirect response (HTTP ${response.status}) without a Location header`, 'WEB_PROVIDER_ERROR')
-        }
-        const target = resolveRedirect(location, currentUrl)
-        // Re-validate the target against the same transport hygiene a direct request gets: a
-        // redirect must not be a back door to a credentialed, non-http(s), or over-long URL
-        // that validateFetchUrl would reject.
-        let validatedTarget: URL
-        try {
-          validatedTarget = validateFetchUrl(target.toString(), this.limits.maxUrlLength)
-          if (!isSameOrigin(validatedTarget, currentUrl)) {
-            throw new WebError(
-              `cross-origin redirect to ${validatedTarget.origin} is not followed automatically; retry against that URL directly`,
-              'WEB_REDIRECT_BLOCKED',
-            )
+      const request = await this.requestOnce(currentUrl, signal)
+      const { response } = request
+      try {
+        if (isRedirectStatus(response.status)) {
+          // Enforce the redirect budget before resolving or validating the next hop.
+          if (redirectsFollowed >= this.limits.maxRedirects) {
+            await response.body?.cancel()
+            throw new WebError(`exceeded the maximum of ${this.limits.maxRedirects} redirects`, 'WEB_REDIRECT_BLOCKED')
           }
-        } catch (error: unknown) {
+          const location = response.headers.get('location')
+          if (location === null) {
+            // A redirect status with no Location is not a usable resource. Cancel
+            // the (possibly streaming) body before throwing so no socket leaks.
+            await response.body?.cancel()
+            throw new WebError(`redirect response (HTTP ${response.status}) without a Location header`, 'WEB_PROVIDER_ERROR')
+          }
+          const target = resolveRedirect(location, currentUrl)
+          // Re-validate the target against the same transport hygiene a direct request gets: a
+          // redirect must not be a back door to a credentialed, non-http(s), or over-long URL
+          // that validateFetchUrl would reject.
+          let validatedTarget: URL
+          try {
+            validatedTarget = validateFetchUrl(target.toString())
+            if (!isSameOrigin(validatedTarget, currentUrl)) {
+              throw new WebError(
+                `cross-origin redirect to ${validatedTarget.origin} is not followed automatically; retry against that URL directly`,
+                'WEB_REDIRECT_BLOCKED',
+              )
+            }
+          } catch (error: unknown) {
+            await response.body?.cancel()
+            throw error
+          }
           await response.body?.cancel()
-          throw error
+          currentUrl = validatedTarget
+          redirectsFollowed++
+          continue
         }
-        await response.body?.cancel()
-        currentUrl = validatedTarget
-        redirectsFollowed++
-        continue
-      }
 
-      return await this.readBody(response, currentUrl, signal)
+        return await this.readBody(response, currentUrl, signal)
+      } finally {
+        await request.close()
+      }
     }
   }
 
-  private async requestOnce(url: URL, signal: AbortSignal): Promise<Response> {
+  private async requestOnce(url: URL, signal: AbortSignal) {
+    const headers = {
+      'user-agent': this.limits.userAgent,
+      'accept': 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8',
+    }
+    let stage = 'proxy routing'
     try {
-      return await fetch(url, {
-        method: 'GET',
-        redirect: 'manual',
-        headers: { 'user-agent': this.limits.userAgent, 'accept': 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8' },
-        signal,
-      })
+      // Xiaoshe's public-web tool must keep the same destination boundary when
+      // using a proxy. Pin the approved IP in the proxy request/CONNECT authority;
+      // Host and TLS SNI still identify the original site.
+      const route = proxyRouteFor(url)
+      stage = 'DNS resolution (including trusted DoH recovery for synthetic addresses)'
+      const addresses = await this.resolveAddresses(url.hostname, signal)
+      stage = route.proxied ? 'proxy transport' : 'direct transport'
+      if (route.proxied) {
+        return await publicHttpNetwork.requestViaPinned(route.proxy, url, addresses, headers, signal)
+      }
+      return await publicHttpNetwork.request(url, addresses, headers, signal)
     } catch (error: unknown) {
-      throw translateAbortOrNetwork(error, signal)
+      if (error instanceof WebError) throw error
+      throw translateAbortOrNetwork(error, signal, stage)
     }
   }
 
@@ -168,7 +193,8 @@ export class HttpFetchProvider implements WebFetchProvider {
     const chunks: Uint8Array[] = []
     let total = 0
     let truncatedByBytes = false
-    const reader = response.body.getReader()
+    // Undici exposes response chunks as `any`; Fetch guarantees body chunks are Uint8Array.
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>
     try {
       for (;;) {
         const { done, value } = await reader.read()
@@ -232,9 +258,33 @@ function resolveRedirect(location: string, base: URL): URL {
  * nesting — is `WEB_ABORTED`; a throw with the signal NOT aborted is a
  * transport/network failure (`WEB_PROVIDER_ERROR`).
  */
-function translateAbortOrNetwork(error: unknown, signal: AbortSignal): WebError {
+function translateAbortOrNetwork(error: unknown, signal: AbortSignal, stage = 'response body transport'): WebError {
   const timeout = timeoutOf(signal, 'WEB_FETCH_TIMEOUT')
   if (timeout !== undefined) return new WebError('web fetch timed out', 'WEB_FETCH_TIMEOUT', { cause: timeout })
   if (signal.aborted) return new WebError('web fetch aborted', 'WEB_ABORTED', { cause: error })
-  return new WebError(`web fetch failed: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+  return new WebError(`web fetch failed during ${stage}${networkCodes(error)}. Check the existing network/proxy route; this failure does not establish that the URL is invalid. Public-address and TLS checks remain required.`, 'WEB_PROVIDER_ERROR', { cause: error })
+}
+
+/** Preserve known low-level codes without leaking error text, URLs or unbounded aggregate graphs. */
+function networkCodes(error: unknown): string {
+  const allowed = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'ERR_TLS_CERT_ALTNAME_INVALID', 'UND_ERR_PRX_TLS', 'UND_ERR_PROXY', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET'])
+  const queue: unknown[] = [error]
+  const seen = new Set<unknown>()
+  const codes = new Set<string>()
+  for (let index = 0; index < queue.length && index < 16; index++) {
+    const item = queue[index]
+    if (!(item instanceof Error) || seen.has(item)) continue
+    seen.add(item)
+    const code = (item as Error & { code?: unknown }).code
+    if (typeof code === 'string' && allowed.has(code)) codes.add(code)
+    if (queue.length < 16) queue.push(item.cause)
+    if (item instanceof AggregateError) {
+      const errors: readonly unknown[] = item.errors
+      queue.push(...errors.slice(0, 16 - queue.length))
+    }
+  }
+  return codes.size === 0 ? ' (no diagnostic code available)' : ` [${[...codes].join(', ')}]`
 }

@@ -2,11 +2,15 @@
 param(
   [switch]$NoOpen,
   [switch]$ServerOnly,
-  [switch]$BrowserFallback
+  [switch]$BrowserFallback,
+  [switch]$CheckOnly,
+  [switch]$OwnershipReport,
+  [string]$OwnershipToken
 )
 
 $EntryRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $EntryName = (-join @([char]0x542F, [char]0x52A8, [char]0x5C0F, [char]0x86C7)) + '.ps1'
 & (Join-Path $EntryRoot $EntryName) `
-  -NoOpen:$NoOpen -ServerOnly:$ServerOnly -BrowserFallback:$BrowserFallback
+  -NoOpen:$NoOpen -ServerOnly:$ServerOnly -BrowserFallback:$BrowserFallback -CheckOnly:$CheckOnly `
+  -OwnershipReport:$OwnershipReport -OwnershipToken $OwnershipToken
 exit $LASTEXITCODE

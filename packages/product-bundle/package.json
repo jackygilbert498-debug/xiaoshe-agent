@@ -18,12 +18,15 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@xiaoshe/agent-experience": "workspace:*",
     "@xiaoshe/coding-workbench": "workspace:*",
     "@xiaoshe/heartbeat": "workspace:*",
     "@xiaoshe/memory": "workspace:*",
+    "@xiaoshe/project-knowledge": "workspace:*",
     "@xiaoshe/migration-recovery": "workspace:*",
     "@xiaoshe/plugin-governance": "workspace:*",
     "@xiaoshe/provider-readiness": "workspace:*",
@@ -34,7 +37,7 @@
     "@xiaoshe/verification-policy": "workspace:*"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tool-session-query": "0.1.0-rc.8"
+    "@deepseek-ai/dsh-tool-session-query": "0.1.5-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-tool-session-query": {

@@ -1,5 +1,15 @@
 # Product-only layer. The Profile composes dsh-web-app and the optional
 # Windows capability Bundle independently.
+# Public product defaults: do not attach extra installed-package inventory or
+# the canonical Session Log to model requests. A later personal profile may
+# explicitly opt in; ordinary conversation context and local logging are unchanged.
+- id: plugin-package-inventory-deepseek
+  config:
+    enabled: false
+- id: session-log-deepseek
+  config:
+    enabled: false
+
 # Full-text history is a disposable Product projection over the authoritative
 # Session Log. Keep startup clean; the first real search opens the dedicated
 # index, and removing this Bundle restores the Web layer's disabled default.
@@ -9,6 +19,11 @@
     openAt: first-search
 
 - insert:
+    # Agent experience is a bounded, redacted read model. It is deliberately
+    # separate from editable user memory and must exist before reliability
+    # consumes it as a weak route tie-break.
+    - id: xiaoshe-agent-experience
+      name: '@xiaoshe/agent-experience'
     - id: xiaoshe-verification-policy
       name: '@xiaoshe/verification-policy'
     - id: xiaoshe-heartbeat
@@ -19,7 +34,7 @@
         # Runtime compatibility checks must be bound to explicit product facts,
         # not inferred from a plugin's own manifest.
         xiaosheVersion: '0.2.0'
-        dshVersion: '0.1.0-rc.8'
+        dshVersion: '0.1.5-rc.2'
         activeProfile: web
     - id: xiaoshe-completion-receipt
       name: '@xiaoshe/completion-receipt'
@@ -27,6 +42,10 @@
       name: '@xiaoshe/task-timeline'
     - id: xiaoshe-memory
       name: '@xiaoshe/memory'
+    # Optional source-bound knowledge; never an execution/permission gate.
+    # Live Settings switch: xiaoshe-project-knowledge.enabled.
+    - id: xiaoshe-project-knowledge
+      name: '@xiaoshe/project-knowledge'
     # Workspace authorization, cursor hiding and lineage redaction remain
     # owned by this independent model-facing Consumer plugin.
     - id: xiaoshe-session-continuity
@@ -72,7 +91,7 @@
 - id: ui-deliverables
   disabled: true
 - id: ui-workspace
-  disabled: true
+  disabled: false
 - id: ui-input-trigger
   disabled: true
 - id: ui-commands
@@ -91,11 +110,21 @@
   disabled: true
 - id: ui-model-selection
   disabled: true
-# ui-conversation owns the complete generic chat surface, not only its settings
-# row. Keep it disabled to preserve Xiaoshe's single root; the native shell
-# contributes its own real composer preference and applies it to its textarea.
+# DSH 0.1.5 owns canonical conversation, navigation and pending-interaction
+# services in UI packages. Keep these services; Xiaoshe's selected root has
+# only sidebar.settings and never renders main/rightbar/conversation holes.
 - id: ui-conversation
-  disabled: true
+  disabled: false
+  config:
+    registerSettings: false
+- id: ui-chat
+  disabled: false
+  config:
+    registerSettings: false
+- id: ui-sidebar-right
+  disabled: false
+- id: ui-approval
+  disabled: false
 # The permission settings row also injects commandUi. Xiaoshe intentionally
 # leaves that generic command presenter disabled, so enabling this row would
 # hold the whole web boot pending. Current-session permission stays available
@@ -105,6 +134,6 @@
 - id: ui-plan
   disabled: true
 - id: ui-user-questions
-  disabled: true
+  disabled: false
 - id: ui-trajectory
   disabled: true

@@ -1,3 +1,5 @@
+import type { RuntimeFileReceipt } from './files.js'
+
 export const RUNTIME_COMMANDS = ['createSession', 'sendTurn', 'stopRun', 'forkSession'] as const
 
 export type RuntimeCommandErrorKind =
@@ -44,6 +46,7 @@ export interface SendTurnInput {
   readonly sessionId: string
   readonly content: string
   readonly images?: readonly RuntimeImageInput[]
+  readonly files?: readonly RuntimeFileReceipt[]
   readonly mode: 'queue' | 'steer'
 }
 export interface StopRunInput { readonly sessionId: string }

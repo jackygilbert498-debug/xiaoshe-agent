@@ -27,6 +27,12 @@ function fixture() {
     },
     plan: { active: true, pending: false },
     todos: [{ content: '跑测试', status: 'in_progress' }],
+    taskGraph: {
+      version: 1, id: 'graph-1', revision: 1, sessionId: 'session-1', taskGeneration: 0,
+      goalId: 'goal-1', objective: '完成产品', runtimeInstance: 'runtime-a', durability: 'durable',
+      nodes: [{ id: 'test', title: '跑测试', dependencies: [], acceptance: [{ id: 'a1', text: '测试通过' }], status: 'running', attempt: 1, startSeq: 7, evidence: [], feedback: [] }],
+      feedback: [], status: 'active', stale: false, recoveryRequired: false,
+    },
   }
   const list = observable({
     current: 'session-1',
@@ -73,6 +79,23 @@ function fixture() {
   return { conversation, list, sessions, connection, surfaces, queueActions, selected, refreshed, interrupted }
 }
 
+test('stopped turns keep queue edits but cannot steer, and a new running turn restores steering', async () => {
+  const f = fixture(), center = new DshRunCenter(f.sessions, f.connection, f.surfaces)
+  const setRunning = running => {
+    const list = f.list.getSnapshot()
+    f.list.publish({ ...list, byId: { ...list.byId, 'session-1': { ...list.byId['session-1'], running } } })
+  }
+  setRunning(false)
+  assert.equal(center.getSnapshot().queue[0].steerable, false)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'steer' } })).ok, false)
+  assert.equal(f.queueActions.length, 0)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'edit', text: '保留下一条' } })).ok, true)
+  setRunning(true)
+  assert.equal(center.getSnapshot().queue[0].steerable, true)
+  assert.equal((await center.updateQueue({ sessionId: 'session-1', itemId: 'q1', action: { kind: 'steer' } })).ok, true)
+  center.dispose()
+})
+
 test('DshRunCenter projects public run facts and refreshes skills', async () => {
   const f = fixture()
   const center = new DshRunCenter(f.sessions, f.connection, f.surfaces)
@@ -87,10 +110,59 @@ test('DshRunCenter projects public run facts and refreshes skills', async () => 
   assert.equal(snapshot.queue[0].editable, true)
   assert.equal(snapshot.goal.objective, '完成产品')
   assert.equal(snapshot.todos[0].text, '跑测试')
+  assert.equal(snapshot.taskGraph.nodes[0].dependencies.length, 0)
+  assert.equal(snapshot.taskGraph.nodes[0].attempt, 1)
   assert.equal(snapshot.skills[0].name, 'review')
   assert.equal(snapshot.deliverables[0].title, 'report.md')
   assert.deepEqual(f.refreshed, ['session-1'])
 
+  center.dispose()
+})
+
+test('DshRunCenter passes the raw graph projection through the shared parser and keeps old sessions compatible', () => {
+  const f = fixture()
+  const raw = f.list.getSnapshot().byId['session-1'].projectionValues.taskGraph
+  raw.privateCheckpoint = { hidden: true }
+  const center = new DshRunCenter(f.sessions, f.connection, f.surfaces)
+  assert.equal(center.getSnapshot().taskGraph.id, 'graph-1')
+  assert.equal('privateCheckpoint' in center.getSnapshot().taskGraph, false)
+
+  raw.status = 'waiting'
+  raw.nodes = [{ id: 'next', title: '等待恢复', dependencies: [], acceptance: [{ id: 'a1', text: '恢复完成' }], status: 'pending', attempt: 0, startSeq: null, evidence: [], feedback: [] }]
+  f.list.publish(f.list.getSnapshot())
+  assert.equal(center.getSnapshot().taskGraph.status, 'waiting', 'provider must not upgrade a conservative core view')
+
+  delete f.list.getSnapshot().byId['session-1'].projectionValues.taskGraph
+  f.list.publish(f.list.getSnapshot())
+  assert.equal(center.getSnapshot().taskGraph, undefined)
+
+  f.list.getSnapshot().byId['session-1'].projectionValues.taskGraph = { ...raw, sessionId: 'foreign-session' }
+  f.list.publish(f.list.getSnapshot())
+  assert.equal(center.getSnapshot().taskGraph, undefined)
+  center.dispose()
+})
+
+test('Goal controls map public commands and require current-session phase readback', async () => {
+  const f = fixture()
+  const center = new DshRunCenter(f.sessions, f.connection, f.surfaces)
+  const face = f.sessions.binding('session-1').session
+  const commands = []
+  face.command = async line => {
+    commands.push(line)
+    const goal = f.list.getSnapshot().byId['session-1'].projectionValues.goal.goal
+    goal.phase = line === '/goal pause' ? 'paused' : 'active'
+    return { ok: true, value: { matched: true } }
+  }
+  for (const action of ['pause', 'resume']) assert.equal((await center.setGoalPhase({ sessionId: 'session-1', action })).ok, true)
+  assert.deepEqual(commands, ['/goal pause', '/goal resume'])
+  face.command = async () => ({ ok: true, value: { matched: true } })
+  assert.equal((await center.setGoalPhase({ sessionId: 'session-1', action: 'pause' })).ok, false, 'matched is not proof of phase change')
+  assert.equal((await center.setGoalPhase({ sessionId: 'other', action: 'pause' })).ok, false)
+  face.command = async () => {
+    f.list.publish({ current: undefined, ids: [], byId: {} })
+    return { ok: true, value: { matched: true } }
+  }
+  assert.equal((await center.setGoalPhase({ sessionId: 'session-1', action: 'pause' })).ok, false)
   center.dispose()
 })
 

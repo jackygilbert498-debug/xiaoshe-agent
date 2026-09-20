@@ -26,8 +26,19 @@ export function navigationDecision(raw, expectedOrigin) {
   return 'deny'
 }
 
-export function allowPermission(permission, requestingOrigin, expectedOrigin) {
-  return permission === 'notifications' && requestingOrigin === expectedOrigin
+/**
+ * Electron's Windows toast activator persists the executable with no app args.
+ * A development electron.exe would therefore reopen default_app.asar, and its
+ * generic Electron.lnk can also conflict with the packaged Xiaoshe identity.
+ * An asar passed to default Electron can still report isPackaged=true; exclude
+ * that launch mode too. Only a standalone packaged executable is a valid target.
+ */
+export function allowNativeNotifications({ platform, packaged, defaultApp }) {
+  return platform !== 'win32' || (packaged === true && defaultApp !== true)
+}
+
+export function allowPermission(permission, requestingOrigin, expectedOrigin, nativeNotificationsEnabled = true) {
+  return permission === 'notifications' && requestingOrigin === expectedOrigin && nativeNotificationsEnabled === true
 }
 
 export function browserPreferences(preload) {

@@ -5,11 +5,13 @@ $ErrorActionPreference = 'Stop'
 $XsDoctorRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)).Path
 $DshDoctorRoot = Join-Path $XsDoctorRoot 'runtime\DSH'
 $LegacyDoctorRoot = Join-Path $XsDoctorRoot 'runtime\xiaoshe-legacy'
-$ProfileDoctorRoot = Join-Path $env:USERPROFILE '.dsh\profiles\web'
+$DshDoctorHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
+$ProfileDoctorRoot = Join-Path $DshDoctorHome 'profiles\web'
 $DoctorPort = if ($env:XIAOSHE_DSH_PORT) { [int]$env:XIAOSHE_DSH_PORT } else { 3080 }
 $StateDoctorFileName = if ($DoctorPort -eq 3080) { 'dsh-web-state.json' } else { "dsh-web-state-$DoctorPort.json" }
 $StateDoctorPath = Join-Path $env:LOCALAPPDATA "Xiaoshe\$StateDoctorFileName"
 $DoctorChecks = [System.Collections.Generic.List[object]]::new()
+. (Join-Path $XsDoctorRoot 'scripts\windows-proxy-environment.ps1')
 
 function Add-DoctorCheck([string]$Id, [string]$Status, [string]$Detail) {
   $DoctorChecks.Add([pscustomobject]@{ id = $Id; status = $Status; detail = $Detail })
@@ -26,8 +28,7 @@ Add-DoctorCheck 'legacy.root' $(if (Test-Path -LiteralPath (Join-Path $LegacyDoc
 $NodeDoctor = Find-DoctorCommand 'node'
 if ($NodeDoctor) {
   $NodeDoctorVersion = (& $NodeDoctor.Source -p 'process.versions.node').Trim()
-  $NodeDoctorMajor = [int]$NodeDoctorVersion.Split('.')[0]
-  Add-DoctorCheck 'runtime.node' $(if ($NodeDoctorMajor -ge 24) { 'pass' } else { 'fail' }) $NodeDoctorVersion
+  Add-DoctorCheck 'runtime.node' $(if (Test-XiaosheNodeProxyVersion $NodeDoctorVersion) { 'pass' } else { 'fail' }) $NodeDoctorVersion
 } else { Add-DoctorCheck 'runtime.node' 'fail' 'node not found' }
 
 $PythonDoctor = Find-DoctorCommand 'python'

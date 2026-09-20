@@ -13,8 +13,11 @@
   "files": ["lib"],
   "scripts": {
     "build": "node ./scripts/build-client.mjs && tsc -p tsconfig.build.json",
-    "test": "tsc -p tsconfig.build.json && node --test test/*.test.mjs",
+    "test": "node ../../runtime/DSH/node_modules/typescript/bin/tsc -b ../../runtime/DSH/packages/util/atomic-write && tsc -p tsconfig.build.json && node ../../runtime/DSH/node_modules/tsx/dist/cli.mjs --tsconfig ../../runtime/DSH/tsconfig.base.json --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-atomic-write": "link:../../runtime/DSH/packages/util/atomic-write"
   },
   "devDependencies": { "@types/node": "22.19.7", "typescript": "5.9.3" },
   "dsh": { "client": { "inject": ["@xiaoshe/native-shell-legacy-adapted"], "platform": "web" } }

@@ -82,14 +82,16 @@ function sanitizeRecord(value: unknown): ProviderProbeRecord {
     : undefined
   if (provider === undefined || model === undefined || startedAt === undefined || cost === undefined) throw new TypeError('probe record identity is invalid')
   const contextWindow = positiveInteger(value.contextWindow)
+  if (value.routeRevision !== undefined && (typeof value.routeRevision !== 'string' || !/^[a-f0-9]{64}$/u.test(value.routeRevision))) throw new TypeError('probe route revision is invalid')
+  const binding = value.routeRevision === undefined ? {} : { routeRevision: value.routeRevision as string }
   if (value.status === 'running') return Object.freeze({
-    status: 'running', provider, model, startedAt,
+    status: 'running', provider, model, startedAt, ...binding,
     ...(contextWindow === undefined ? {} : { contextWindow }), cost,
   })
   const completedAt = nonNegative(value.completedAt)
   const latencyMs = nonNegative(value.latencyMs)
   if (completedAt === undefined || latencyMs === undefined) throw new TypeError('settled probe timing is invalid')
-  const common = { provider, model, startedAt, completedAt, latencyMs, ...(contextWindow === undefined ? {} : { contextWindow }), cost }
+  const common = { provider, model, startedAt, completedAt, latencyMs, ...binding, ...(contextWindow === undefined ? {} : { contextWindow }), cost }
   if (value.status === 'cancelled') return Object.freeze({ status: 'cancelled', ...common })
   if (value.status === 'failed') {
     if (!isRecord(value.error)) throw new TypeError('failed probe error is invalid')

@@ -60,3 +60,33 @@ test('ProviderProbeService recovers interrupted running records on startup', asy
   assert.equal(recovered.status, 'failed')
   assert.equal(recovered.error.code, 'process_restarted')
 })
+
+test('ProviderProbeService releases the busy slot when the running intent cannot be persisted', async () => {
+  let saves = 0
+  let resolves = 0
+  const store = {
+    list() { return [] },
+    async save(record) {
+      saves += 1
+      if (saves === 1) throw new Error('ledger unavailable')
+      return record
+    },
+  }
+  const service = new ProviderProbeService({
+    store,
+    llm: {
+      async resolveModelInfo() { resolves += 1 },
+      async *stream() { yield { type: 'finish', reason: { kind: 'stop' } } },
+    },
+  })
+
+  await assert.rejects(
+    () => service.probe({ provider: 'p', model: 'm', timeoutMs: 2_000 }),
+    /ledger unavailable/u,
+  )
+  assert.equal(service.snapshot().running, undefined)
+
+  const retried = await service.probe({ provider: 'p', model: 'm', timeoutMs: 2_000 })
+  assert.equal(retried.status, 'succeeded')
+  assert.equal(resolves, 1)
+})

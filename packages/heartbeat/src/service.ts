@@ -18,12 +18,19 @@ export interface HeartbeatCheckState extends StoredHeartbeatCheck {
 
 export interface HeartbeatSnapshot {
   readonly schemaVersion: 2
+  readonly persistenceStatus: 'ready' | 'degraded'
   readonly checks: readonly HeartbeatCheckState[]
 }
 
 export interface HeartbeatStore {
   get(): Record<string, unknown>
-  update(patch: Record<string, unknown>): Promise<void>
+  getSnapshot?(): {
+    readonly value: Record<string, unknown>
+    readonly revision: number
+    readonly status: 'ready' | 'degraded'
+  }
+  update(patch: Record<string, unknown>, expectedRevision?: number): Promise<void>
+  replace?(section: Record<string, unknown>, expectedRevision?: number): Promise<void>
   watch(callback: (next: Record<string, unknown>) => void): () => void
 }
 
@@ -43,6 +50,7 @@ export interface HeartbeatService {
 
 const MAX_BACKOFF_MS = 60 * 60 * 1_000
 const MAX_TEXT_LENGTH = 2_048
+const MAX_SETTINGS_CONFLICT_RETRIES = 8
 const STORE_WRITE_RETRY_DELAYS_MS = [50, 150] as const
 const LEGACY_TOMBSTONES = {
   status: null,
@@ -68,11 +76,12 @@ export function createHeartbeatService(
   const now = options.now ?? Date.now
   const sleep = options.sleep ?? (milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds)))
   const listeners = new Set<() => void>()
-  let state = parseHeartbeatState(store.get())
+  let state = observeStore(store).state
   let queue: Promise<void> = Promise.resolve()
   let writing = false
   let pendingStoreState: StoredHeartbeatState | undefined
   let disposed = false
+  let lastPersistenceWriteFailed = false
 
   const notify = (): void => { for (const listener of listeners) listener() }
   const unsubscribe = store.watch((next) => {
@@ -88,22 +97,34 @@ export function createHeartbeatService(
   function mutate<T>(operation: (current: StoredHeartbeatState) => { readonly next: StoredHeartbeatState; readonly result: T }): Promise<T> {
     const run = queue.then(async () => {
       assertLive()
-      const { next, result } = operation(state)
-      writing = true
-      pendingStoreState = undefined
-      try {
-        await updateStoreWithRetry({
-          ...LEGACY_TOMBSTONES,
-          schemaVersion: 2,
-          checks: cloneChecks(next.checks) as unknown as Record<string, unknown>[],
-        })
-        state = pendingStoreState ?? parseHeartbeatState(store.get())
-      } finally {
-        writing = false
+      let observed = observeStore(store)
+      for (let attempt = 0; ; attempt += 1) {
+        const { next, result } = operation(observed.state)
+        writing = true
         pendingStoreState = undefined
+        try {
+          try {
+            await updateStoreWithRetry(next, observed.revision)
+          } catch (error) {
+            if (isSettingsConflict(error) && attempt < MAX_SETTINGS_CONFLICT_RETRIES - 1) {
+              // Another provider committed this namespace. Re-read and rebuild
+              // the transition instead of replaying a stale replacement.
+              observed = observeStore(store)
+              state = observed.state
+              continue
+            }
+            lastPersistenceWriteFailed = true
+            throw error
+          }
+          lastPersistenceWriteFailed = false
+          state = pendingStoreState ?? observeStore(store).state
+          notify()
+          return result
+        } finally {
+          writing = false
+          pendingStoreState = undefined
+        }
       }
-      notify()
-      return result
     })
     queue = run.then(() => undefined, () => undefined)
     return run
@@ -118,10 +139,18 @@ export function createHeartbeatService(
    * Retry only that exact transient contention; malformed settings and all other failures stay
    * fail-fast, and persistent/orphan locks remain an explicit operator-recovery condition.
    */
-  async function updateStoreWithRetry(patch: Record<string, unknown>): Promise<void> {
+  async function updateStoreWithRetry(state: StoredHeartbeatState, expectedRevision?: number): Promise<void> {
+    const section = {
+      schemaVersion: 2,
+      checks: cloneChecks(state.checks) as unknown as Record<string, unknown>[],
+    }
     for (let attempt = 0; ; attempt += 1) {
       try {
-        await store.update(patch)
+        if (store.replace !== undefined) {
+          await store.replace(section, expectedRevision)
+        } else {
+          await store.update({ ...LEGACY_TOMBSTONES, ...section }, expectedRevision)
+        }
         return
       } catch (error) {
         const retryDelay = STORE_WRITE_RETRY_DELAYS_MS[attempt]
@@ -136,6 +165,9 @@ export function createHeartbeatService(
       const at = now()
       return {
         schemaVersion: 2,
+        persistenceStatus: lastPersistenceWriteFailed || storePersistenceStatus(store) === 'degraded'
+          ? 'degraded'
+          : 'ready',
         checks: state.checks.map(check => ({ ...cloneCheck(check), status: statusOf(check, at) })),
       }
     },
@@ -290,6 +322,41 @@ export function createHeartbeatService(
       unsubscribe()
     },
   }
+}
+
+function observeStore(store: HeartbeatStore): {
+  readonly state: StoredHeartbeatState
+  readonly revision?: number
+  readonly status: 'ready' | 'degraded'
+} {
+  const snapshot = store.getSnapshot?.()
+  if (snapshot === undefined) {
+    // Legacy and third-party scopes expose data but no durable-health fact.
+    // Availability is therefore unknown and must not be promoted to ready.
+    return { state: parseHeartbeatState(store.get()), status: 'degraded' }
+  }
+  if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) {
+    throw new TypeError('settings snapshot revision must be a non-negative safe integer')
+  }
+  if (snapshot.status !== 'ready' && snapshot.status !== 'degraded') {
+    throw new TypeError('settings snapshot status must be ready or degraded')
+  }
+  return {
+    state: parseHeartbeatState(snapshot.value),
+    revision: snapshot.revision,
+    status: snapshot.status,
+  }
+}
+
+function storePersistenceStatus(store: HeartbeatStore): 'ready' | 'degraded' {
+  return store.getSnapshot?.().status === 'ready' ? 'ready' : 'degraded'
+}
+
+function isSettingsConflict(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { readonly code?: unknown }).code === 'SETTINGS_CONFLICT'
 }
 
 function isWriterLockTimeout(error: unknown): error is Error {

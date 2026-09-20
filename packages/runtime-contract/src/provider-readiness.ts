@@ -20,6 +20,7 @@ export type ProviderReadinessReason =
   | 'probe_cancelled'
   | 'probe_expired'
   | 'probe_route_mismatch'
+  | 'probe_configuration_changed'
 
 export interface ProviderProbeUsage {
   readonly inputTokens?: number
@@ -34,6 +35,8 @@ export type ProviderProbeCost =
 export type ProviderProbeRecord = {
   readonly provider: string
   readonly model: string
+  /** SHA-256 of public route configuration; never derived from credential material. */
+  readonly routeRevision?: string
   readonly startedAt: number
   readonly completedAt?: number
   readonly latencyMs?: number
@@ -105,6 +108,7 @@ export interface ProviderReadiness {
 export interface DeriveProviderReadinessInput {
   readonly provider?: string
   readonly model?: string
+  readonly routeRevision?: string
   readonly catalogued: boolean
   readonly supported: boolean
   readonly settingsConfigured: boolean
@@ -152,6 +156,8 @@ export function deriveProviderReadinessFacts(
     reasons.push('probe_failed')
   } else if (probe.status === 'cancelled') {
     reasons.push('probe_cancelled')
+  } else if (input.routeRevision !== undefined && probe.routeRevision !== input.routeRevision) {
+    reasons.push('probe_configuration_changed')
   } else if (now - probe.completedAt > verificationTtlMs || probe.completedAt > now) {
     reasons.push('probe_expired')
   } else if (available) {

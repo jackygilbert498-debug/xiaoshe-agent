@@ -17,6 +17,7 @@ export type MemoryLifecycleSnapshot =
   | { readonly status: 'idle' }
   | { readonly status: 'loading'; readonly memory?: MemorySnapshot }
   | { readonly status: 'ready'; readonly memory: MemorySnapshot }
+  | { readonly status: 'degraded'; readonly memory: MemorySnapshot }
   | { readonly status: 'error'; readonly memory?: MemorySnapshot; readonly error: MemoryClientError }
 
 export type MemoryFetch = (input: string, init?: RequestInit) => Promise<Response>
@@ -101,7 +102,9 @@ export class MemoryLifecycleProvider {
       }
       const memory = freezeMemorySnapshot(body)
       if (!this.disposed && generation === this.generation) {
-        this.publish(Object.freeze({ status: 'ready', memory }))
+        const degraded = memory.diagnostics.persistence_status === 'degraded'
+          || memory.diagnostics.usage_audit_status === 'degraded'
+        this.publish(Object.freeze({ status: degraded ? 'degraded' : 'ready', memory }))
       }
       return memory
     } catch (error: unknown) {
@@ -159,6 +162,30 @@ function freezeMemorySnapshot(value: unknown): MemorySnapshot {
     || !Array.isArray(value.audit) || !Array.isArray(value.usage)) {
     throw new TypeError('memory response is missing collections')
   }
+  if (value.project !== undefined
+    && (typeof value.project !== 'string' || value.project.trim() === '' || value.project.length > 240)) {
+    throw new TypeError('memory response contains an invalid project key')
+  }
+  // Persistence health is part of the current API contract. A legacy Host that
+  // cannot prove it remains readable during a rolling update, but must be
+  // surfaced as degraded rather than manufacturing a healthy result.
+  const diagnostics = value.diagnostics === undefined
+    ? { persistence_status: 'degraded', usage_audit_status: 'degraded', usage_persistence_failures: 0 }
+    : value.diagnostics
+  if (!isRecord(diagnostics)) throw new TypeError('memory response contains invalid diagnostics')
+  if ((diagnostics.persistence_status !== 'ready' && diagnostics.persistence_status !== 'degraded')
+    || (diagnostics.usage_audit_status !== 'ready' && diagnostics.usage_audit_status !== 'degraded')
+    || !isNonNegativeInteger(diagnostics.usage_persistence_failures)) {
+    throw new TypeError('memory response contains invalid diagnostics')
+  }
+  const hasLastUsageError = diagnostics.last_usage_persistence_error !== undefined
+    || diagnostics.last_usage_persistence_error_at !== undefined
+  if (hasLastUsageError
+    && (diagnostics.last_usage_persistence_error !== 'MEMORY_USAGE_PERSISTENCE_FAILED'
+      || typeof diagnostics.last_usage_persistence_error_at !== 'string'
+      || !Number.isFinite(Date.parse(diagnostics.last_usage_persistence_error_at)))) {
+    throw new TypeError('memory response contains invalid usage persistence diagnostics')
+  }
   const countKeys = ['active', 'global', 'project', 'forgotten', 'superseded'] as const
   for (const key of countKeys) {
     if (!isNonNegativeInteger(value.counts[key])) throw new TypeError(`memory count ${key} is invalid`)
@@ -186,6 +213,7 @@ function freezeMemorySnapshot(value: unknown): MemorySnapshot {
   return Object.freeze({
     api_version: 1,
     revision: value.revision,
+    ...(value.project === undefined ? {} : { project: value.project }),
     counts: Object.freeze({
       active: value.counts.active as number,
       global: value.counts.global as number,
@@ -196,6 +224,17 @@ function freezeMemorySnapshot(value: unknown): MemorySnapshot {
     entries: Object.freeze(entries),
     audit: Object.freeze(audit),
     usage: Object.freeze(usage),
+    diagnostics: Object.freeze({
+      persistence_status: diagnostics.persistence_status,
+      usage_audit_status: diagnostics.usage_audit_status,
+      usage_persistence_failures: diagnostics.usage_persistence_failures,
+      ...(hasLastUsageError
+        ? {
+            last_usage_persistence_error: diagnostics.last_usage_persistence_error,
+            last_usage_persistence_error_at: diagnostics.last_usage_persistence_error_at,
+          }
+        : {}),
+    }),
   }) as unknown as MemorySnapshot
 }
 

@@ -17,9 +17,10 @@ export const name = 'xiaoshe-coding-workbench'; export const inject = ['webServe
 export function apply(ctx: Context, config: CodingWorkbenchConfig = {}): void {
   const workspaces = { list: () => ctx.workspaceRegistry.list().flatMap(row => typeof row.path === 'string' ? [{ id: row.id, title: row.title ?? row.id, path: row.path }] : []) }
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? resolve(homedir(), '.dsh')); const profile = config.profile ?? currentProfile(process.argv) ?? 'default'
+  const paths = new WorkspacePathPolicy(workspaces)
   const service = new CodingWorkbenchService({
-    paths: new WorkspacePathPolicy(workspaces), workspaces, git: new WorkspaceGit(),
-    writer: new ControlledFileWriter({ store: new WorkbenchTransactionStore(resolve(dshHome, 'profiles', profile, '.xiaoshe', 'workbench-transactions.json')) }),
+    paths, workspaces, git: new WorkspaceGit(),
+    writer: new ControlledFileWriter({ paths, store: new WorkbenchTransactionStore(resolve(dshHome, 'profiles', profile, '.xiaoshe', 'workbench-transactions.json')) }),
     scripts: new PackageScriptRunner({ allowlist: config.allowedScripts ?? ['build', 'test', 'typecheck', 'lint', 'check'], ...(config.npmCliPath === undefined ? {} : { npmCliPath: resolve(config.npmCliPath) }) }),
   })
   ctx.provide('xiaosheCodingWorkbench', service)

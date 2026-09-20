@@ -5,15 +5,11 @@ if [ "${1:-}" = '--browser-fallback' ]; then
   shift
 else
   DEV_ELECTRON="$XS_ROOT/apps/desktop-shell/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-  LOCAL_APP="$XS_ROOT/apps/desktop-shell/dist-desktop/mac-arm64/小蛇.app/Contents/MacOS/小蛇"
-  INSTALLED_APP="/Applications/小蛇.app/Contents/MacOS/小蛇"
   if [ -x "$DEV_ELECTRON" ]; then
     exec "$DEV_ELECTRON" "$XS_ROOT/apps/desktop-shell" "$@"
-  elif [ -x "$LOCAL_APP" ]; then
-    exec "$LOCAL_APP" "$@"
-  elif [ -x "$INSTALLED_APP" ]; then
-    exec "$INSTALLED_APP" "$@"
   fi
-  printf '[提示] 独立桌面壳不可用；本次回退到浏览器。\n' >&2
+  # A same-named packaged app can contain older code than this source checkout.
+  # Keep this entry bound to XS; opening an installed app is a separate action.
+  printf '[提示] 当前 XS 开发桌面壳不可用；不会转入旧打包应用。本次使用当前源码的浏览器启动流程，版本以启动校验为准。\n' >&2
 fi
 exec bash "$XS_ROOT/scripts/start-xiaoshe-web.sh" "$@"

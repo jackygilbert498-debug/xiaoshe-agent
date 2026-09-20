@@ -3,11 +3,13 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { runMacosAppLifecycle } from './macos-app-lifecycle.mjs'
+import { applicationBundleManifest } from '../../apps/desktop-shell/scripts/verify-artifact.mjs'
+import { contentFreeFailureEvidence, contentFreeLifecycleEvidence, runLifecycleCleanup, runMacosAppLifecycle } from './macos-app-lifecycle.mjs'
+import { acceptanceRunMetadataFromEnvironment } from './macos-acceptance-run.mjs'
 
 function parseArgs(argv) {
   return new Map(argv.map(value => {
@@ -45,33 +47,73 @@ async function sha256File(path) {
   })
 }
 
-async function bundleManifest(root) {
-  const entries = []
-  async function walk(directory) {
-    for (const name of (await readdir(directory)).sort()) {
-      const path = join(directory, name)
-      const stat = await lstat(path)
-      const key = relative(root, path).normalize('NFC')
-      if (stat.isDirectory()) {
-        entries.push({ key, type: 'directory', mode: stat.mode & 0o777 })
-        await walk(path)
-      } else if (stat.isSymbolicLink()) {
-        entries.push({ key, type: 'symlink', target: await readlink(path) })
-      } else if (stat.isFile()) {
-        entries.push({ key, type: 'file', mode: stat.mode & 0o777, bytes: stat.size, sha256: await sha256File(path) })
-      } else {
-        throw new Error(`unsupported application bundle entry: ${key}`)
-      }
-    }
+function manifestEvidence(value) {
+  return Object.freeze({
+    digest: value?.digest,
+    entries: value?.entries,
+    files: value?.files,
+    bytes: value?.bytes,
+  })
+}
+
+/** Allowlist install facts before persisting the acceptance artifact. */
+export function contentFreeInstallEvidence(evidence) {
+  if (evidence?.installPath !== '/Applications/小蛇.app') {
+    throw new Error('install evidence requires the exact Xiaoshe application target')
   }
-  await walk(root)
-  const payload = JSON.stringify(entries)
-  return {
-    digest: createHash('sha256').update(payload).digest('hex'),
-    entries: entries.length,
-    files: entries.filter(entry => entry.type === 'file').length,
-    bytes: entries.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0),
+  return Object.freeze({
+    dmgRole: 'final-release-dmg',
+    dmgSha256: evidence?.dmgSha256,
+    mountedApplicationRole: 'dmg-application',
+    installedApplicationRole: 'installed-application',
+    installPath: evidence?.installPath,
+    sourceManifest: manifestEvidence(evidence?.sourceManifest),
+    installedManifest: manifestEvidence(evidence?.installedManifest),
+    lifecycle: contentFreeLifecycleEvidence(evidence?.lifecycle),
+    applicationRemoved: evidence?.applicationRemoved,
+    mountReleased: evidence?.mountReleased,
+    userDataRetainedAtUninstall: evidence?.userDataRetainedAtUninstall,
+    userDataPolicy: evidence?.userDataPolicy,
+  })
+}
+
+/** Build one durable failure check without stderr, paths, or environment data. */
+export function installFailureCheck(error) {
+  return Object.freeze({
+    id: 'macos-install-uninstall',
+    state: 'fail',
+    detail: 'macOS install/uninstall verification failed; sensitive diagnostics omitted.',
+    evidence: { dmgRole: 'final-release-dmg', ...contentFreeFailureEvidence('install-uninstall', error) },
+  })
+}
+
+/** Claim a previously absent target before ditto can merge into it. */
+export async function reserveInstallDirectory(path) {
+  const target = resolve(path)
+  if (await realpath(dirname(target)) !== dirname(target)) throw new Error('install target parent must be canonical')
+  // mkdir is exclusive for directories, files and even dangling symlinks. A
+  // check-then-copy alone could overwrite an app created after the preflight.
+  await mkdir(target, { mode: 0o700 })
+  const stat = await lstat(target, { bigint: true })
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('new install target was replaced before ownership could be recorded')
+  return Object.freeze({ path: target, device: stat.dev, inode: stat.ino })
+}
+
+/** Refuse to launch or remove a directory substituted for this run's target. */
+export async function assertOwnedInstallDirectory(owned) {
+  if (!owned || typeof owned.path !== 'string' || resolve(owned.path) !== owned.path
+    || typeof owned.device !== 'bigint' || typeof owned.inode !== 'bigint') throw new Error('install ownership is unavailable')
+  const stat = await lstat(owned.path, { bigint: true })
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== owned.device || stat.ino !== owned.inode
+    || await realpath(owned.path) !== owned.path) throw new Error('install target ownership changed; replacement retained')
+}
+
+export async function removeOwnedInstallDirectory(owned) {
+  try { await assertOwnedInstallDirectory(owned) } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
   }
+  await rm(owned.path, { recursive: true, force: false })
 }
 
 export async function runInstallUninstall({ root, dmgPath, installPath = '/Applications/小蛇.app' }) {
@@ -83,7 +125,7 @@ export async function runInstallUninstall({ root, dmgPath, installPath = '/Appli
   if (await exists(installPath)) throw new Error(`${installPath} already existed; refusing to overwrite a user installation`)
   const mountPoint = await mkdtemp(join(tmpdir(), 'xiaoshe-dmg-mount-'))
   let attached = false
-  let installedByThisRun = false
+  let ownedInstall
   let retainedUserData
   let operationError
   try {
@@ -93,17 +135,26 @@ export async function runInstallUninstall({ root, dmgPath, installPath = '/Appli
     const candidates = (await readdir(mountPoint)).filter(name => name.endsWith('.app'))
     if (candidates.length !== 1) throw new Error(`DMG must contain exactly one .app; found ${candidates.length}`)
     const mountedApp = join(mountPoint, candidates[0])
-    const sourceManifest = await bundleManifest(mountedApp)
+    const sourceManifest = await applicationBundleManifest(mountedApp)
 
+    // Record ownership before copying so a partial ditto failure is also
+    // cleaned, but never delete a subsequently substituted user installation.
+    ownedInstall = await reserveInstallDirectory(installPath)
     command('/usr/bin/ditto', [mountedApp, installPath], { timeout: 180_000 })
-    installedByThisRun = true
-    const installedManifest = await bundleManifest(installPath)
+    await assertOwnedInstallDirectory(ownedInstall)
+    const installedManifest = await applicationBundleManifest(installPath)
     if (sourceManifest.digest !== installedManifest.digest) throw new Error('installed application bundle differs from the mounted DMG source')
 
-    const lifecycle = await runMacosAppLifecycle({ root, appPath: installPath, keepUserData: true, usePackagedRuntime: true })
+    const lifecycle = await runMacosAppLifecycle({
+      root,
+      appPath: installPath,
+      applicationRole: 'installed-application',
+      keepUserData: true,
+      usePackagedRuntime: true,
+    })
     retainedUserData = lifecycle.userData
-    await rm(installPath, { recursive: true, force: false })
-    installedByThisRun = false
+    await removeOwnedInstallDirectory(ownedInstall)
+    ownedInstall = undefined
     if (await exists(installPath)) throw new Error('application target still exists after uninstall')
     const retainedLog = join(retainedUserData, 'logs', 'desktop-shell.jsonl')
     const retainedAtUninstall = await exists(retainedLog) && (await readFile(retainedLog, 'utf8')).includes('service-ready')
@@ -112,38 +163,51 @@ export async function runInstallUninstall({ root, dmgPath, installPath = '/Appli
     command('/usr/bin/hdiutil', ['detach', mountPoint], { timeout: 60_000 })
     attached = false
 
-    return {
+    return contentFreeInstallEvidence({
       dmgPath,
       dmgSha256: await sha256File(dmgPath),
       mountedApp: basename(mountedApp),
       installPath,
       sourceManifest,
       installedManifest,
-      lifecycle: { ...lifecycle, userData: undefined },
+      lifecycle,
       applicationRemoved: true,
       mountReleased: true,
       userDataRetainedAtUninstall: true,
       userDataPolicy: 'retain',
-    }
+    })
   } catch (error) {
     operationError = error
     throw error
   } finally {
-    if (installedByThisRun && await exists(installPath)) await rm(installPath, { recursive: true, force: false })
-    let detachError
-    if (attached) {
-      const detach = spawnSync('/usr/bin/hdiutil', ['detach', mountPoint, '-force'], { encoding: 'utf8', timeout: 60_000 })
-      if (detach.error || detach.status !== 0) {
-        detachError = detach.error ?? new Error(`hdiutil forced detach exited ${detach.status}: ${String(detach.stderr ?? '').slice(-3000)}`)
+    try {
+      await runLifecycleCleanup([
+        ['installed application cleanup', async () => {
+          if (!ownedInstall) return
+          await removeOwnedInstallDirectory(ownedInstall)
+          if (await exists(installPath)) throw new Error('installed application still exists')
+        }],
+        ['DMG detach cleanup (hdiutil forced detach)', async () => {
+          if (!attached) return
+          command('/usr/bin/hdiutil', ['detach', mountPoint, '-force'], { timeout: 60_000 })
+          attached = false
+        }],
+        ['mount directory cleanup', () => rm(mountPoint, { recursive: true, force: true })],
+        ['retained lifecycle data cleanup', async () => {
+          if (!retainedUserData) return
+          const retained = resolve(retainedUserData)
+          if (dirname(retained) !== resolve(tmpdir()) || !basename(retained).startsWith('xiaoshe-desktop-lifecycle-')) {
+            throw new Error(`refusing to remove unexpected lifecycle data path: ${retained}`)
+          }
+          await rm(retained, { recursive: true, force: true })
+        }],
+      ])
+    } catch (cleanupError) {
+      if (operationError) {
+        const failures = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError]
+        throw new AggregateError([operationError, ...failures], 'install acceptance and cleanup failed')
       }
-    }
-    await rm(mountPoint, { recursive: true, force: true })
-    if (retainedUserData && retainedUserData.startsWith(join(tmpdir(), 'xiaoshe-desktop-lifecycle-'))) {
-      await rm(retainedUserData, { recursive: true, force: true })
-    }
-    if (detachError) {
-      if (operationError) throw new AggregateError([operationError, detachError], 'install acceptance and DMG cleanup both failed')
-      throw detachError
+      throw cleanupError
     }
   }
 }
@@ -164,10 +228,10 @@ async function main() {
       evidence,
     }
   } catch (error) {
-    check = { id: 'macos-install-uninstall', state: 'fail', detail: error instanceof Error ? error.message : String(error), evidence: { dmgPath } }
+    check = installFailureCheck(error)
   }
   await mkdir(dirname(output), { recursive: true })
-  await writeFile(output, `${JSON.stringify({ schemaVersion: 1, platform: 'macos', generatedAt: new Date().toISOString(), checks: [check] }, null, 2)}\n`)
+  await writeFile(output, `${JSON.stringify({ schemaVersion: 1, platform: 'macos', generatedAt: new Date().toISOString(), ...acceptanceRunMetadataFromEnvironment(), checks: [check] }, null, 2)}\n`)
   process.stdout.write(`macOS install/uninstall: ${output}\n`)
   if (check.state === 'fail') process.exitCode = 1
 }

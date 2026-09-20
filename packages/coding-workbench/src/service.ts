@@ -26,6 +26,7 @@ export class CodingWorkbenchService {
   async prepareWrite(input: { readonly workspaceId: string; readonly path: string; readonly newText: string }): Promise<unknown> { const file = await this.ports.paths.existing(input.workspaceId, input.path, 'file'); return this.ports.writer.prepare({ workspaceId: input.workspaceId, relativePath: file.relativePath, absolutePath: file.absolutePath, newText: input.newText }) }
   async confirmWrite(id: string, token: string): Promise<unknown> { return this.ports.writer.confirm(id, token) }
   async revert(id: string): Promise<unknown> { return this.ports.writer.revert(id) }
+  async recoverWrite(id: string): Promise<unknown> { return this.ports.writer.recover(id) }
   async scripts(workspaceId: string): Promise<unknown> { const root = await this.ports.paths.root(workspaceId); return this.ports.scripts.available(root.absolutePath) }
   async runScript(workspaceId: string, script: string): Promise<unknown> {
     const root = await this.ports.paths.root(workspaceId); const id = `workbench-run-${randomUUID()}`; this.#runs.set(id, { workspaceId, script })

@@ -1,4 +1,6 @@
 import { defineConfig } from 'tsdown'
+import { globSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { typertPlugin } from './packages/typert/generator/lib/types/tsdown-plugin.js'
 
 function isBuildFaceClient(value: unknown): boolean {
@@ -16,7 +18,12 @@ function isBuildFaceClient(value: unknown): boolean {
 export default defineConfig(({ env }) => {
   const client = isBuildFaceClient(env?.DSH_BUILD_FACE)
   return {
-    workspace: ['vendor/*', 'packages/*/*', 'apps/cli'],
+    // Upgrades may retain removed packages' emitted JS. A directory is a
+    // workspace only while its manifest exists; leave unowned files untouched.
+    workspace: globSync([
+      'vendor/*/package.json', 'packages/*/*/package.json', 'apps/cli/package.json',
+      ...client ? [] : ['apps/desktop/package.json', 'apps/desktop-host/package.json'],
+    ]).filter(path => statSync(path).isFile()).map(path => dirname(path).replaceAll('\\', '/')).sort(),
     entry: client ? '' : ['lib/types/{index,invariant,startup}.js'],
     outDir: 'lib',
     format: ['esm'],

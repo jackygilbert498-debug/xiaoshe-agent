@@ -7,8 +7,10 @@
  * Feature-owned rows and sections stay with their features.
  * Export discipline: packages/client/AGENTS.md.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+// Type-only: pulls the ctx.remote merge and its fixed Host facts.
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the settings slot declarations plus the ctx.settingsScope Context
 // merge. Cross-plugin collaboration goes through the service, never a value
@@ -16,6 +18,8 @@ import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls ctx.locale into this program.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {
   SettingsOnboardingStep, SettingsRootInjected, SettingsSectionRow,
 } from './shell-contract.ts'
@@ -53,7 +57,7 @@ const NS = 'settings'
  * ui-settings' apply, whose activation order relative to this one is NOT
  * constrained; registrations depend on their slots through `slots.inject()`.
  */
-export const inject = ['slots', 'locale', 'connection', 'settingsScope']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'remote.settings', 'settingsScope']
 
 /**
  * Register the `settings` dictionaries, the chrome content, and the General
@@ -62,16 +66,15 @@ export const inject = ['slots', 'locale', 'connection', 'settingsScope']
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-settings-general: dictionaries')
+  const connection = ctx.get('connection') as ConnectionHandle
 
   // Copy freshness is framework-owned: components read the standard `t`
   // seat, and the nav label is a thunk the owner resolves per render — no
   // locale/change re-registration wiring.
   const t = ctx.locale.bind(NS)
-  const connection = ctx.get('connection') as ConnectionHandle
-  // The action follows the shared describe mirror, whose owning plugin
-  // already refreshes it on document commits and reconnects.
-  const documentController = connection.isLoopback
-    ? new SettingsDocumentStore(connection.api, ctx.settingsScope.describe())
+  // The shared SettingsScope mirror updates after document commits and reconnects.
+  const documentController = ctx.remote.$host.isLoopback
+    ? new SettingsDocumentStore(ctx, ctx.settingsScope.describe())
     : undefined
   const documentInjected = documentController === undefined
     ? undefined
@@ -91,7 +94,9 @@ export function apply(ctx: ClientContext): void {
   let onboardingVersion = -1
   let onboardingSteps: readonly SettingsOnboardingStep[] = []
   const shellInjected = (): SettingsRootInjected => ({
+    reconnect: () => { connection.reconnect() },
     hooks: {
+      connectionState: connection.state,
       sections: {
         getSnapshot: () => {
           const version = ctx.slots.getVersion('settings.section')
@@ -140,6 +145,7 @@ export function apply(ctx: ClientContext): void {
   })
   ctx.slots.inject('sidebar.settings', () => ctx.slots.register({
     name: 'sidebar.settings',
+    locale: NS,
     children: {
       'settings.trigger': { kind: 'single', scope: 'root' },
       'settings.header': { kind: 'single', scope: 'root' },
@@ -166,12 +172,40 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('settings.close', () =>
     ctx.slots.register({ name: 'settings.close', locale: NS }, CloseLabel))
+  // The product Appearance page owns both modes and font size. Only suppress
+  // duplicate General entries while that page is registered; standalone DSH
+  // and unloading the product adapter retain the original feature rows.
+  let itemVersion = '', itemIds: readonly string[] | undefined
+  const generalItems = {
+    getSnapshot: () => {
+      const version = ctx.slots.getVersion('settings.general.item') + ':' + ctx.slots.getVersion('settings.section')
+      if (version !== itemVersion) {
+        itemVersion = version
+        itemIds = ctx.slots.entries('settings.section').some(entry => entry.options.id === 'appearance')
+          ? [...new Set(ctx.slots.entries('settings.general.item')
+            // These two upstream conversation controls do not drive the native
+            // composer/timeline. Its queue/steer controls and per-record details
+            // remain in the conversation; do not offer settings with no effect.
+            .filter(entry => !['appearance', 'font-size', 'composer-enter', 'transcript-view'].includes(entry.options.id ?? ''))
+            .sort((a, b) => (a.options.order ?? 0) - (b.options.order ?? 0))
+            .map(entry => entry.options.id ?? '').filter(Boolean))]
+          : undefined
+      }
+      return itemIds
+    },
+    subscribe: (listener: () => void) => {
+      const offItems = ctx.slots.subscribe('settings.general.item', listener)
+      const offSections = ctx.slots.subscribe('settings.section', listener)
+      return () => { offItems(); offSections() }
+    },
+  }
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'general',
     order: 0,
     label: () => t('general.nav'),
     locale: NS,
+    inject: () => ({ hooks: { itemIds: generalItems } }),
     children: { 'settings.general.item': { kind: 'list', scope: 'root' } },
   }, GeneralSection))
 }

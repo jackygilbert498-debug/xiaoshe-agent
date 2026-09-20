@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import { parseTaskGraphView } from '@xiaoshe/runtime-contract'
 import type { ModelSelection, QuestionAnswer, QuestionItem, SessionEvent, SessionProjectionBlock, SessionSummary } from './protocol.js'
 import { isRecord } from './protocol.js'
 
@@ -14,8 +15,8 @@ export interface Palette {
 }
 
 const ANSI: Palette = {
-  reset: '\u001B[0m', dim: '\u001B[2m', user: '\u001B[38;5;81m', assistant: '\u001B[38;5;114m',
-  tool: '\u001B[38;5;176m', warning: '\u001B[38;5;214m', success: '\u001B[38;5;78m', heading: '\u001B[1;38;5;222m',
+  reset: '\u001B[0m', dim: '\u001B[38;5;245m', user: '\u001B[38;5;108m', assistant: '\u001B[38;5;108m',
+  tool: '\u001B[38;5;245m', warning: '\u001B[38;5;179m', success: '\u001B[38;5;108m', heading: '\u001B[1;38;5;108m',
 }
 
 const PLAIN: Palette = { reset: '', dim: '', user: '', assistant: '', tool: '', warning: '', success: '', heading: '' }
@@ -51,6 +52,12 @@ function textBlocks(value: unknown): string {
 /** Extract final/user text across current and pre-react-loop durable shapes. */
 export function eventText(event: SessionEvent): string {
   if (!isRecord(event.data)) return ''
+  if (Array.isArray(event.data.stream)) return event.data.stream.flatMap(record => {
+    if (!isRecord(record)) return []
+    if (record.type === 'text-chunks' && Array.isArray(record.texts)) return record.texts.filter((text): text is string => typeof text === 'string')
+    if (record.type === 'chunk' && isRecord(record.chunk) && record.chunk.type === 'text-delta' && typeof record.chunk.text === 'string') return [record.chunk.text]
+    return []
+  }).join('')
   if (isRecord(event.data.message)) return textBlocks(event.data.message.content)
   return textBlocks(event.data.content)
 }
@@ -92,6 +99,44 @@ export function projectionStatus(projections: SessionProjectionBlock | undefined
     : `上下文：${formatNumber(projected)} / ${formatNumber(window)}${used === undefined ? '' : `（${used.toFixed(1)}%）`}`
   const cumulative = `会话累计：输入 ${formatNumber(uncached)} · 缓存读取 ${formatNumber(cached)} · 输出 ${formatNumber(output)}`
   return [context, `${cumulative}${cacheRate === undefined ? '' : ` · 缓存命中 ${cacheRate.toFixed(1)}%`}`]
+}
+
+/** Render the same strictly parsed taskGraph view used by desktop, without creating scheduler state. */
+export function taskGraphStatusLines(projections: SessionProjectionBlock | undefined, sessionId: string): readonly string[] {
+  const graph = parseTaskGraphView(projections?.values.taskGraph, sessionId)
+  if (graph === undefined) return []
+  const byId = new Map(graph.nodes.map(node => [node.id, node]))
+  const completed = new Set(graph.nodes.filter(node => node.status === 'completed').map(node => node.id))
+  const gated = graph.status === 'waiting' || graph.durability === 'pending' || graph.stale || graph.recoveryRequired
+  const graphLabels = { ready: '可开始', active: '进行中', waiting: '等待检查', completed: '已完成' } as const
+  const lines = [graph.status === 'waiting'
+    ? `任务图：节点记录 ${completed.size} / ${graph.nodes.length} 已完成 · 等待检查`
+    : `任务图：${completed.size} / ${graph.nodes.length} 完成 · ${graphLabels[graph.status]}`]
+  if (graph.status === 'waiting') lines.push('  注意：任务状态等待检查；节点状态为最近记录')
+  if (graph.durability === 'pending') lines.push('  注意：任务图变更尚未持久化')
+  if (graph.stale) lines.push('  注意：任务定义已过期，等待刷新')
+  if (graph.recoveryRequired) lines.push('  注意：运行实例已变化，需要恢复检查')
+  const latestFeedback = graph.feedback.at(-1)?.text
+  if (latestFeedback !== undefined) lines.push(`  图的最近反馈：${oneLine(latestFeedback, 120)}`)
+  for (const node of graph.nodes) {
+    const ready = node.status === 'pending' && !gated && node.dependencies.every(id => completed.has(id))
+    const baseStatus = node.status === 'pending' ? (ready ? '可开始' : node.dependencies.every(id => completed.has(id)) ? '等待中' : '等待依赖') : ({
+      running: '进行中', verifying: '待验收', completed: '已完成', blocked: '已阻塞', interrupted: '已中断 · 待检查',
+    } as const)[node.status]
+    const status = graph.status !== 'waiting' ? baseStatus
+      : node.status === 'running' ? '上次记录：进行中'
+        : node.status === 'verifying' ? '上次记录：待验收'
+          : node.status === 'completed' ? '节点记录：已完成' : baseStatus
+    const attempt = node.attempt < 1 ? '' : ` · 第 ${node.attempt} 次`
+    lines.push(`  - ${oneLine(node.title, 72)} · ${status}${attempt}`)
+    if (node.dependencies.length > 0) lines.push(`    依赖：${node.dependencies.map(id => oneLine(byId.get(id)?.title ?? id, 40)).join('、')}`)
+    const feedback = node.feedback.at(-1)?.text
+    if (feedback !== undefined) lines.push(`    最新反馈：${oneLine(feedback, 100)}`)
+    const assessments = node.evidence.filter(item => item.kind === 'reviewer-assessment').length
+    const executions = node.evidence.filter(item => item.kind === 'execution').length
+    if (assessments + executions > 0) lines.push(`    依据：执行记录 ${executions} · 验收评估 ${assessments}`)
+  }
+  return lines
 }
 
 export function formatNumber(value: number): string {

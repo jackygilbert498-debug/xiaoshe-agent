@@ -48,7 +48,7 @@ export class MigrationExporter {
         }
       }
       if (attachmentIndex.length > 0) await write('attachments/index.json', jsonBytes(attachmentIndex))
-      const settings = this.ports.settings.describe({ redactSecrets: true }).map(row => ({ ns: row.ns, user: redactSensitive(row.user, row.secrets) }))
+      const settings = this.ports.settings.describe({ redactSecrets: true }).map(row => ({ ns: row.ns, status: row.status, user: redactSensitive(row.user, row.secrets) }))
       await write('settings.json', jsonBytes(settings))
       await write('workspaces.json', jsonBytes({ workspaces: this.ports.workspaces.list().map(workspaceReference), archivedSessionIds: this.ports.workspaces.archivedSessionIds ?? [] }))
       await write('plugins.json', jsonBytes(redactSensitive(this.ports.plugins?.snapshot() ?? { installed: [] })))

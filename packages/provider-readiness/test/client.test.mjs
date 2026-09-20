@@ -13,7 +13,8 @@ test('projectProviderReadiness keeps the five facts independent', () => {
     settings,
     credentials: { DEEPSEEK_API_KEY: { configured: true } },
     modelSnapshot,
-    probes: [{ status: 'succeeded', provider: 'deepseek', model: 'deepseek-chat', startedAt: 10, completedAt: 20, latencyMs: 10, finishReason: 'stop', usage: {}, cost: { status: 'unavailable' } }],
+    probes: [{ status: 'succeeded', provider: 'deepseek', model: 'deepseek-chat', routeRevision: 'a'.repeat(64), startedAt: 10, completedAt: 20, latencyMs: 10, finishReason: 'stop', usage: {}, cost: { status: 'unavailable' } }],
+    routeRevisions: { 'deepseek\u0000deepseek-chat': 'a'.repeat(64) },
     now: 30,
     verificationTtlMs: 1_000,
   })
@@ -129,6 +130,93 @@ test('ProviderReadinessClient coalesces a newly ready settings view', async () =
   client.dispose()
 })
 
+test('ProviderReadinessClient does not let a superseded credential lookup overwrite a newer session', async () => {
+  const firstCredentialResult = deferred()
+  const firstCredentialStarted = deferred()
+  let credentialCalls = 0
+  let activeModelSnapshot = { ...modelSnapshot, sessionId: 'session-a' }
+  const client = new ProviderReadinessClient({
+    connection: {
+      api: {
+        llm: { async providers() { return { result: { ok: true, value: { providers: directory } } } } },
+        credentials: {
+          async describe() {
+            credentialCalls += 1
+            if (credentialCalls === 1) {
+              firstCredentialStarted.resolve()
+              return firstCredentialResult.promise
+            }
+            return { result: { ok: true, value: { credentials: { DEEPSEEK_API_KEY: { configured: true } } } } }
+          },
+        },
+      },
+    },
+    settings: { async ensure() {}, getSnapshot() { return { status: 'ready', view: { namespaces: settings } } }, subscribe() { return () => {} } },
+    modelCatalog: { getSnapshot() { return activeModelSnapshot }, subscribe() { return () => {} }, async refresh() { return { ok: true, value: activeModelSnapshot } } },
+    fetcher: async () => response({ probes: [] }),
+  })
+
+  const refreshA = client.refresh('session-a')
+  await firstCredentialStarted.promise
+  activeModelSnapshot = { ...modelSnapshot, sessionId: 'session-b' }
+  const refreshB = await client.refresh('session-b')
+  assert.equal(refreshB.ok, true)
+  assert.equal(client.getSnapshot().sessionId, 'session-b')
+  assert.equal(client.getSnapshot().providers[0].routes[0].facts.configured, true)
+
+  firstCredentialResult.resolve({ result: { ok: true, value: { credentials: { DEEPSEEK_API_KEY: { configured: false } } } } })
+  const staleA = await refreshA
+  assert.equal(staleA.ok, false)
+  assert.equal(staleA.error.kind, 'conflict')
+  assert.equal(client.getSnapshot().sessionId, 'session-b')
+  assert.equal(client.getSnapshot().providers[0].routes[0].facts.configured, true)
+  client.dispose()
+})
+
+test('ProviderReadinessClient does not relabel previous-session routes while the next session is loading', async () => {
+  const nextCredentialResult = deferred()
+  const nextCredentialStarted = deferred()
+  let credentialCalls = 0
+  let activeModelSnapshot = { ...modelSnapshot, sessionId: 'session-a' }
+  const client = new ProviderReadinessClient({
+    connection: {
+      api: {
+        llm: { async providers() { return { result: { ok: true, value: { providers: directory } } } } },
+        credentials: {
+          async describe() {
+            credentialCalls += 1
+            if (credentialCalls === 1) return { result: { ok: true, value: { credentials: { DEEPSEEK_API_KEY: { configured: true } } } } }
+            nextCredentialStarted.resolve()
+            return nextCredentialResult.promise
+          },
+        },
+      },
+    },
+    settings: { async ensure() {}, getSnapshot() { return { status: 'ready', view: { namespaces: settings } } }, subscribe() { return () => {} } },
+    modelCatalog: { getSnapshot() { return activeModelSnapshot }, subscribe() { return () => {} }, async refresh() { return { ok: true, value: activeModelSnapshot } } },
+    fetcher: async () => response({ probes: [] }),
+  })
+
+  assert.equal((await client.refresh('session-a')).ok, true)
+  assert.equal(client.getSnapshot().providers.length, 1)
+  activeModelSnapshot = { ...modelSnapshot, sessionId: 'session-b' }
+  const refreshB = client.refresh('session-b')
+  await nextCredentialStarted.promise
+  assert.equal(client.getSnapshot().sessionId, 'session-b')
+  assert.equal(client.getSnapshot().status, 'loading')
+  assert.deepEqual(client.getSnapshot().providers, [])
+
+  nextCredentialResult.resolve({ result: { ok: true, value: { credentials: { DEEPSEEK_API_KEY: { configured: true } } } } })
+  assert.equal((await refreshB).ok, true)
+  client.dispose()
+})
+
 function response(value, status = 200) {
   return { ok: status >= 200 && status < 300, status, async json() { return value } }
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
 }

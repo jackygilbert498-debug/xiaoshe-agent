@@ -33,7 +33,7 @@
       "path": "../../util/timeout"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../test-support/loader-smoke"
     }
   ]
 }

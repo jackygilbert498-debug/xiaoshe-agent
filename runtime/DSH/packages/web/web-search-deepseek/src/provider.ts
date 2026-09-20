@@ -16,7 +16,6 @@ import type {
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-session'
 import type {
-  AnthropicError,
   AnthropicResponse,
   ContentBlock,
   TextBlock,
@@ -173,7 +172,10 @@ export function mapAnthropicResponse(response: AnthropicResponse): WebSearchResu
   return { sources, truncated: false }
 }
 
-/** The DeepSeek-backed search provider; HTTP redirects fail as `WEB_PROVIDER_ERROR`. */
+/**
+ * The DeepSeek-backed search provider. HTTP redirects fail as `WEB_PROVIDER_ERROR`;
+ * failures distinguish transport, HTTP status and response validation without suggesting configuration changes.
+ */
 export class DeepSeekSearchProvider implements WebSearchProvider {
   readonly id = DEEPSEEK_PROVIDER_ID
 
@@ -183,8 +185,13 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
    * thunk rather than a value because the plugin's settings section can change
    * between searches, and re-registering the provider to carry a new endpoint
    * would make the seam's selection observable to the user as a flicker.
+   * @param transport - optional in-process HTTP dependency for transport-level
+   * observation/testing; not a Profile setting. Omission retains native fetch.
    */
-  constructor(private readonly resolveOptions: () => DeepSeekSearchProviderOptions) {}
+  constructor(
+    private readonly resolveOptions: () => DeepSeekSearchProviderOptions,
+    private readonly transport?: typeof fetch,
+  ) {}
 
   available(): boolean {
     const options = this.resolveOptions()
@@ -219,7 +226,7 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
     throwIfSearchAborted(signal)
     let response: Response
     try {
-      response = await fetch(endpoint, {
+      response = await (this.transport ?? fetch)(endpoint, {
         method: 'POST',
         redirect: 'error',
         headers: {
@@ -237,35 +244,50 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
       })
     } catch (error: unknown) {
       if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-      throw new WebError(`DeepSeek search request failed: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+      throw searchEndpointError(
+        endpoint,
+        `DeepSeek search ${transportDiagnostic(error)}. This failure does not establish that the endpoint or API key is wrong. Check network/proxy reachability and preserve earlier successful search evidence.`,
+        error,
+      )
     }
 
     if (!response.ok) {
       const status = response.status
-      let message = `DeepSeek API error (HTTP ${status})`
+      const category = status === 401 ? 'authentication rejected' : status === 403 ? 'authorization denied'
+        : status === 429 ? 'rate limit reached' : status >= 500 ? 'upstream server failure' : 'HTTP request rejected'
+      const message = `DeepSeek API error (HTTP ${status}): ${category}`
       try {
-        const parsed = await response.json() as AnthropicError
-        const detail = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message
-        if (detail !== undefined && detail.length > 0) message = detail
+        // Status is sufficient: an untrusted gateway body may be unbounded or
+        // echo credentials. Release it without parsing or exposing its contents.
+        await response.body?.cancel()
+        throwIfSearchAborted(signal)
       } catch (error: unknown) {
-        // An abort fired mid-body must surface as WEB_ABORTED, not be swallowed
+        // An abort fired during cleanup must surface as WEB_ABORTED, not be swallowed
         // into a generic HTTP-error message — cancellation is not a provider
         // error (the seam's cancellation contract).
         if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-        // Otherwise: the HTTP status is already captured in `message` above; a
-        // malformed/non-JSON error body (normal for gateway 5xx/429s) can only
-        // cost a richer provider message, never the real error.
+        // Cleanup failure cannot erase the HTTP status already received.
       }
-      throw new WebError(message, 'WEB_PROVIDER_ERROR')
+      throw searchEndpointError(endpoint, message)
     }
 
+    let payload: AnthropicResponse
     try {
-      const payload = await response.json() as AnthropicResponse
+      payload = await response.json() as AnthropicResponse
+    } catch (error: unknown) {
+      if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
+      throw searchEndpointError(endpoint, error instanceof SyntaxError
+        ? 'DeepSeek returned an invalid response: the body is not JSON'
+        : `DeepSeek search response-body ${transportDiagnostic(error)}. This failure does not establish that the endpoint or API key is wrong.`, error)
+    }
+    try {
       return mapAnthropicResponse(payload)
     } catch (error: unknown) {
       if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-      if (error instanceof WebError) throw error
-      throw new WebError(`DeepSeek returned an unprocessable response body: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+      const message = error instanceof WebError
+        ? 'DeepSeek returned an invalid response: native web search result blocks are missing'
+        : 'DeepSeek returned an invalid response: the body could not be parsed as native web search results'
+      throw searchEndpointError(endpoint, message, error)
     }
   }
 
@@ -284,7 +306,7 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
     } catch (error: unknown) {
       if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
       throw new WebError(
-        `DeepSeek search credential resolution failed: ${String(error)}`,
+        'DeepSeek search credential resolution failed; check availability of the configured credential service',
         'WEB_PROVIDER_ERROR',
         { cause: error },
       )
@@ -298,6 +320,47 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
       'WEB_PROVIDER_CREDENTIAL_MISSING',
     )
   }
+}
+
+/** Report only the origin: paths, query strings and userinfo may contain credentials. */
+function searchEndpointError(endpoint: string, message: string, cause?: unknown): WebError {
+  let origin = '[invalid endpoint]'
+  try { origin = new URL(endpoint).origin } catch { /* The transport already rejected this endpoint. */ }
+  return new WebError(
+    `${message}\n\nSearch endpoint origin: ${JSON.stringify(origin)}. `
+    + 'Only the user should choose or change the credential destination; a failed request alone is not grounds to change it.',
+    'WEB_PROVIDER_ERROR',
+    cause === undefined ? undefined : { cause },
+  )
+}
+
+/** Collect only known transport codes, never arbitrary exception text; bound cyclic cause graphs. */
+function transportDiagnostic(error: unknown): string {
+  const categories: Record<string, string> = {
+    ENOTFOUND: 'DNS', EAI_AGAIN: 'DNS', EAI_FAIL: 'DNS',
+    CERT_HAS_EXPIRED: 'TLS', DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS', SELF_SIGNED_CERT_IN_CHAIN: 'TLS',
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS', UNABLE_TO_GET_ISSUER_CERT_LOCALLY: 'TLS', ERR_TLS_CERT_ALTNAME_INVALID: 'TLS',
+    UND_ERR_PRX_TLS: 'proxy', UND_ERR_PROXY: 'proxy',
+    ETIMEDOUT: 'timeout', UND_ERR_CONNECT_TIMEOUT: 'timeout', UND_ERR_HEADERS_TIMEOUT: 'timeout', UND_ERR_BODY_TIMEOUT: 'timeout',
+    ECONNRESET: 'transport', ECONNREFUSED: 'transport', EHOSTUNREACH: 'transport', ENETUNREACH: 'transport', EPIPE: 'transport', UND_ERR_SOCKET: 'transport',
+  }
+  const queue: unknown[] = [error]
+  const seen = new Set<unknown>()
+  const codes = new Set<string>()
+  for (let index = 0; index < queue.length && index < 16; index++) {
+    const item = queue[index]
+    if (!(item instanceof Error) || seen.has(item)) continue
+    seen.add(item)
+    const code = (item as Error & { code?: unknown }).code
+    if (typeof code === 'string' && Object.hasOwn(categories, code)) codes.add(code)
+    if (queue.length < 16) queue.push(item.cause)
+    if (item instanceof AggregateError) {
+      const errors: readonly unknown[] = item.errors
+      queue.push(...errors.slice(0, 16 - queue.length))
+    }
+  }
+  return codes.size === 0 ? 'transport failure (no diagnostic code available)'
+    : `${[...new Set([...codes].map(code => categories[code]))].join('/')} failure [${[...codes].join(', ')}]`
 }
 
 /**

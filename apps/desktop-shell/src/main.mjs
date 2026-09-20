@@ -1,39 +1,102 @@
-import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, screen, session, shell } from 'electron'
+import { redactDesktopLogin } from './desktop-login.mjs'
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, screen, session, clipboard, ClipboardItem, dialog } from 'electron'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed } from './lifecycle.mjs'
-import { interactionAcceptanceRequested, runInteractionAcceptance } from './interaction-acceptance.mjs'
-import { alphaBounds, fittedWidth, trayHeightForDisplay } from './icon-layout.mjs'
-import { allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from './security-policy.mjs'
+import { tmpdir } from 'node:os'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { acceptanceUserDataPath } from './acceptance-isolation.mjs'
+import { ProductServiceController, acceptanceQuitDelay, loadProductPage, prepareProductRoot, productRootOverride, rendererExitAction, rendererProbePassed, shutdownOwnedProduct } from './lifecycle.mjs'
+import { configureAcceptanceRpc, interactionAcceptanceRequested, runInteractionAcceptance } from './interaction-acceptance.mjs'
+import { lifecycleAcceptanceConfig, runLifecycleAcceptance } from './lifecycle-acceptance.mjs'
+import { materialAcceptanceConfig } from './material-acceptance.mjs'
+import { visionAcceptanceConfig } from './vision-acceptance.mjs'
+import { batchAcceptanceConfig } from './batch-acceptance.mjs'
+import { stabilityAcceptanceConfig } from './stability-acceptance.mjs'
+import { alphaBounds, fittedWidth, trayHeightForDisplay, trayImagePaths, appIconPath, applicationUserModelId, browserWindowIconOptions } from './icon-layout.mjs'
+import { allowNativeNotifications, allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from './security-policy.mjs'
+import { BrowserWorkspace } from './browser-workspace.mjs'
+import { createBrowserLayoutReporter } from './browser-layout-observation.mjs'
+import { trustedBrowserSender, validOwner } from './browser-policy.mjs'
+import { captureDesktopWakeBaseline, createDesktopWakeCheck, desktopSourceIdentity, inspectDesktopWakeVersion } from './wake-version.mjs'
+import { installFrontendVersion } from './frontend-version.mjs'
 
 const PRODUCT_URL = resolveProductUrl(process.env)
+let authenticatedProductUrl = PRODUCT_URL
 const ORIGIN = productOrigin(PRODUCT_URL)
+const nativeNotificationsEnabled = allowNativeNotifications({ platform: process.platform, packaged: app.isPackaged, defaultApp: process.defaultApp })
 const RENDERER_HEARTBEAT = 'xiaoshe:renderer-heartbeat'
+const INTERACTION_ACCEPTANCE_TIMEOUT_MS = 330_000
 let productRoot; let controller; let window; let tray; let brandIcon; let pageRecovery; let trayRefreshTimer; let trayTargetHeight = 15; let rendererReadySequence = 0; let rendererRecoveryPending = false; let rendererUnresponsiveSequence = 0; let quitting = false
+let browserWorkspace; let browserEndpoint; let browserOwner; let browserBoundsTimer; let browserChangeTimer
+const reportBrowserLayout = createBrowserLayoutReporter(facts => recordStartup('browser-layout-state', facts))
+const desktopAppRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+const loadedDesktopIdentity = desktopSourceIdentity(desktopAppRoot).catch(() => undefined)
+let checkDesktopWake
+let frontendVersion
+// A second Quit must not bypass the first Quit's asynchronous cleanup/logging.
+let quitCleanupComplete = false
+
+const lifecycleAcceptance = lifecycleAcceptanceConfig(process.argv, process.env)
+const materialAcceptance = materialAcceptanceConfig(process.argv, process.env)
+const visionAcceptance = visionAcceptanceConfig(process.argv, process.env)
+const batchAcceptance = batchAcceptanceConfig(process.argv, process.env)
+const stabilityAcceptance = stabilityAcceptanceConfig(process.argv, process.env)
+const lifecycleAcceptanceStartedAt = new Date().toISOString()
+const acceptanceUserData = acceptanceUserDataPath(process.env, tmpdir())
+if (acceptanceUserData !== undefined) app.setPath('userData', acceptanceUserData)
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
-  app.on('second-instance', () => { if (controller !== undefined) showWindow() })
+  app.on('second-instance', () => {
+    if (controller === undefined) return
+    showWindow()
+    // A second launch must not stop a running task or silently reuse changed code.
+    void checkDesktopWake?.().catch(error => recordStartup('wake-version-warning-failed', { message: safeMessage(error) }).catch(() => {}))
+  })
   app.whenReady().then(boot).catch(async error => {
-    const cleanup = controller === undefined ? undefined : await controller.stopOwned().catch(cleanupError => ({ stopped: false, error: safeMessage(cleanupError) }))
-    await recordStartup('boot-failed', { message: safeMessage(error, 4_000), cleanup }).catch(() => {})
-    showFailure(error); app.exit(1)
+    let failure = error
+    let cleanup
+    try {
+      cleanup = await shutdownOwnedProduct({
+        closeBrowser,
+        stopService: controller === undefined
+          ? async () => ({ stopped: false, reason: 'service-controller-not-created' })
+          : () => controller.stopOwned(),
+      })
+    } catch (cleanupError) {
+      failure = new AggregateError([error, cleanupError], '小蛇启动失败，且启动补偿清理未全部完成')
+      cleanup = { failed: true, message: safeMessage(cleanupError, 4_000) }
+    }
+    await recordStartup('boot-failed', { message: safeMessage(failure, 4_000), cleanup }).catch(() => {})
+    showFailure(failure); app.exit(1)
   })
   app.on('activate', () => { if (controller !== undefined) showWindow() })
   app.on('before-quit', event => {
     if (trayRefreshTimer !== undefined) clearTimeout(trayRefreshTimer)
-    if (quitting) return
+    if (quitCleanupComplete) return
     if (controller === undefined) { quitting = true; return }
-    event.preventDefault(); quitting = true
-    void controller.stopOwned().finally(() => app.quit())
+    event.preventDefault()
+    if (quitting) return
+    quitting = true
+    void shutdownOwnedProduct({ closeBrowser, stopService: () => controller.stopOwned() }).then(
+      async cleanup => {
+        await recordStartup('shutdown-complete', cleanup).catch(() => {})
+        quitCleanupComplete = true
+        app.quit()
+      },
+      async error => {
+        await recordStartup('shutdown-failed', { message: safeMessage(error, 4_000) }).catch(() => {})
+        showFailure(error)
+        app.exit(1)
+      },
+    )
   })
   app.on('window-all-closed', event => { event?.preventDefault?.() })
 }
 
 async function boot() {
-  app.setAppUserModelId('com.xiaoshe.desktop')
-  await recordStartup('boot-started', { packaged: app.isPackaged, version: app.getVersion() })
+  app.setAppUserModelId(applicationUserModelId(process.platform))
+  await recordStartup('boot-started', { packaged: app.isPackaged, version: app.getVersion(), nativeNotifications: nativeNotificationsEnabled })
   const configuredRoot = productRootOverride(process.env)
   productRoot = configuredRoot ?? await prepareProductRoot({
     packaged: app.isPackaged,
@@ -43,16 +106,105 @@ async function boot() {
   })
   await recordStartup('runtime-ready', { source: configuredRoot !== undefined ? 'explicit-override' : app.isPackaged ? 'per-user-copy' : 'development-source' })
   applyBranding()
-  controller = new ProductServiceController({ productRoot, platform: process.platform, url: PRODUCT_URL })
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowPermission(permission, details.requestingOrigin ?? contents.getURL(), ORIGIN)))
-  session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => allowPermission(permission, requestingOrigin, ORIGIN))
-  await controller.start()
-  await recordStartup('service-ready', { origin: ORIGIN })
+  const ownershipToken = process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1'
+    ? process.env.XIAOSHE_LAUNCH_TOKEN?.trim() || undefined
+    : undefined
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowPermission(permission, details.requestingOrigin ?? contents.getURL(), ORIGIN, nativeNotificationsEnabled)))
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => allowPermission(permission, requestingOrigin, ORIGIN, nativeNotificationsEnabled))
+  // Load local feedback before the slow first-run installer. Do not expose the
+  // controller to second-instance/activate until there is a nonblank page.
   const target = createWindow()
+  await target.loadFile(join(desktopAppRoot, 'src', 'startup.html'))
+  if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE !== '1' && process.env.XIAOSHE_DESKTOP_START_HIDDEN !== '1') showWindow()
+  controller = new ProductServiceController({ productRoot, platform: process.platform, url: PRODUCT_URL, ownershipToken })
+  const service = await controller.start()
+  authenticatedProductUrl = service.loginUrl
+  if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1') {
+    const { DshApiClient } = await import(pathToFileURL(join(productRoot, 'packages/terminal-client/lib/api.js')).href)
+    configureAcceptanceRpc({ ApiClient: DshApiClient, authenticatedUrl: authenticatedProductUrl })
+  }
+  const wakeBaseline = await captureDesktopWakeBaseline({ shellIdentity: await loadedDesktopIdentity, baseUrl: PRODUCT_URL })
+  checkDesktopWake = createDesktopWakeCheck({
+    inspect: () => inspectDesktopWakeVersion({ baseline: wakeBaseline, appRoot: desktopAppRoot, baseUrl: PRODUCT_URL,
+      loadedFrontend: () => frontendVersion?.snapshot() }),
+    warn: options => dialog.showMessageBox(window, options),
+    record: result => recordStartup('wake-version-checked', result).catch(() => {}),
+  })
+  await recordStartup('service-ready', { origin: ORIGIN })
+  await installBrowserWorkspace(target)
   installRendererHeartbeat(target)
-  const loaded = await loadProductPage(target, PRODUCT_URL, { onRetry: event => recordStartup('ui-load-retry', event) })
+  const loaded = await loadProductPage(target, authenticatedProductUrl, { onRetry: event => recordStartup('ui-load-retry', event) })
   await recordStartup('ui-ready', loaded)
   installPageRecovery(target)
+  if (stabilityAcceptance !== undefined) {
+    target.setIgnoreMouseEvents(true)
+    target.setOpacity(0.01); target.showInactive()
+    const { runStabilityAcceptance } = await import('./stability-acceptance.mjs')
+    const { productRuntimeIdentity } = await import(pathToFileURL(join(productRoot, 'scripts/product-runtime-identity.mjs')).href)
+    const { readBudgetLedger } = await import(pathToFileURL(join(productRoot, 'scripts/acceptance/live-request-budget.mjs')).href)
+    const expectedIdentity = await productRuntimeIdentity({ root: productRoot,
+      dshRoot: join(productRoot, 'runtime/DSH'), profileRoot: stabilityAcceptance.profileRoot })
+    await runStabilityAcceptance({ config: stabilityAcceptance, target, expectedIdentity, readBudgetLedger,
+      onStep: step => recordStartup('stability-acceptance-step', step) })
+    app.quit(); return
+  }
+  if (batchAcceptance !== undefined) {
+    target.setIgnoreMouseEvents(true)
+    target.setOpacity(0.01); target.showInactive()
+    const { runBatchAcceptance } = await import('./batch-acceptance.mjs')
+    const { productRuntimeIdentity } = await import(pathToFileURL(join(productRoot, 'scripts/product-runtime-identity.mjs')).href)
+    const expectedIdentity = await productRuntimeIdentity({ root: productRoot,
+      dshRoot: join(productRoot, 'runtime/DSH'), profileRoot: batchAcceptance.profileRoot })
+    await runBatchAcceptance({ config: batchAcceptance, productRoot, target, workspace: browserWorkspace, expectedIdentity,
+      onStep: step => recordStartup('batch-acceptance-step', { step }) })
+    app.quit(); return
+  }
+  if (visionAcceptance !== undefined) {
+    target.setIgnoreMouseEvents(true)
+    target.setOpacity(0.01); target.showInactive()
+    const { runVisionAcceptance } = await import('./vision-acceptance.mjs')
+    const { productRuntimeIdentity } = await import(pathToFileURL(join(productRoot, 'scripts/product-runtime-identity.mjs')).href)
+    const expectedIdentity = await productRuntimeIdentity({ root: productRoot,
+      dshRoot: join(productRoot, 'runtime/DSH'), profileRoot: visionAcceptance.profileRoot })
+    await runVisionAcceptance({ config: visionAcceptance, productRoot, target, expectedIdentity, clipboard, ClipboardItem,
+      onStep: step => recordStartup('vision-acceptance-step', { step }) })
+    app.quit(); return
+  }
+  if (materialAcceptance !== undefined) {
+    target.setIgnoreMouseEvents(true)
+    target.setOpacity(0.01)
+    target.showInactive()
+    const { runMaterialAcceptance } = await import('./material-acceptance.mjs')
+    const { productRuntimeIdentity } = await import(pathToFileURL(join(productRoot, 'scripts', 'product-runtime-identity.mjs')).href)
+    const expectedIdentity = await productRuntimeIdentity({ root: productRoot,
+      dshRoot: join(productRoot, 'runtime/DSH'), profileRoot: materialAcceptance.profileRoot })
+    await runMaterialAcceptance({ config: materialAcceptance, productRoot, target, workspace: browserWorkspace, expectedIdentity,
+      onStep: step => recordStartup('material-acceptance-step', { step }) })
+    app.quit(); return
+  }
+  if (lifecycleAcceptance !== undefined) {
+    target.setOpacity(0.01)
+    target.showInactive()
+    const { requestBrowser } = await import(pathToFileURL(join(productRoot, 'scripts', 'isolated-browser-protocol.mjs')).href)
+    const { productRuntimeIdentity } = await import(pathToFileURL(join(productRoot, 'scripts', 'product-runtime-identity.mjs')).href)
+    const { readBudgetLedger } = await import(pathToFileURL(join(productRoot, 'scripts', 'acceptance', 'live-request-budget.mjs')).href)
+    const expectedIdentity = await productRuntimeIdentity({ root: productRoot,
+      dshRoot: join(productRoot, 'runtime', 'DSH'), profileRoot: lifecycleAcceptance.profileRoot })
+    await runLifecycleAcceptance({ config: lifecycleAcceptance, target, workspace: browserWorkspace,
+      requestBrowser, expectedIdentity, readBudgetLedger, phaseStartedAt: lifecycleAcceptanceStartedAt,
+      onStep: step => recordStartup('lifecycle-acceptance-step', step) })
+    app.quit(); return
+  }
+  if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1' && process.argv.includes('--acceptance-browser')) {
+    const reportDirectory = process.env.XIAOSHE_BROWSER_ACCEPTANCE_OUTPUT
+    if (!reportDirectory) throw new Error('browser acceptance report directory is required')
+    target.setOpacity(0.01)
+    target.showInactive()
+    const { runBrowserUiAcceptance } = await import('./browser-ui-acceptance.mjs')
+    const { requestBrowser } = await import(pathToFileURL(join(productRoot, 'scripts', 'isolated-browser-protocol.mjs')).href)
+    await runBrowserUiAcceptance({ target, workspace: browserWorkspace, requestBrowser, productUrl: PRODUCT_URL, reportDirectory })
+    app.quit(); return
+  }
   const interactionAcceptance = interactionAcceptanceRequested(process.argv, process.env)
   if (interactionAcceptance) {
     const reportPath = process.env.XIAOSHE_DESKTOP_ACCEPTANCE_REPORT?.trim()
@@ -63,25 +215,33 @@ async function boot() {
     target.setOpacity(0.01)
     target.showInactive()
     const guard = setTimeout(() => {
-      void recordStartup('ui-interaction-failed', { message: 'interaction acceptance exceeded 30000ms' }).finally(() => app.exit(2))
-    }, 30_000)
+      void recordStartup('ui-interaction-failed', { message: `interaction acceptance exceeded ${INTERACTION_ACCEPTANCE_TIMEOUT_MS}ms` }).finally(() => app.exit(2))
+    }, INTERACTION_ACCEPTANCE_TIMEOUT_MS)
     try {
       const report = await runInteractionAcceptance({
         target,
         productUrl: PRODUCT_URL,
         reportPath,
-        simulateCleanExit: () => handleRendererGone(target, { reason: 'clean-exit', exitCode: 0 }),
+        challenge: process.env.XIAOSHE_DESKTOP_ACCEPTANCE_CHALLENGE?.trim(),
+        runId: process.env.XIAOSHE_DESKTOP_ACCEPTANCE_RUN_ID?.trim(),
+        application: { executablePath: process.execPath, isPackaged: app.isPackaged, pid: process.pid, bundleId: 'com.xiaoshe.desktop' },
+        externalActionReadyPath: process.env.XIAOSHE_DESKTOP_ACCEPTANCE_READY?.trim(),
+        retireRenderer: () => restartAcceptanceRenderer(target),
         onStep: step => recordStartup('ui-interaction-step', { step }),
       })
-      await recordStartup('ui-interaction-accepted', report)
+      await recordStartup('ui-interaction-accepted', { runId: report.runId, appProcessPid: report.application.pid })
       app.quit()
       return
     } finally {
       clearTimeout(guard)
     }
   }
-  createTray(); showWindow()
-  if (Notification.isSupported()) new Notification({ title: '小蛇已就绪', body: '本地桌面服务已通过健康检查。', silent: true }).show()
+  createTray()
+  // An in-place update may preserve a deliberately hidden window. Explicit
+  // tray/launcher activation still uses showWindow and restores normal focus.
+  const startHidden = process.env.XIAOSHE_DESKTOP_START_HIDDEN === '1'
+  if (!startHidden) showWindow()
+  if (!startHidden && nativeNotificationsEnabled && Notification.isSupported()) new Notification({ title: '小蛇已就绪', body: '本地桌面服务已通过健康检查。', silent: true }).show()
   const quitAfter = acceptanceQuitDelay(process.argv, process.env)
   if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1' && process.argv.includes('--acceptance-hide-show')) {
     setTimeout(() => target.hide(), 1_000).unref()
@@ -97,9 +257,65 @@ async function boot() {
   if (quitAfter !== undefined) setTimeout(() => app.quit(), quitAfter).unref()
 }
 
+async function restartAcceptanceRenderer(target) {
+  const contents = target?.webContents
+  const beforePid = contents?.getOSProcessId?.()
+  if (!Number.isSafeInteger(beforePid) || beforePid <= 0 || target.isDestroyed()) {
+    throw new Error('interaction acceptance renderer process identity is unavailable')
+  }
+  return await new Promise((resolveRestart, rejectRestart) => {
+    let settled = false
+    let timeout
+    const finish = (error, afterPid) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      contents.removeListener('did-finish-load', onLoaded)
+      target.removeListener('closed', onClosed)
+      if (error !== undefined) rejectRestart(error)
+      else resolveRestart({ beforePid, afterPid })
+    }
+    const onLoaded = () => {
+      let afterPid
+      try {
+        afterPid = contents.getOSProcessId()
+      } catch (error) {
+        finish(error)
+        return
+      }
+      if (!Number.isSafeInteger(afterPid) || afterPid <= 0 || afterPid === beforePid) {
+        finish(new Error('forced renderer retirement did not create a new renderer process'))
+        return
+      }
+      finish(undefined, afterPid)
+    }
+    const onClosed = () => finish(new Error('window closed during renderer retirement'))
+    timeout = setTimeout(() => finish(new Error('timed out waiting for renderer process replacement')), 60_000)
+    contents.once('did-finish-load', onLoaded)
+    target.once('closed', onClosed)
+    try {
+      contents.forcefullyCrashRenderer()
+    } catch (error) {
+      finish(error)
+    }
+  })
+}
+
 function createWindow() {
   if (window !== undefined && !window.isDestroyed()) return window
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 960, minHeight: 680, show: false, backgroundColor: '#f7f9f7', title: '小蛇', icon: brandIcon, autoHideMenuBar: true, webPreferences: browserPreferences(join(dirname(fileURLToPath(import.meta.url)), 'preload.cjs')) })
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 480, minHeight: 360, show: false, backgroundColor: '#f7f9f7', title: '小蛇', ...browserWindowIconOptions({ platform: process.platform, packaged: app.isPackaged, icon: brandIcon }), autoHideMenuBar: true, webPreferences: browserPreferences(join(dirname(fileURLToPath(import.meta.url)), 'preload.cjs')) })
+  const contents = window.webContents
+  contents.on('before-input-event', (event, input) => {
+    // Electron's default Ctrl/Cmd+Plus needs Shift on the main keyboard. Also
+    // accept the unshifted '=' and numpad '+', using the same native zoom step.
+    // Consuming handled keys prevents the menu accelerator from zooming twice.
+    const command = process.platform === 'darwin' ? input.meta && !input.control : input.control && !input.meta
+    const plus = input.key === '=' || input.key === '+' || input.code === 'NumpadAdd'
+    if (input.type !== 'keyDown' || !command || input.alt || input.isComposing || !plus) return
+    event.preventDefault()
+    contents.zoomLevel += 0.5
+  })
+  frontendVersion = installFrontendVersion({ contents: window.webContents, ipcMain, origin: ORIGIN, record: recordStartup })
   if (interactionAcceptanceRequested(process.argv, process.env)) {
     window.webContents.on('console-message', event => {
       const message = event?.message
@@ -115,14 +331,14 @@ function createWindow() {
       }).catch(() => {})
     })
   }
-  window.webContents.setWindowOpenHandler(({ url }) => { const decision = navigationDecision(url, ORIGIN); if (decision === 'external-https') void shell.openExternal(url); return { action: 'deny' } })
+  window.webContents.setWindowOpenHandler(({ url }) => { if (navigationDecision(url, ORIGIN) === 'external-https') openBrowserLink(url); return { action: 'deny' } })
   window.webContents.on('will-navigate', (event, url) => {
     const decision = navigationDecision(url, ORIGIN)
     void recordStartup('ui-will-navigate', { url, decision }).catch(() => {})
-    if (decision !== 'allow-product') event.preventDefault()
+    if (decision !== 'allow-product') { event.preventDefault(); if (decision === 'external-https') openBrowserLink(url) }
   })
   window.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
-    if (isMainFrame) void recordStartup('ui-navigation-started', { url, isInPlace }).catch(() => {})
+    if (isMainFrame) { if (!isInPlace) { browserWorkspace?.mount(undefined, undefined); observeBrowserLayout('host', 'navigation') }; void recordStartup('ui-navigation-started', { url, isInPlace }).catch(() => {}) }
   })
   window.webContents.on('did-navigate', (_event, url, httpResponseCode, httpStatusText) => {
     void recordStartup('ui-navigation-finished', { url, httpResponseCode, httpStatusText }).catch(() => {})
@@ -131,9 +347,70 @@ function createWindow() {
     void recordStartup('window-close-requested', { quitting, visible: window.isVisible() }).catch(() => {})
     if (!quitting) { event.preventDefault(); window.hide() }
   })
-  window.on('hide', () => { void recordStartup('window-hidden').catch(() => {}) })
-  window.on('show', () => { void recordStartup('window-shown').catch(() => {}) })
+  const visibilityFacts = () => ({ visible: window.isVisible(), minimized: window.isMinimized(),
+    ...(process.platform === 'darwin' ? { applicationHidden: app.isHidden() } : {}) })
+  // Record observations, not an inferred user action: native hide events alone
+  // do not establish who hid a window or the renderer's viewport dimensions.
+  window.on('hide', () => { void recordStartup('window-hidden', visibilityFacts()).catch(() => {}) })
+  window.on('show', () => { void recordStartup('window-shown', visibilityFacts()).catch(() => {}) })
   return window
+}
+
+async function installBrowserWorkspace(target) {
+  browserWorkspace = new BrowserWorkspace({ window: target, productUrl: PRODUCT_URL, userDataPath: app.getPath('userData'), onChange: () => {
+    if (browserChangeTimer !== undefined || quitting) return
+    browserChangeTimer = setTimeout(() => {
+      browserChangeTimer = undefined
+      if (!target.isDestroyed()) target.webContents.send('xiaoshe:browser-changed')
+    }, 40)
+  } })
+  const { createBrowserEndpoint } = await import(pathToFileURL(join(productRoot, 'scripts', 'isolated-browser-protocol.mjs')).href)
+  browserEndpoint = await createBrowserEndpoint({ origin: PRODUCT_URL,
+    dispatch: (ownerId, command, args, signal) => browserWorkspace.agent(ownerId, command, args, signal) })
+  ipcMain.handle('xiaoshe:browser-ui', async (event, request) => {
+    if (!trustedBrowserSender(event, target.webContents, ORIGIN)) return { ok: false, error: '浏览器控制来源不可信。' }
+    try {
+      const ownerId = validOwner(request?.ownerId)
+      if (request.action === 'bind') { browserOwner = ownerId; browserWorkspace.mount(ownerId, undefined); observeBrowserLayout('host', 'bind'); return { ok: true, value: browserWorkspace.status(ownerId) } }
+      if (ownerId !== browserOwner) throw new Error('会话已切换，请刷新浏览器状态。')
+      return { ok: true, value: await browserWorkspace.ui(ownerId, request.action, request.args) }
+    } catch (error) { return { ok: false, error: safeMessage(error, 1200) } }
+  })
+  ipcMain.on('xiaoshe:browser-bounds', (event, request) => {
+    if (!trustedBrowserSender(event, target.webContents, ORIGIN) || request?.ownerId !== browserOwner) return
+    clearTimeout(browserBoundsTimer)
+    browserWorkspace.mount(browserOwner, request.bounds)
+    observeBrowserLayout('renderer', request.reason)
+    // A vanished/frozen renderer must not leave a native view over recovery or
+    // modal UI. The visible placeholder renews this lease, without input focus.
+    browserBoundsTimer = setTimeout(() => { browserWorkspace?.mount(undefined, undefined); observeBrowserLayout('host', 'lease-expired') }, 1800)
+  })
+  target.webContents.on('render-process-gone', () => { browserWorkspace?.mount(undefined, undefined); observeBrowserLayout('host', 'renderer-gone') })
+  target.webContents.on('unresponsive', () => { browserWorkspace?.mount(undefined, undefined); observeBrowserLayout('host', 'renderer-unresponsive') })
+  await recordStartup('isolated-browser-ready', { isolated: true, desktopDefault: 'denied' })
+}
+function observeBrowserLayout(source, reason) {
+  try {
+    const owner = browserWorkspace?.owners.get(browserWorkspace.activeOwner)
+    const usableWindow = window && !window.isDestroyed()
+    reportBrowserLayout({ source, reason, ownerPresent: !!browserWorkspace?.activeOwner, boundsPresent: !!browserWorkspace?.bounds,
+      selectedTabPresent: !!owner?.activeTab && browserWorkspace.tabs.has(owner.activeTab),
+      windowVisible: usableWindow ? window.isVisible() : null, minimized: usableWindow ? window.isMinimized() : null,
+      applicationHidden: process.platform === 'darwin' ? app.isHidden() : null })
+  } catch { /* Observation must never interrupt an IPC handler or lease expiry. */ }
+}
+function openBrowserLink(url) {
+  if (!browserWorkspace || !browserOwner || window?.isDestroyed()) return
+  window.webContents.send('xiaoshe:browser-reveal')
+  void browserWorkspace.ui(browserOwner, 'open', { url }).catch(error => {
+    browserWorkspace.notice = safeMessage(error, 500); browserWorkspace.changed()
+  })
+}
+async function closeBrowser() {
+  clearTimeout(browserBoundsTimer); clearTimeout(browserChangeTimer)
+  ipcMain.removeHandler('xiaoshe:browser-ui'); ipcMain.removeAllListeners('xiaoshe:browser-bounds')
+  await browserEndpoint?.close(); browserEndpoint = undefined
+  await browserWorkspace?.dispose(); browserWorkspace = undefined
 }
 function applyBranding() {
   app.setName('小蛇')
@@ -141,27 +418,32 @@ function applyBranding() {
   if (process.platform === 'darwin' && app.dock !== undefined) app.dock.setIcon(loadAppIcon(512))
 }
 function loadAppIcon(size) {
-  const iconPath = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', `app-icon-${size}.png`)
+  const iconPath = appIconPath({
+    platform: process.platform, size, productRoot,
+    desktopRoot: dirname(dirname(fileURLToPath(import.meta.url))),
+  })
   const image = nativeImage.createFromPath(iconPath)
   if (image.isEmpty()) throw new Error(`小蛇正式应用图标不可用：${iconPath}`)
   return image
 }
 function loadTrayImage(targetHeight = 15) {
-  const assets = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
-  const iconPath = join(assets, 'icon-16.png')
-  const retinaPath = join(assets, 'icon-32.png')
+  const { standard: iconPath, retina: retinaPath } = trayImagePaths({
+    platform: process.platform, productRoot,
+    desktopRoot: dirname(dirname(fileURLToPath(import.meta.url))),
+  })
   const sourceImage = nativeImage.createFromPath(iconPath)
   const retinaSource = nativeImage.createFromPath(retinaPath)
   if (sourceImage.isEmpty() || retinaSource.isEmpty()) {
     throw new Error(`小蛇正式菜单栏图标不可用：${sourceImage.isEmpty() ? iconPath : retinaPath}`)
   }
-  // 正式 16/32px 原件的透明画布让图形本体只有 12/23px 高。仅裁掉透明
-  // 留白并按菜单栏实际高度等比适配；不复制、重画或改变正式标识几何。
+  // Crop only transparent padding and fit the existing menu-bar dimensions.
+  // Windows exports are derived from snake.svg; never recolor the old favicon
+  // or reconstruct its silhouette. macOS keeps its reviewed template inputs.
   const image = fitTrayGlyph(sourceImage, targetHeight)
   const retinaImage = fitTrayGlyph(retinaSource, targetHeight * 2)
   image.addRepresentation({ scaleFactor: 2, buffer: retinaImage.toPNG() })
-  // 菜单栏按用户要求使用纯白；Template 只取正式小尺寸原件的 alpha
-  // 形状交给 macOS 着色，不引入另一套自绘几何。
+  // Template tinting is macOS-only. Windows uses actual white PNG pixels so it
+  // cannot accidentally display the source SVG's mint/gradient colors.
   image.setTemplateImage(process.platform === 'darwin')
   return image
 }
@@ -205,7 +487,7 @@ function createTray() {
   const profile = currentTrayProfile()
   trayTargetHeight = profile.targetHeight
   tray = new Tray(loadTrayImage(trayTargetHeight)); tray.setToolTip('小蛇')
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开小蛇', click: showWindow }, { type: 'separator' }, { label: '退出', click: () => { quitting = true; void controller.stopOwned().finally(() => app.quit()) } }]))
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开小蛇', click: showWindow }, { type: 'separator' }, { label: '退出', click: () => app.quit() }]))
   tray.on('double-click', showWindow)
   if (process.platform === 'darwin') installTrayDisplaySync()
   void recordStartup('tray-icon-ready', profile).catch(() => {})
@@ -305,7 +587,7 @@ function recoverProductPage(target, detail) {
   }
   pageRecovery = (async () => {
     await recordStartup('ui-recovery-started', detail)
-    const result = await loadProductPage(target, PRODUCT_URL, {
+    const result = await loadProductPage(target, authenticatedProductUrl, {
       onRetry: event => recordStartup('ui-reload-retry', { ...detail, ...event }),
     })
     await recordStartup('ui-recovered', { ...detail, ...result })
@@ -351,13 +633,23 @@ async function recordVisualProof(target) {
     await recordStartup('ui-visual-proof-failed', { message: safeMessage(error, 4_000) }).catch(() => {})
   }
 }
-function showFailure(error) { if (Notification.isSupported()) new Notification({ title: '小蛇启动失败', body: safeMessage(error, 240) }).show() }
+function showFailure(error) {
+  // A development Electron build deliberately has native notifications disabled.
+  // Use a synchronous error dialog so app.exit cannot swallow the explanation;
+  // unattended acceptance already records the error and must not wait for UI.
+  if (process.env.XIAOSHE_DESKTOP_ACCEPTANCE === '1') return
+  dialog.showMessageBoxSync({
+    type: 'error', title: '小蛇', message: '小蛇暂时无法打开',
+    detail: `启动或恢复没有完成，你的会话和配置不会因此被清空。\n\n${safeMessage(error, 2_000)}\n\n诊断日志：${join(app.getPath('userData'), 'logs', 'desktop-shell.jsonl')}`,
+    buttons: ['关闭'], defaultId: 0, noLink: true,
+  })
+}
 async function recordStartup(event, detail = {}) {
   const directory = join(app.getPath('userData'), 'logs')
   await mkdir(directory, { recursive: true })
-  await appendFile(join(directory, 'desktop-shell.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), event, ...detail })}\n`, 'utf8')
+  await appendFile(join(directory, 'desktop-shell.jsonl'), `${redactDesktopLogin(JSON.stringify({ at: new Date().toISOString(), event, ...detail }))}\n`, 'utf8')
 }
 function safeMessage(error, limit = 500) {
-  const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/gu, ' ')
+  const message = redactDesktopLogin(error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/gu, ' ')
   return message.length <= limit ? message : `…${message.slice(-(limit - 1))}`
 }

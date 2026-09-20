@@ -4,6 +4,8 @@ import type { HeartbeatCheckState, HeartbeatService, HeartbeatSnapshot, Heartbea
 
 const HEARTBEAT_API_PATH = '/api/xiaoshe/heartbeat'
 const JSON_LIMIT_BYTES = 8 * 1024
+const HEARTBEAT_RUNTIME_ERROR_MESSAGE = 'heartbeat service is temporarily unavailable'
+const INVALID_HEARTBEAT_REQUEST_MESSAGE = 'invalid heartbeat request'
 
 export interface HeartbeatHttpRequest extends AsyncIterable<Uint8Array | string> {
   readonly method?: string
@@ -40,6 +42,7 @@ export interface PublicHeartbeatSnapshot {
   readonly schemaVersion: 2
   readonly status: HeartbeatStatus
   readonly running: boolean
+  readonly persistenceStatus: 'ready' | 'degraded'
   readonly checks: readonly PublicHeartbeatCheck[]
 }
 
@@ -47,6 +50,10 @@ interface HeartbeatControlPort extends Pick<HeartbeatCoordinator, 'runNow' | 'pa
 
 class RequestBodyTooLargeError extends Error {
   readonly name = 'RequestBodyTooLargeError'
+}
+
+class InvalidHeartbeatRequestError extends Error {
+  readonly name = 'InvalidHeartbeatRequestError'
 }
 
 /** Register one guarded control/read route; private ledger facts never cross this boundary. */
@@ -69,12 +76,22 @@ export function registerHeartbeatHttpRoute(
         return
       }
       if (request.method === 'GET') {
-        const url = new URL(request.url ?? HEARTBEAT_API_PATH, 'http://localhost')
+        let url: URL
+        try {
+          url = new URL(request.url ?? HEARTBEAT_API_PATH, 'http://localhost')
+        } catch {
+          sendJson(response, 400, { error: 'invalid heartbeat query', kind: 'INVALID_HEARTBEAT_QUERY' })
+          return
+        }
         if ([...url.searchParams.keys()].length > 0) {
           sendJson(response, 400, { error: 'heartbeat status does not accept query fields', kind: 'INVALID_HEARTBEAT_QUERY' })
           return
         }
-        sendJson(response, 200, publicHeartbeatSnapshot(service.snapshot()))
+        try {
+          sendJson(response, 200, publicHeartbeatSnapshot(service.snapshot()))
+        } catch {
+          sendJson(response, 500, { error: HEARTBEAT_RUNTIME_ERROR_MESSAGE, kind: 'HEARTBEAT_RUNTIME_ERROR' })
+        }
         return
       }
 
@@ -115,17 +132,17 @@ export function registerHeartbeatHttpRoute(
           sendJson(response, 200, publicHeartbeatSnapshot(service.snapshot()))
           return
         }
-        throw new TypeError('heartbeat action must be run_now, pause or resume')
+        throw new InvalidHeartbeatRequestError('heartbeat action must be run_now, pause or resume')
       } catch (error: unknown) {
         if (error instanceof RequestBodyTooLargeError) {
           sendJson(response, 413, { error: error.message, kind: 'HEARTBEAT_BODY_TOO_LARGE' })
           return
         }
-        const invalid = error instanceof SyntaxError || error instanceof TypeError || error instanceof RangeError
-        sendJson(response, invalid ? 400 : 500, {
-          error: invalid ? safeMessage(error) : 'heartbeat control failed',
-          kind: invalid ? 'INVALID_HEARTBEAT_REQUEST' : 'HEARTBEAT_RUNTIME_ERROR',
-        })
+        if (error instanceof InvalidHeartbeatRequestError) {
+          sendJson(response, 400, { error: INVALID_HEARTBEAT_REQUEST_MESSAGE, kind: 'INVALID_HEARTBEAT_REQUEST' })
+          return
+        }
+        sendJson(response, 500, { error: HEARTBEAT_RUNTIME_ERROR_MESSAGE, kind: 'HEARTBEAT_RUNTIME_ERROR' })
       }
     },
   })
@@ -133,11 +150,14 @@ export function registerHeartbeatHttpRoute(
 
 export function publicHeartbeatSnapshot(snapshot: HeartbeatSnapshot): PublicHeartbeatSnapshot {
   const checks = snapshot.checks.map(publicCheck)
-  const running = checks.some(check => check.status === 'running' || check.status === 'delayed' || check.status === 'lost')
+  // Delayed and lost leases are explicitly unhealthy, not proof that useful
+  // work is still running. Only a current running state may set this flag.
+  const running = checks.some(check => check.status === 'running')
   return {
     schemaVersion: 2,
     status: aggregateStatus(checks),
     running,
+    persistenceStatus: snapshot.persistenceStatus,
     checks,
   }
 }
@@ -157,7 +177,9 @@ function publicCheck(check: HeartbeatCheckState): PublicHeartbeatCheck {
 
 function aggregateStatus(checks: readonly PublicHeartbeatCheck[]): HeartbeatStatus {
   const statuses = new Set(checks.map(check => check.status))
-  for (const status of ['lost', 'delayed', 'running', 'backoff', 'healthy', 'paused'] as const) {
+  // A currently running sibling is useful activity, but cannot erase durable
+  // evidence that another check is delayed or waiting in failure backoff.
+  for (const status of ['lost', 'delayed', 'backoff', 'running', 'healthy', 'paused'] as const) {
     if (statuses.has(status)) return status
   }
   return 'idle'
@@ -172,8 +194,15 @@ async function readJsonBody(request: HeartbeatHttpRequest): Promise<Record<strin
     if (total > JSON_LIMIT_BYTES) throw new RequestBodyTooLargeError(`JSON body exceeds ${JSON_LIMIT_BYTES} bytes`)
     chunks.push(chunk)
   }
-  const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('JSON body must be an object')
+  let value: unknown
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    throw new InvalidHeartbeatRequestError('JSON body must be valid JSON')
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new InvalidHeartbeatRequestError('JSON body must be an object')
+  }
   return value as Record<string, unknown>
 }
 
@@ -203,7 +232,7 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
 function assertOnlyFields(body: Record<string, unknown>, fields: readonly string[]): void {
   const allowed = new Set(fields)
   const extra = Object.keys(body).filter(key => !allowed.has(key))
-  if (extra.length > 0) throw new TypeError(`Unknown heartbeat request field: ${extra.join(', ')}`)
+  if (extra.length > 0) throw new InvalidHeartbeatRequestError(`Unknown heartbeat request field: ${extra.join(', ')}`)
 }
 
 function safeMessage(error: unknown): string {

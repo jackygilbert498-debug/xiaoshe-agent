@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from '../src/security-policy.mjs'
+import { allowNativeNotifications, allowPermission, browserPreferences, navigationDecision, productOrigin, resolveProductUrl } from '../src/security-policy.mjs'
 
 test('desktop product URL treats empty environment overrides as absent', () => {
   assert.equal(resolveProductUrl({}), 'http://127.0.0.1:3080/')
@@ -27,4 +27,31 @@ test('navigation, permissions and renderer preferences fail closed', () => {
     preload: '/preload.mjs', contextIsolation: true, sandbox: true, nodeIntegration: false,
     webSecurity: true, allowRunningInsecureContent: false, experimentalFeatures: false, spellcheck: true,
   })
+})
+
+test('Windows development notifications cannot register a bare Electron activator', () => {
+  assert.equal(allowNativeNotifications({ platform: 'win32', packaged: false }), false)
+  assert.equal(allowNativeNotifications({ platform: 'win32', packaged: undefined }), false)
+  assert.equal(allowNativeNotifications({ platform: 'win32', packaged: 'false' }), false)
+})
+
+test('an asar passed to default Electron is not a standalone Windows toast target', () => {
+  assert.equal(allowNativeNotifications({ platform: 'win32', packaged: true, defaultApp: true }), false)
+})
+
+test('packaged Windows and macOS retain native notifications', () => {
+  for (const context of [
+    { platform: 'win32', packaged: true },
+    { platform: 'darwin', packaged: true },
+    { platform: 'darwin', packaged: false },
+    { platform: 'linux', packaged: false },
+  ]) assert.equal(allowNativeNotifications(context), true)
+})
+
+test('renderer notifications obey the native gate without granting other permissions', () => {
+  const origin = 'http://127.0.0.1:3080'
+  assert.equal(allowPermission('notifications', origin, origin, false), false)
+  assert.equal(allowPermission('notifications', origin, origin, true), true)
+  assert.equal(allowPermission('notifications', 'https://example.com', origin, true), false)
+  assert.equal(allowPermission('media', origin, origin, true), false)
 })

@@ -1,3 +1,42 @@
+import { join } from 'node:path'
+
+const BASE_APPLICATION_ID = 'com.xiaoshe.desktop'
+// Windows caches taskbar artwork by AppUserModelID even after the executable
+// and every ICO frame change. This one-time identity revision makes the
+// enlarged approved mark observable; keep it stable until the artwork changes.
+const WINDOWS_APPLICATION_ID = 'com.xiaoshe.desktop.icon-v4'
+
+export function applicationUserModelId(platform) {
+  return platform === 'win32' ? WINDOWS_APPLICATION_ID : BASE_APPLICATION_ID
+}
+
+/** Windows taskbar artwork needs less outer padding than the macOS Dock tile. */
+export function appIconPath({ platform, size, productRoot, desktopRoot }) {
+  if (platform === 'win32') return join(desktopRoot, 'src', 'assets', `app-icon-win-${size}.png`)
+  return join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets', `app-icon-${size}.png`)
+}
+
+/**
+ * Assign the reviewed artwork to the actual window as well as the executable.
+ * Windows can otherwise retain a stale taskbar bitmap for the application
+ * identity even though the executable contains the new multi-resolution ICO.
+ */
+export function browserWindowIconOptions({ platform, packaged, icon }) {
+  return { icon }
+}
+
+/** Windows needs explicit white pixels; macOS applies its own template tint. */
+export function trayImagePaths({ platform, productRoot, desktopRoot }) {
+  if (platform === 'win32') {
+    return {
+      standard: join(desktopRoot, 'src', 'assets', 'tray-white-32.png'),
+      retina: join(desktopRoot, 'src', 'assets', 'tray-white-64.png'),
+    }
+  }
+  const assets = join(productRoot, 'runtime', 'xiaoshe-legacy', 'ui', 'assets')
+  return { standard: join(assets, 'icon-16.png'), retina: join(assets, 'icon-32.png') }
+}
+
 export function alphaBounds(bitmap, width, height) {
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
     throw new TypeError('icon dimensions must be positive integers')

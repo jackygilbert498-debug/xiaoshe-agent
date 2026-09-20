@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "source": "runtime/xiaoshe-legacy/ui/assets/app-icon.svg",
+  "sourceSha256": "271a9c842928ba7e3877c691ce1c502299e815901eeae57ac2001cc600ce5efc",
+  "approvedPngSourceSha256": "c6727d0bc3002187834ac56c0fa56d5d0401a66733a1b4c5b7afbffcb472e4c6",
+  "formalSourceSha256": "3a919a69c3b6f425545957aacaccd0199364a233bb3a0f4db827f3b5d1efdd75",
+  "viewBox": [
+    48,
+    48,
+    416,
+    416
+  ],
+  "windowsMarkLayout": {
+    "x": 8,
+    "y": 8,
+    "size": 496,
+    "scale": 1.1481481481481481
+  },
+  "renderer": "sharp 0.35.4 / librsvg 2.62.91",
+  "outputs": {
+    "app-icon-win.svg": "f6c915221359b029b81271b744518d1287be9bbf7af8d0d2c6d3c04f5de4aca1",
+    "app-icon-win-256.png": "55b1951931638ecdd0aeafea3955ca929d96f71f9751f86376e95c0352162218",
+    "app-icon-win-512.png": "414dbcc7037c8a70df1f04491e824d01fb63e9e98e6d59383b0c561958698be2",
+    "app-icon-win.ico": "113636c43bc9e5a29e2ec9c59588157a79ac8dd34c6b3cab24da46b245c1394a"
+  }
+}
